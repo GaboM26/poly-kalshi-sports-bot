@@ -363,16 +363,35 @@ class PolymarketClient:
                     
                     # 接收消息 - 使用 wait_for 支持取消
                     msg_count = 0
+                    # 消息类型统计
+                    msg_stats = {"book": 0, "price_change": 0, "other": 0}
+                    update_count = 0
+                    
                     while True:
                         try:
                             message = await asyncio.wait_for(ws.recv(), timeout=30.0)
                             msg_count += 1
-                            if msg_count % 100 == 0:
-                                log(f"📊 [Polymarket] 已接收 {msg_count} 条消息")
                             
-                            update = self._parse_ws_message(message)
-                            if update:
+                            # 统计消息类型
+                            try:
+                                msg_data = json.loads(message)
+                                event_type = msg_data.get("event_type", "other")
+                                if event_type in msg_stats:
+                                    msg_stats[event_type] += 1
+                                else:
+                                    msg_stats["other"] += 1
+                            except:
+                                msg_stats["other"] += 1
+                            
+                            # 新格式可能返回多个 PriceUpdate
+                            updates = self._parse_ws_message(message)
+                            update_count += len(updates)
+                            for update in updates:
                                 on_price_update(update)
+                            
+                            # 每 100 条消息记录统计
+                            if msg_count % 100 == 0:
+                                log(f"📊 [Polymarket] 消息 #{msg_count} | book:{msg_stats['book']}, price_change:{msg_stats['price_change']}, 价格更新:{update_count}")
                         except asyncio.TimeoutError:
                             # 超时但继续等待
                             continue
@@ -400,20 +419,28 @@ class PolymarketClient:
         
         log("⚠️ [Polymarket] 达到最大重试次数，停止重连")
     
-    def _parse_ws_message(self, text: str) -> Optional[PriceUpdate]:
-        """解析 WebSocket 消息"""
+    def _parse_ws_message(self, text: str) -> List[PriceUpdate]:
+        """解析 WebSocket 消息
+        
+        支持两种格式:
+        1. book 消息 (订阅时的初始快照) - 单个 asset
+        2. price_change 消息 (新格式) - 包含多个 asset 的 price_changes 数组
+        
+        Returns:
+            List[PriceUpdate]: 价格更新列表 (可能为空)
+        """
+        updates = []
         try:
             data = json.loads(text)
             event_type = data.get("event_type", "")
             
-            if event_type in ["book", "price_change"]:
-                # token_id 作为 market_id
-                market_id = data.get("asset_id") or data.get("market", "")
+            if event_type == "book":
+                # book 消息：订阅时的初始订单簿快照
+                # 格式: { "event_type": "book", "asset_id": "...", "bids": [...], "asks": [...] }
+                asset_id = data.get("asset_id", "")
+                if not asset_id:
+                    return updates
                 
-                if not market_id:
-                    return None
-                
-                # 解析价格
                 bids = data.get("bids", [])
                 asks = data.get("asks", [])
                 
@@ -432,16 +459,57 @@ class PolymarketClient:
                     except:
                         pass
                 
-                return PriceUpdate(
+                updates.append(PriceUpdate(
                     platform=Platform.POLYMARKET,
-                    market_id=market_id,  # 这是 token_id
+                    market_id=asset_id,  # token_id
                     yes_bid=yes_bid,
                     yes_ask=yes_ask,
                     no_bid=None,
                     no_ask=None,
                     timestamp=datetime.now()
-                )
+                ))
+            
+            elif event_type == "price_change":
+                # 新格式 price_change 消息：包含 price_changes 数组
+                # 格式: { "event_type": "price_change", "market": "...", 
+                #         "price_changes": [{ "asset_id": "...", "best_bid": "...", "best_ask": "..." }, ...] }
+                price_changes = data.get("price_changes", [])
+                
+                for change in price_changes:
+                    asset_id = change.get("asset_id", "")
+                    if not asset_id:
+                        continue
+                    
+                    # 新格式直接提供 best_bid 和 best_ask
+                    best_bid = change.get("best_bid")
+                    best_ask = change.get("best_ask")
+                    
+                    yes_bid = None
+                    yes_ask = None
+                    
+                    if best_bid:
+                        try:
+                            yes_bid = float(best_bid)
+                        except:
+                            pass
+                    
+                    if best_ask:
+                        try:
+                            yes_ask = float(best_ask)
+                        except:
+                            pass
+                    
+                    updates.append(PriceUpdate(
+                        platform=Platform.POLYMARKET,
+                        market_id=asset_id,  # token_id
+                        yes_bid=yes_bid,
+                        yes_ask=yes_ask,
+                        no_bid=None,
+                        no_ask=None,
+                        timestamp=datetime.now()
+                    ))
+                    
         except Exception as e:
             logger.debug(f"解析 Polymarket WS 消息失败: {e}")
         
-        return None
+        return updates

@@ -74,21 +74,20 @@ async def initialize_system():
     )
     ws_manager.set_matched_markets(arbitrage_service.matched_markets, market_lookup)
     
-    # 7. 计算初始套利机会
-    latest_opportunities = ws_manager.calculate_all()
-    arbitrage_service.stats.arbitrage_opportunities = len(latest_opportunities)
+    # 7. 不再计算初始套利机会 - 等待 WebSocket 连接成功后再计算
+    # 初始套利机会列表为空
+    arbitrage_service.stats.arbitrage_opportunities = 0
     
     # 8. 设置 API 路由的服务实例
     routes.set_services(arbitrage_service, ws_manager, latest_opportunities)
     
     stats = arbitrage_service.get_stats()
     logger.info("=" * 60)
-    logger.info("📊 初始化完成")
+    logger.info("📊 初始化完成 (等待 WebSocket 连接后计算套利)")
     logger.info(f"   Kalshi: {stats.total_kalshi_events} 事件, {stats.total_kalshi_markets} 市场")
     logger.info(f"   Polymarket: {stats.total_polymarket_events} 事件, {stats.total_polymarket_markets} 市场")
     logger.info(f"   匹配: {stats.matched_events} 事件, {stats.matched_markets} 市场对")
     logger.info(f"   订阅: Kalshi {len(kalshi_tickers)} 个, Poly {len(polymarket_token_ids)} 个 token")
-    logger.info(f"   套利机会: {stats.arbitrage_opportunities} 个")
     logger.info("=" * 60)
     
     return kalshi_tickers, polymarket_token_ids
@@ -134,12 +133,18 @@ async def broadcast_all_opportunities():
     """定期广播完整的套利机会列表"""
     global latest_opportunities, ws_manager
     
+    # 等待 WebSocket 连接成功
+    logger.info("⏳ 等待 WebSocket 连接成功后开始广播...")
+    while ws_manager and not ws_manager.is_ready():
+        await asyncio.sleep(0.5)
+    logger.info("✅ WebSocket 已就绪，开始广播套利机会")
+    
     while True:
         try:
             await asyncio.sleep(BROADCAST_INTERVAL)
             
-            # 重新计算所有套利机会
-            if ws_manager:
+            # 只有在 WebSocket 连接就绪后才计算
+            if ws_manager and ws_manager.is_ready():
                 latest_opportunities = ws_manager.calculate_all()
             
             if not latest_opportunities:

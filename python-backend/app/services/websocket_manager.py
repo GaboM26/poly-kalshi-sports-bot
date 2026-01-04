@@ -114,6 +114,61 @@ class WebSocketManager:
         if self.on_log:
             self.on_log(msg)
     
+    def _is_market_ready(self, matched_market: MatchedMarket) -> bool:
+        """检查单个市场对是否数据完整（两个平台都有实时价格）"""
+        k_id = matched_market.kalshi_market.market_id
+        p_token = matched_market.polymarket_market.get_token_for_team(matched_market.team_name)
+        
+        # 检查 Kalshi 是否有实时价格（4个值的格式：yes_bid, yes_ask, no_bid, no_ask）
+        k_prices = self.kalshi_prices.get(k_id)
+        has_kalshi = k_prices is not None and len(k_prices) == 4
+        
+        # 检查 Polymarket 是否有实时价格
+        has_poly = p_token and p_token in self.poly_token_prices
+        
+        return has_kalshi and has_poly
+    
+    def get_data_coverage(self) -> dict:
+        """获取数据覆盖率统计"""
+        total = len(self.matched_markets)
+        kalshi_ready = 0
+        poly_ready = 0
+        both_ready = 0
+        
+        for mm in self.matched_markets:
+            k_id = mm.kalshi_market.market_id
+            p_token = mm.polymarket_market.get_token_for_team(mm.team_name)
+            
+            k_prices = self.kalshi_prices.get(k_id)
+            has_kalshi = k_prices is not None and len(k_prices) == 4
+            has_poly = p_token and p_token in self.poly_token_prices
+            
+            if has_kalshi:
+                kalshi_ready += 1
+            if has_poly:
+                poly_ready += 1
+            if has_kalshi and has_poly:
+                both_ready += 1
+        
+        return {
+            "total_markets": total,
+            "kalshi_ready": kalshi_ready,
+            "polymarket_ready": poly_ready,
+            "both_ready": both_ready,
+            "kalshi_coverage": f"{kalshi_ready}/{total}",
+            "polymarket_coverage": f"{poly_ready}/{total}",
+            "full_coverage": f"{both_ready}/{total}",
+            "kalshi_connected": self.kalshi_connected,
+            "polymarket_connected": self.polymarket_connected
+        }
+    
+    def is_ready(self) -> bool:
+        """检查是否有任何市场对数据完整"""
+        for mm in self.matched_markets:
+            if self._is_market_ready(mm):
+                return True
+        return False
+    
     def _load_tracking_history(self):
         """加载历史追踪记录"""
         try:
@@ -263,18 +318,10 @@ class WebSocketManager:
         self.matched_markets = matched_markets
         self.market_lookup = market_lookup
         
-        # 初始化价格缓存
-        for mm in matched_markets:
-            # Kalshi 价格
-            k_id = mm.kalshi_market.market_id
-            self.kalshi_prices[k_id] = (mm.kalshi_market.yes_price, mm.kalshi_market.no_price)
-            
-            # Poly token 价格
-            p_token = mm.polymarket_market.get_token_for_team(mm.team_name)
-            if p_token:
-                self.poly_token_prices[p_token] = mm.poly_yes_price
+        # 不再初始化价格缓存 - 等待 WebSocket 实时数据
+        # 价格缓存保持为空，只有收到实时数据后才填充
         
-        self.log(f"📊 已加载 {len(matched_markets)} 个配对市场")
+        self.log(f"📊 已加载 {len(matched_markets)} 个配对市场 (等待实时价格)")
     
     async def start(
         self,
@@ -345,15 +392,21 @@ class WebSocketManager:
         """处理 Kalshi 价格更新"""
         self.kalshi_update_count += 1
         
+        # 标记连接成功（收到第一条价格更新）
+        if not self.kalshi_connected:
+            self.kalshi_connected = True
+            self.log("✅ [Kalshi] 开始接收实时价格数据")
+        
         # 记录前几条价格更新（包含完整 bid/ask）
         if self.kalshi_update_count <= 3:
             logger.info(f"📈 [Kalshi] 价格更新 #{self.kalshi_update_count}: {update.market_id}")
             logger.info(f"   Yes: bid={update.yes_bid}, ask={update.yes_ask}")
             logger.info(f"   No:  bid={update.no_bid}, ask={update.no_ask}")
         
-        # 每 500 次记录统计
-        if self.kalshi_update_count % 500 == 0:
-            logger.info(f"📈 [Kalshi] 统计: 收到 {self.kalshi_update_count} 条价格更新, 计算 {self.calculation_count} 次")
+        # 每 100 次记录数据覆盖率
+        if self.kalshi_update_count % 100 == 0:
+            coverage = self.get_data_coverage()
+            self.log(f"📊 [Kalshi] 消息 #{self.kalshi_update_count} | 数据覆盖: K={coverage['kalshi_coverage']}, P={coverage['polymarket_coverage']}, 完整={coverage['full_coverage']}")
         
         # 保存完整的 bid/ask 价格 (yes_bid, yes_ask, no_bid, no_ask)
         if update.yes_ask is not None and update.no_ask is not None:
@@ -381,6 +434,16 @@ class WebSocketManager:
         """
         self.polymarket_update_count += 1
         
+        # 标记连接成功（收到第一条价格更新）
+        if not self.polymarket_connected:
+            self.polymarket_connected = True
+            self.log("✅ [Polymarket] 开始接收实时价格数据")
+        
+        # 每 100 次记录数据覆盖率
+        if self.polymarket_update_count % 100 == 0:
+            coverage = self.get_data_coverage()
+            self.log(f"📊 [Polymarket] 消息 #{self.polymarket_update_count} | 数据覆盖: K={coverage['kalshi_coverage']}, P={coverage['polymarket_coverage']}, 完整={coverage['full_coverage']}")
+        
         # 更新 token 价格缓存 - 使用 Ask 价格（买入价格）
         # 套利需要买入，所以必须使用 Ask 价格
         yes_price = update.yes_ask if update.yes_ask else update.yes_bid
@@ -405,29 +468,32 @@ class WebSocketManager:
         
         使用 Ask 价格计算套利（Ask = 买入价格）
         套利需要在两个平台分别买入，所以必须使用 Ask 价格
+        只有当该市场对的两个平台都有实时数据时才计算
         """
+        # 只有当这个市场对的数据完整时才计算
+        if not self._is_market_ready(matched_market):
+            return
+        
         self.calculation_count += 1
         
         # 获取最新 Kalshi 价格 (yes_bid, yes_ask, no_bid, no_ask)
         k_id = matched_market.kalshi_market.market_id
         k_prices = self.kalshi_prices.get(k_id)
         
-        if not k_prices:
-            # 使用默认值（假设 bid ≈ ask，虽然不准确但可以作为备选）
-            k_yes_ask = matched_market.kalshi_market.yes_price
-            k_no_ask = matched_market.kalshi_market.no_price
-        else:
-            # 使用正确的 Ask 价格进行套利计算
-            k_yes_ask = k_prices[1]  # yes_ask - 买入 Yes 的价格
-            k_no_ask = k_prices[3]   # no_ask - 买入 No 的价格
+        # 使用实时 Ask 价格（已确认有数据）
+        k_yes_ask = k_prices[1]  # yes_ask - 买入 Yes 的价格
+        k_no_ask = k_prices[3]   # no_ask - 买入 No 的价格
         
-        # 更新 MatchedMarket 中的 Kalshi 价格（使用 Ask）
+        # 获取实时 Polymarket 价格
+        p_token = matched_market.polymarket_market.get_token_for_team(matched_market.team_name)
+        p_yes = self.poly_token_prices[p_token]
+        p_no = 1.0 - p_yes
+        
+        # 更新 MatchedMarket 中的价格（用于其他地方引用）
         matched_market.kalshi_market.yes_price = k_yes_ask
         matched_market.kalshi_market.no_price = k_no_ask
-        
-        # 获取最新 Poly 价格（从 MatchedMarket 缓存）
-        p_yes = matched_market.poly_yes_price
-        p_no = matched_market.poly_no_price
+        matched_market.poly_yes_price = p_yes
+        matched_market.poly_no_price = p_no
         
         # 记录前几次计算
         if self.calculation_count <= 3:
@@ -487,26 +553,29 @@ class WebSocketManager:
                 logger.info(f"📊 当前追踪中: {len(self.active_tracking)} 个套利机会")
     
     def calculate_all(self) -> List[ArbitrageOpportunity]:
-        """计算所有配对市场的套利机会
+        """计算所有数据完整的市场对的套利机会
         
-        使用 Ask 价格计算（与 _calculate_and_notify 保持一致）
-        kalshi_prices 存储格式: (yes_bid, yes_ask, no_bid, no_ask)
+        使用实时 Ask 价格计算（与 _calculate_and_notify 保持一致）
+        只计算两个平台都有实时数据的市场对
         """
         opportunities = []
         
         for mm in self.matched_markets:
+            # 只计算数据完整的市场对
+            if not self._is_market_ready(mm):
+                continue
+            
             k_id = mm.kalshi_market.market_id
             k_prices = self.kalshi_prices.get(k_id)
             
-            # 获取 Kalshi Ask 价格（与 _calculate_and_notify 保持一致）
-            if k_prices and len(k_prices) == 4:
-                # 有实时价格：使用 ask 价格
-                k_yes_price = k_prices[1]  # yes_ask
-                k_no_price = k_prices[3]   # no_ask
-            else:
-                # 无实时价格：使用初始价格
-                k_yes_price = mm.kalshi_market.yes_price
-                k_no_price = mm.kalshi_market.no_price
+            # 使用实时 Kalshi Ask 价格
+            k_yes_price = k_prices[1]  # yes_ask
+            k_no_price = k_prices[3]   # no_ask
+            
+            # 使用实时 Polymarket 价格
+            p_token = mm.polymarket_market.get_token_for_team(mm.team_name)
+            p_yes_price = self.poly_token_prices[p_token]
+            p_no_price = 1.0 - p_yes_price
             
             opportunity = self.calculator.calculate_single(
                 event_name=mm.event_name,
@@ -515,8 +584,8 @@ class WebSocketManager:
                 kalshi_yes_price=k_yes_price,
                 kalshi_no_price=k_no_price,
                 polymarket_market=mm.polymarket_market,
-                polymarket_yes_price=mm.poly_yes_price,
-                polymarket_no_price=mm.poly_no_price
+                polymarket_yes_price=p_yes_price,
+                polymarket_no_price=p_no_price
             )
             
             if opportunity:
@@ -535,14 +604,17 @@ class WebSocketManager:
     
     def get_stats(self) -> dict:
         """获取统计信息"""
+        coverage = self.get_data_coverage()
         return {
             "matched_markets": len(self.matched_markets),
             "kalshi_connected": self.kalshi_connected,
-            "active_tracking": len(self.active_tracking),
-            "completed_tracking": len(self.completed_tracking),
             "polymarket_connected": self.polymarket_connected,
             "kalshi_updates": self.kalshi_update_count,
             "polymarket_updates": self.polymarket_update_count,
             "calculations": self.calculation_count,
-            "opportunities": len(self.opportunities)
+            "opportunities": len(self.opportunities),
+            "active_tracking": len(self.active_tracking),
+            "completed_tracking": len(self.completed_tracking),
+            # 数据覆盖率
+            "data_coverage": coverage
         }

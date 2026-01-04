@@ -88,3 +88,21 @@ async def get_tracking():
     if ws_manager:
         return ws_manager.get_tracking_stats()
     return {"active_count": 0, "completed_count": 0, "active": [], "recent_completed": []}
+
+
+@router.get("/api/data-coverage")
+async def get_data_coverage():
+    """获取数据覆盖率信息"""
+    if ws_manager:
+        return ws_manager.get_data_coverage()
+    return {
+        "total_markets": 0,
+        "kalshi_ready": 0,
+        "polymarket_ready": 0,
+        "both_ready": 0,
+        "kalshi_coverage": "0/0",
+        "polymarket_coverage": "0/0",
+        "full_coverage": "0/0",
+        "kalshi_connected": False,
+        "polymarket_connected": False
+    }
