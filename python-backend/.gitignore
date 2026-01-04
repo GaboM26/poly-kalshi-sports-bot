@@ -36,3 +36,12 @@ wheels/
 # Environment
 .env
 .env.local
+
+# Project specific
+arbitrage_tracking_history.json
+*.json.bak
+
+# Old files (before refactoring)
+main.py.old
+kalshi_client.py.old
+polymarket_client.py.old

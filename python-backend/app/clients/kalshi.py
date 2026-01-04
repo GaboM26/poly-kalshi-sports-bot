@@ -1,0 +1,467 @@
+"""Kalshi API 客户端"""
+import aiohttp
+import asyncio
+import websockets
+import json
+import logging
+import time
+import base64
+from typing import List, Optional, Dict, Callable
+from datetime import datetime
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.backends import default_backend
+from app.core.models import KalshiMarket, KalshiEvent, Platform, PriceUpdate
+from app.core.config import KalshiConfig
+
+logger = logging.getLogger(__name__)
+
+
+class KalshiClient:
+    """Kalshi API 客户端"""
+    
+    def __init__(self, config: KalshiConfig):
+        self.config = config
+        self.base_url = config.base_url
+        self.ws_url = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.private_key = None
+        self.ws_connection = None
+        self.ws_connected = False
+        
+        # 加载私钥
+        try:
+            self.private_key = serialization.load_pem_private_key(
+                config.api_secret.encode(),
+                password=None,
+                backend=default_backend()
+            )
+            logger.info("✅ Kalshi 私钥加载成功")
+        except Exception as e:
+            logger.error(f"❌ 加载 Kalshi 私钥失败: {e}")
+        
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession()
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
+    
+    def _sign_request(self, timestamp_ms: int, method: str, path: str) -> str:
+        """生成请求签名"""
+        try:
+            message = f"{timestamp_ms}{method}{path}"
+            signature = self.private_key.sign(
+                message.encode(),
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH
+                ),
+                hashes.SHA256()
+            )
+            return base64.b64encode(signature).decode()
+        except Exception as e:
+            logger.error(f"签名失败: {e}")
+            return ""
+    
+    def _get_headers(self, method: str, path: str) -> Dict[str, str]:
+        """获取请求头（带签名）"""
+        timestamp_ms = int(time.time() * 1000)
+        signature = self._sign_request(timestamp_ms, method, path)
+        return {
+            "Content-Type": "application/json",
+            "KALSHI-ACCESS-KEY": self.config.api_key,
+            "KALSHI-ACCESS-TIMESTAMP": str(timestamp_ms),
+            "KALSHI-ACCESS-SIGNATURE": signature,
+        }
+    
+    async def login(self) -> bool:
+        """测试连接"""
+        try:
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+            
+            path = "/trade-api/v2/exchange/status"
+            url = f"{self.base_url}/exchange/status"
+            headers = self._get_headers("GET", path)
+            
+            async with self.session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    logger.info("✅ Kalshi 连接成功")
+                    return True
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"❌ Kalshi 连接失败: {resp.status} - {error_text}")
+                    return False
+        except Exception as e:
+            logger.error(f"❌ Kalshi 连接异常: {e}")
+            return False
+    
+    async def get_nba_events_and_markets(self) -> tuple[List[KalshiEvent], List[KalshiMarket]]:
+        """获取 NBA 事件和市场"""
+        try:
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+            
+            path = "/trade-api/v2/events"
+            url = f"{self.base_url}/events"
+            params = {
+                "series_ticker": "KXNBAGAME",
+                "status": "open",
+                "limit": 200,
+                "with_nested_markets": "true",
+            }
+            
+            headers = self._get_headers("GET", path)
+            
+            async with self.session.get(url, params=params, headers=headers) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    logger.error(f"获取 Kalshi NBA 事件失败: {resp.status} - {error_text}")
+                    return [], []
+                
+                data = await resp.json()
+                api_events = data.get("events", [])
+            
+            if not api_events:
+                logger.warning("未找到任何 Kalshi NBA 事件")
+                return [], []
+            
+            logger.info(f"📥 获取到 {len(api_events)} 个 Kalshi NBA 事件")
+            
+            events = []
+            markets = []
+            
+            for api_event in api_events:
+                event_ticker = api_event.get("event_ticker", "")
+                event_markets = api_event.get("markets", [])
+                
+                if not event_markets:
+                    continue
+                
+                # 从 event_ticker 提取球队和日期
+                teams = self._extract_teams_from_ticker(event_ticker)
+                game_date = self._extract_game_date(event_ticker)
+                
+                if not teams:
+                    logger.warning(f"无法从 ticker 提取队伍: {event_ticker}")
+                    continue
+                
+                team_a, team_b = teams
+                # 按字母序排序
+                if team_a > team_b:
+                    team_a, team_b = team_b, team_a
+                event_name = f"{team_a}-{team_b}"
+                
+                # 创建事件
+                event = KalshiEvent(
+                    event_id=event_ticker,
+                    platform=Platform.KALSHI,
+                    name=event_name,
+                    team_a=team_a,
+                    team_b=team_b,
+                    start_time=game_date,
+                    category="NBA",
+                    markets=[]
+                )
+                
+                # 处理该事件的市场
+                for market_data in event_markets:
+                    if market_data.get("status") != "active":
+                        continue
+                    
+                    ticker = market_data.get("ticker", "")
+                    
+                    # 获取价格 - 使用 Ask 价格（买入价格）以与 WebSocket 保持一致
+                    # 套利需要买入，所以必须使用 Ask 价格
+                    yes_bid = market_data.get("yes_bid", 0)
+                    yes_ask = market_data.get("yes_ask", 0)
+                    # 优先使用 ask 价格，没有则用 bid，都没有用默认值
+                    yes_price = (yes_ask / 100.0) if yes_ask else ((yes_bid / 100.0) if yes_bid else 0.5)
+                    
+                    no_bid = market_data.get("no_bid", 0)
+                    no_ask = market_data.get("no_ask", 0)
+                    no_price = (no_ask / 100.0) if no_ask else ((no_bid / 100.0) if no_bid else (1.0 - yes_price))
+                    
+                    # 从 ticker 提取预测的队伍
+                    team_name = self._extract_team_from_ticker(ticker)
+                    if not team_name:
+                        continue
+                    
+                    # 确定对手队伍
+                    opponent = team_b if team_name.upper() == team_a.upper() else team_a
+                    
+                    market = KalshiMarket(
+                        market_id=ticker,
+                        event_id=event_ticker,
+                        event_name=event_name,
+                        team_name=team_name.upper(),
+                        opponent_name=opponent,
+                        yes_price=yes_price,
+                        no_price=no_price,
+                        start_time=game_date,
+                        volume=market_data.get("volume", 0),
+                        liquidity=market_data.get("open_interest", 0)
+                    )
+                    markets.append(market)
+                    event.markets.append(market)
+                
+                if event.markets:
+                    events.append(event)
+            
+            logger.info(f"✅ Kalshi: {len(events)} 个事件, {len(markets)} 个市场")
+            return events, markets
+            
+        except Exception as e:
+            logger.error(f"❌ 获取 Kalshi 事件异常: {e}")
+            import traceback
+            traceback.print_exc()
+            return [], []
+    
+    def _extract_teams_from_ticker(self, event_ticker: str) -> Optional[tuple]:
+        """从 event_ticker 提取球队信息"""
+        try:
+            parts = event_ticker.split('-')
+            if len(parts) < 2:
+                return None
+            
+            last_part = parts[-1]
+            if len(last_part) <= 7:
+                return None
+            
+            teams_str = last_part[7:]
+            
+            if len(teams_str) == 6:
+                return (teams_str[:3].upper(), teams_str[3:].upper())
+            elif len(teams_str) == 7:
+                return (teams_str[:3].upper(), teams_str[3:].upper())
+            elif len(teams_str) >= 4:
+                mid = len(teams_str) // 2
+                return (teams_str[:mid].upper(), teams_str[mid:].upper())
+            
+            return None
+        except:
+            return None
+    
+    def _extract_team_from_ticker(self, ticker: str) -> Optional[str]:
+        """从 ticker 提取预测队伍"""
+        try:
+            parts = ticker.split('-')
+            if len(parts) < 3:
+                return None
+            return parts[-1].upper()
+        except:
+            return None
+    
+    def _extract_game_date(self, event_ticker: str) -> Optional[datetime]:
+        """从 event_ticker 提取比赛日期"""
+        try:
+            parts = event_ticker.split('-')
+            if len(parts) < 2:
+                return None
+            
+            date_part = parts[1]
+            if len(date_part) < 7:
+                return None
+            
+            date_str = date_part[:7]
+            year_str = date_str[:2]
+            month_str = date_str[2:5]
+            day_str = date_str[5:7]
+            
+            year = 2000 + int(year_str)
+            
+            month_map = {
+                "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4,
+                "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8,
+                "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12
+            }
+            month = month_map.get(month_str.upper())
+            if not month:
+                return None
+            
+            day = int(day_str)
+            return datetime(year, month, day, 12, 0, 0)
+        except:
+            return None
+    
+    # ==================== WebSocket 部分 ====================
+    
+    async def connect_websocket(
+        self,
+        market_tickers: List[str],
+        on_price_update: Callable[[PriceUpdate], None],
+        on_log: Callable[[str], None] = None
+    ):
+        """连接 WebSocket 并订阅市场"""
+        if not market_tickers:
+            logger.warning("⚠️ Kalshi: 没有市场需要订阅")
+            return
+        
+        def log(msg: str):
+            logger.info(msg)
+            if on_log:
+                on_log(msg)
+        
+        log(f"🔌 [Kalshi] 开始连接 WebSocket，订阅 {len(market_tickers)} 个市场")
+        
+        retry_count = 0
+        max_retries = 20
+        retry_delay = 1
+        
+        while retry_count < max_retries:
+            try:
+                # 每次重连时重新生成认证签名（防止签名过期）
+                timestamp_ms = int(time.time() * 1000)
+                path = "/trade-api/ws/v2"
+                signature = self._sign_request(timestamp_ms, "GET", path)
+                
+                headers = {
+                    "KALSHI-ACCESS-KEY": self.config.api_key,
+                    "KALSHI-ACCESS-SIGNATURE": signature,
+                    "KALSHI-ACCESS-TIMESTAMP": str(timestamp_ms),
+                }
+                
+                log(f"🔑 [Kalshi] 生成新的认证签名 (尝试 {retry_count + 1}/{max_retries})")
+                
+                async with websockets.connect(self.ws_url, extra_headers=headers) as ws:
+                    self.ws_connection = ws
+                    self.ws_connected = True
+                    log("✅ [Kalshi] WebSocket 连接成功")
+                    
+                    # 订阅市场
+                    for idx, ticker in enumerate(market_tickers):
+                        subscribe_msg = {
+                            "id": idx + 1,
+                            "cmd": "subscribe",
+                            "params": {
+                                "channels": ["orderbook_delta"],
+                                "market_ticker": ticker
+                            }
+                        }
+                        await ws.send(json.dumps(subscribe_msg))
+                    
+                    log(f"✅ [Kalshi] 已订阅 {len(market_tickers)} 个市场")
+                    
+                    # 接收消息 - 使用 wait_for 支持取消
+                    msg_count = 0
+                    while True:
+                        try:
+                            message = await asyncio.wait_for(ws.recv(), timeout=30.0)
+                            msg_count += 1
+                            if msg_count % 100 == 0:
+                                log(f"📊 [Kalshi] 已接收 {msg_count} 条消息")
+                            
+                            update = self._parse_ws_message(message)
+                            if update:
+                                on_price_update(update)
+                        except asyncio.TimeoutError:
+                            # 超时但继续等待
+                            continue
+                    
+            except asyncio.CancelledError:
+                log("🛑 [Kalshi] WebSocket 任务被取消")
+                self.ws_connected = False
+                raise  # 重新抛出以正确退出
+            except websockets.ConnectionClosed as e:
+                log(f"⚠️ [Kalshi] WebSocket 连接关闭: {e.code} - {e.reason}")
+            except websockets.InvalidStatusCode as e:
+                log(f"❌ [Kalshi] WebSocket 状态码错误: {e.status_code}")
+                import traceback
+                logger.error(f"详细错误:\n{traceback.format_exc()}")
+            except Exception as e:
+                log(f"❌ [Kalshi] WebSocket 错误: {type(e).__name__}: {e}")
+                import traceback
+                logger.error(f"详细错误:\n{traceback.format_exc()}")
+            
+            self.ws_connected = False
+            retry_count += 1
+            
+            if retry_count < max_retries:
+                log(f"🔄 [Kalshi] {retry_delay}s 后重连 (尝试 {retry_count}/{max_retries})")
+                try:
+                    await asyncio.sleep(retry_delay)
+                except asyncio.CancelledError:
+                    log("🛑 [Kalshi] 重连等待被取消")
+                    raise
+                retry_delay = min(retry_delay * 2, 60)
+        
+        log("⚠️ [Kalshi] 达到最大重试次数，停止重连")
+    
+    _ws_msg_log_count = 0
+    _ws_msg_file_count = 0  # 文件中已保存的消息数
+    
+    def _parse_ws_message(self, text: str) -> Optional[PriceUpdate]:
+        """解析 WebSocket 消息"""
+        try:
+            data = json.loads(text)
+            msg_type = data.get("type", "")
+            
+            # 保存 orderbook 消息到文件（只保存前 10 条）
+            if msg_type in ["orderbook_delta", "orderbook_snapshot"] and KalshiClient._ws_msg_file_count < 10:
+                msg = data.get("msg", {})
+                market_ticker = msg.get("market_ticker", "")
+                KalshiClient._ws_msg_file_count += 1
+                with open("/Users/meloner/rustcode/tiyutaoli/kalshi_ws_raw_messages.txt", "a") as f:
+                    f.write(f"\n{'='*70}\n")
+                    f.write(f"消息 #{KalshiClient._ws_msg_file_count} | 类型: {msg_type} | 市场: {market_ticker}\n")
+                    f.write(f"{'='*70}\n")
+                    f.write(json.dumps(data, indent=2))
+                    f.write("\n")
+            
+            # 记录前几条消息的原始格式
+            KalshiClient._ws_msg_log_count += 1
+            if KalshiClient._ws_msg_log_count <= 3:
+                logger.info(f"🔍 [Kalshi] 原始消息 #{KalshiClient._ws_msg_log_count}: type={msg_type}")
+                logger.info(f"   keys: {list(data.keys())}")
+                if "msg" in data:
+                    logger.info(f"   msg keys: {list(data['msg'].keys())}")
+            
+            if msg_type in ["orderbook_delta", "orderbook_snapshot"]:
+                msg = data.get("msg", {})
+                market_ticker = msg.get("market_ticker", "")
+                
+                if not market_ticker:
+                    return None
+                
+                # 解析订单簿数据
+                # 格式: [[price_cents, quantity], ...] - 按价格升序排列
+                # yes_data: Yes 合约的买单 (Bid)
+                # no_data: No 合约的买单 (Bid)
+                yes_data = msg.get("yes", [])
+                no_data = msg.get("no", [])
+                
+                # 提取 Best Bid（最高买价 = 列表最后一个）
+                # Kalshi 价格是美分，需要除以 100
+                yes_bid = None
+                no_bid = None
+                
+                if yes_data and len(yes_data) > 0:
+                    yes_bid = yes_data[-1][0] / 100.0
+                
+                if no_data and len(no_data) > 0:
+                    no_bid = no_data[-1][0] / 100.0
+                
+                # 计算 Ask 价格（关键！）
+                # 在二元期权市场中：Yes Ask ≈ 1 - No Bid, No Ask ≈ 1 - Yes Bid
+                # 这是因为：卖出 Yes ≈ 买入 No，卖出 No ≈ 买入 Yes
+                yes_ask = (1.0 - no_bid) if no_bid is not None else None
+                no_ask = (1.0 - yes_bid) if yes_bid is not None else None
+                
+                if KalshiClient._ws_msg_log_count <= 5:
+                    logger.info(f"   parsed: yes_bid={yes_bid}, yes_ask={yes_ask}, no_bid={no_bid}, no_ask={no_ask}")
+                
+                return PriceUpdate(
+                    platform=Platform.KALSHI,
+                    market_id=market_ticker,
+                    yes_bid=yes_bid,
+                    yes_ask=yes_ask,  # 正确的 Ask 价格
+                    no_bid=no_bid,
+                    no_ask=no_ask,    # 正确的 Ask 价格
+                    timestamp=datetime.now()
+                )
+        except Exception as e:
+            logger.debug(f"解析 Kalshi WS 消息失败: {e}")
+        
+        return None
