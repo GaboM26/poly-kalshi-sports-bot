@@ -1,0 +1,181 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-tertiary: #334155;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --accent-green: #10b981;
+  --accent-red: #ef4444;
+  --accent-blue: #3b82f6;
+  --accent-purple: #8b5cf6;
+  --accent-yellow: #f59e0b;
+  --border-color: #334155;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* 表格样式 */
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th, td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+th {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+tbody tr {
+  transition: background 0.15s;
+}
+
+tbody tr:hover {
+  background: var(--bg-secondary);
+}
+
+/* 脉冲动画 */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* 数字字体 */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 利润颜色 */
+.profit-high { color: var(--accent-green); }
+.profit-medium { color: var(--accent-yellow); }
+.profit-low { color: var(--text-secondary); }
+
+/* 状态指示器 */
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-connected { background: var(--accent-green); }
+.status-disconnected { background: var(--accent-red); }
+
+/* 卡片样式 */
+.card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+
+/* 价格标签 */
+.price-tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  display: inline-block;
+  transition: all 0.3s ease;
+}
+
+.price-kalshi { background: rgba(59, 130, 246, 0.15); }
+.price-poly { background: rgba(139, 92, 246, 0.15); }
+
+/* 实时更新闪烁动画 */
+@keyframes flash-update {
+  0% { 
+    background: rgba(16, 185, 129, 0.3);
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+  }
+  100% { 
+    background: transparent;
+    box-shadow: none;
+  }
+}
+
+.flash-update {
+  animation: flash-update 0.5s ease-out;
+}
+
+/* 价格更新动画 */
+@keyframes price-flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.price-updating {
+  animation: price-flash 0.3s ease-in-out;
+}
+
+/* Live 指示器呼吸效果 */
+@keyframes glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 3px var(--accent-green);
+  }
+  50% {
+    box-shadow: 0 0 8px var(--accent-green), 0 0 12px var(--accent-green);
+  }
+}
+
+.live-glow {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+/* 表格行渐变过渡 */
+tbody tr {
+  transition: all 0.2s ease;
+}
+
+tbody tr:hover {
+  background: var(--bg-secondary);
+  transform: translateX(2px);
+}

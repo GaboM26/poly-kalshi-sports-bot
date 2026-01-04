@@ -1,0 +1,233 @@
+快速启动指南
+============
+
+预测市场套利扫描器 - Python 版本
+
+第一次使用
+----------
+
+1. 进入目录:
+   cd python-backend
+
+2. 创建虚拟环境:
+   python3 -m venv venv
+
+3. 激活虚拟环境:
+   source venv/bin/activate
+
+4. 安装依赖:
+   pip install -r requirements.txt
+
+5. 测试功能:
+   python test_server.py
+
+6. 启动服务器:
+   python main.py
+
+
+后续使用
+--------
+
+使用启动脚本（推荐）:
+   ./start_server.sh
+
+或手动启动:
+   source venv/bin/activate
+   python main.py
+
+
+访问服务
+--------
+
+API 主页:
+   http://localhost:3000
+
+系统统计:
+   http://localhost:3000/api/stats
+
+套利机会:
+   http://localhost:3000/api/opportunities
+
+WebSocket:
+   ws://localhost:3000/ws
+
+
+配合前端使用
+------------
+
+1. 启动后端:
+   cd python-backend
+   ./start_server.sh
+
+2. 新开终端，启动前端:
+   cd web
+   npm run dev
+
+3. 访问前端:
+   http://localhost:5173
+
+
+常用命令
+--------
+
+# 测试功能
+python test_server.py
+
+# 启动服务器
+python main.py
+
+# 启动服务器（带自动重载）
+uvicorn main:app --reload --host 0.0.0.0 --port 3000
+
+# 查看日志
+python main.py 2>&1 | tee server.log
+
+# 后台运行
+nohup python main.py > server.log 2>&1 &
+
+
+检查状态
+--------
+
+# 检查服务器是否运行
+curl http://localhost:3000
+
+# 检查统计信息
+curl http://localhost:3000/api/stats
+
+# 检查套利机会
+curl http://localhost:3000/api/opportunities
+
+
+故障排除
+--------
+
+问题: 端口被占用
+解决: 
+   lsof -i :3000
+   kill -9 <PID>
+
+问题: 依赖安装失败
+解决:
+   pip install --upgrade pip
+   pip install -r requirements.txt
+
+问题: 虚拟环境激活失败
+解决:
+   deactivate
+   rm -rf venv
+   python3 -m venv venv
+   source venv/bin/activate
+
+问题: Kalshi 连接失败
+解决:
+   检查 ../config.toml 中的 API 密钥
+
+问题: WebSocket 连接失败
+解决:
+   检查防火墙设置
+   确认服务器正在运行
+
+
+项目结构
+--------
+
+python-backend/
+├── main.py              # 🚀 主服务器入口
+├── config.py            # ⚙️  配置管理
+├── models.py            # 📦 数据模型
+├── kalshi_client.py     # 🔌 Kalshi 客户端
+├── polymarket_client.py # 🔌 Polymarket 客户端
+├── matcher.py           # 🎯 赛事匹配
+├── calculator.py        # 💰 套利计算
+├── test_server.py       # 🧪 测试脚本
+├── start_server.sh      # 🎬 启动脚本
+└── requirements.txt     # 📋 依赖列表
+
+
+核心功能
+--------
+
+✅ 自动获取 Kalshi 和 Polymarket 市场数据
+✅ 智能匹配两个平台的赛事
+✅ 计算套利机会和预期利润
+✅ WebSocket 实时推送更新
+✅ RESTful API 接口
+✅ 每 5 秒自动扫描市场
+
+
+配置选项
+--------
+
+编辑 ../config.toml:
+
+[settings]
+refresh_interval = 5        # 扫描间隔（秒）
+min_profit_margin = 1.0     # 最小利润率（%）
+default_bet_amount = 100.0  # 默认下注金额（$）
+
+
+开发模式
+--------
+
+启动开发服务器（自动重载）:
+   uvicorn main:app --reload --port 3000
+
+查看详细日志:
+   修改 main.py 中的日志级别为 DEBUG
+
+
+生产部署
+--------
+
+使用 gunicorn:
+   pip install gunicorn
+   gunicorn main:app -w 4 -k uvicorn.workers.UvicornWorker
+
+使用 systemd:
+   创建 /etc/systemd/system/arbitrage.service
+   systemctl start arbitrage
+   systemctl enable arbitrage
+
+
+性能优化
+--------
+
+1. 调整扫描间隔
+2. 使用连接池
+3. 启用缓存
+4. 增加 worker 数量
+
+
+安全建议
+--------
+
+1. 不要提交 config.toml 到 git
+2. 使用环境变量存储敏感信息
+3. 配置 CORS 白名单
+4. 添加 API 认证
+5. 使用 HTTPS
+
+
+更多信息
+--------
+
+详细文档: PROJECT_OVERVIEW.txt
+使用说明: USAGE.txt
+迁移指南: ../PYTHON_MIGRATION.txt
+
+
+获取帮助
+--------
+
+查看日志:
+   服务器会输出详细的日志信息
+
+运行测试:
+   python test_server.py
+
+检查配置:
+   python -c "from config import Config; c = Config.from_file('../config.toml'); print(c)"
+
+
+祝使用愉快！🎉

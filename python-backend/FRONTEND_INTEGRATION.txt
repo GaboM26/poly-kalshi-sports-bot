@@ -1,0 +1,163 @@
+前端集成说明
+==============
+
+问题修复
+--------
+
+✅ 已修复的问题:
+1. Kalshi API 认证方式（使用 RSA-PSS 签名）
+2. Kalshi series_ticker 使用正确的值（KXNBAGAME）
+3. 球队名称映射（缩写 ↔ 全名）
+4. WebSocket 消息格式匹配前端期望
+5. 优雅关闭（Ctrl+C）
+
+当前状态
+--------
+
+后端功能:
+- ✅ Kalshi: 42 个市场
+- ✅ Polymarket: 50 个市场
+- ✅ 匹配: 35 个赛事
+- ✅ 套利机会: 130 个
+
+WebSocket 消息格式:
+- ✅ connected: 连接成功消息
+- ✅ scan_completed: 扫描完成统计
+- ✅ opportunity: 套利机会详情
+
+启动步骤
+--------
+
+1. 启动后端:
+   cd python-backend
+   source venv/bin/activate
+   python main.py
+
+2. 测试 WebSocket:
+   python test_websocket.py
+
+3. 启动前端:
+   cd web
+   npm run dev
+
+4. 访问应用:
+   http://localhost:5173
+
+WebSocket 消息示例
+------------------
+
+连接消息:
+{
+  "type": "connected",
+  "message": "已连接到服务器"
+}
+
+扫描完成:
+{
+  "type": "scan_completed",
+  "kalshi_count": 42,
+  "polymarket_count": 50,
+  "matched_count": 35,
+  "opportunities_count": 130
+}
+
+套利机会:
+{
+  "type": "opportunity",
+  "data": {
+    "kalshi_market": {
+      "platform": "Kalshi",
+      "event_id": "KXNBAGAME-26JAN05UTAPOR-UTA",
+      "event_name": "UTA-POR",
+      "yes_price": 0.28,
+      "no_price": 0.71,
+      "volume": 1000,
+      "team_name": "UTA",
+      "category": "NBA",
+      "end_time": "2026-01-05T12:00:00"
+    },
+    "polymarket_market": {
+      "platform": "Polymarket",
+      "event_id": "1038494",
+      "event_name": "Trail Blazers-Pelicans",
+      "yes_price": 0.50,
+      "no_price": 0.50,
+      "volume": 500,
+      "team_name": "Trail Blazers",
+      "category": "NBA",
+      "end_time": "2026-01-05T00:00:00"
+    },
+    "arbitrage_type": "KalshiYesPolymarketNo",
+    "profit_margin": 5.2,
+    "optimal_bet": [50.0, 50.0],
+    "expected_profit": 5.20,
+    "match_confidence": 0.9
+  }
+}
+
+前端显示
+--------
+
+前端会显示:
+1. 头部统计: Kalshi/Polymarket 市场数、匹配数、机会数
+2. 连接状态: 绿色 ● 已连接 / 红色 ○ 断开
+3. 套利机会列表: 按利润率排序
+4. 日志面板: 实时日志输出
+
+故障排除
+--------
+
+问题: 前端显示 "○ 断开"
+解决:
+1. 检查后端是否运行: curl http://localhost:3000
+2. 检查 WebSocket: python test_websocket.py
+3. 查看浏览器控制台错误
+
+问题: 前端没有数据
+解决:
+1. 等待 5 秒（扫描间隔）
+2. 检查后端日志
+3. 测试 API: curl http://localhost:3000/api/stats
+
+问题: 套利机会不合理
+解决:
+1. 检查价格数据
+2. 调整 min_profit_margin
+3. 查看匹配置信度
+
+性能优化
+--------
+
+如果需要更快的更新:
+1. 编辑 config.toml
+2. 修改 refresh_interval = 3  # 改为 3 秒
+3. 重启后端
+
+如果需要更多机会:
+1. 编辑 config.toml
+2. 修改 min_profit_margin = 0.5  # 降低阈值
+3. 重启后端
+
+开发调试
+--------
+
+查看详细日志:
+- 后端: 终端输出
+- 前端: 浏览器控制台 (F12)
+- WebSocket: python test_websocket.py
+
+测试 API:
+- 统计: curl http://localhost:3000/api/stats
+- 机会: curl http://localhost:3000/api/opportunities
+
+下一步改进
+----------
+
+可选的改进:
+1. 优化套利计算逻辑
+2. 添加更多平台支持
+3. 实现自动交易
+4. 添加历史数据记录
+5. 改进匹配算法
+
+当前版本已经可以正常使用，所有核心功能都已实现！

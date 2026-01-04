@@ -1,0 +1,152 @@
+预测市场套利扫描器 - Python 后端
+====================================
+
+项目结构:
+---------
+python-backend/
+├── main.py              # 主服务器入口
+├── config.py            # 配置管理
+├── models.py            # 数据模型
+├── kalshi_client.py     # Kalshi API 客户端
+├── polymarket_client.py # Polymarket API 客户端
+├── matcher.py           # 赛事匹配引擎
+├── calculator.py        # 套利计算引擎
+├── requirements.txt     # Python 依赖
+├── run.sh              # 启动脚本
+├── test_server.py      # 测试脚本
+└── .gitignore          # Git 忽略文件
+
+
+快速开始:
+---------
+
+1. 安装依赖:
+   cd python-backend
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+
+2. 测试功能:
+   python test_server.py
+
+3. 启动服务器:
+   python main.py
+   
+   或使用启动脚本:
+   ./run.sh
+
+4. 访问 API:
+   - 主页: http://localhost:3000
+   - 统计信息: http://localhost:3000/api/stats
+   - 套利机会: http://localhost:3000/api/opportunities
+   - WebSocket: ws://localhost:3000/ws
+
+
+主要功能:
+---------
+
+1. Kalshi API 集成
+   - 自动登录
+   - 获取 NBA 市场数据
+   - 实时价格更新
+
+2. Polymarket API 集成
+   - 获取 NBA 市场数据
+   - 球队名称映射
+   - 订单簿价格查询
+
+3. 赛事匹配
+   - 智能球队名称匹配
+   - 支持别名和缩写
+   - 相似度计算
+
+4. 套利计算
+   - 自动发现套利机会
+   - 计算最优下注金额
+   - 利润率分析
+
+5. WebSocket 实时推送
+   - 实时市场更新
+   - 套利机会通知
+   - 系统统计信息
+
+
+配置说明:
+---------
+
+配置文件位于: ../config.toml
+
+主要配置项:
+- kalshi.api_key: Kalshi API 密钥
+- kalshi.api_secret: Kalshi API 私钥
+- polymarket.base_url: Polymarket API 地址
+- settings.refresh_interval: 刷新间隔（秒）
+- settings.min_profit_margin: 最小利润率（%）
+- settings.default_bet_amount: 默认下注金额（$）
+
+
+API 端点:
+---------
+
+GET /
+    返回 API 基本信息
+
+GET /api/stats
+    返回系统统计信息
+    响应: {
+        "total_kalshi_markets": int,
+        "total_polymarket_markets": int,
+        "matched_events": int,
+        "arbitrage_opportunities": int,
+        "last_update": datetime
+    }
+
+GET /api/opportunities
+    返回所有套利机会列表
+    响应: [ArbitrageOpportunity, ...]
+
+WebSocket /ws
+    实时数据推送
+    消息格式: {
+        "type": "update",
+        "stats": {...},
+        "opportunities": [...]
+    }
+
+
+开发说明:
+---------
+
+1. 日志级别: INFO
+2. 默认端口: 3000
+3. 支持热重载: uvicorn --reload
+4. CORS: 允许所有来源（生产环境需修改）
+
+
+故障排除:
+---------
+
+1. 如果 Kalshi 登录失败:
+   - 检查 config.toml 中的 API 密钥
+   - 确认网络连接正常
+
+2. 如果没有发现套利机会:
+   - 检查 min_profit_margin 设置
+   - 确认市场数据已正常获取
+
+3. 如果 WebSocket 连接失败:
+   - 检查防火墙设置
+   - 确认端口 3000 未被占用
+
+
+与前端集成:
+-----------
+
+前端项目位于: ../web/
+
+启动前端:
+cd ../web
+npm install
+npm run dev
+
+前端会自动连接到后端的 WebSocket 端点。

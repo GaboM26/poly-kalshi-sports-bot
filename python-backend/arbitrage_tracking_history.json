@@ -1,0 +1,195 @@
+{
+  "last_updated": "2026-01-04T16:21:42.955575",
+  "total_records": 3,
+  "completed": [
+    {
+      "event_name": "DEN-PHI",
+      "team_name": "PHI",
+      "kalshi_market_id": "KXNBAGAME-26JAN05DENPHI-PHI",
+      "polymarket_market_id": "0x487afac93b298c8dd3ed4cc7849c886dc310ba282fc79e0ffe7172ed0aad1356",
+      "start_time": "2026-01-04T16:16:26.865225",
+      "end_time": "2026-01-04T16:16:38.319874",
+      "duration_seconds": 11.454649,
+      "max_profit_margin": 4.166666666666674,
+      "max_profit_time": "2026-01-04T16:16:26.865225",
+      "profit_history": [
+        {
+          "time": "2026-01-04T16:16:26.865225",
+          "profit_margin": 4.166666666666674,
+          "kalshi_price": 0.675,
+          "polymarket_price": 0.285
+        },
+        {
+          "time": "2026-01-04T16:16:27.865679",
+          "profit_margin": 4.166666666666674,
+          "kalshi_price": 0.675,
+          "polymarket_price": 0.285
+        },
+        {
+          "time": "2026-01-04T16:16:28.868080",
+          "profit_margin": 4.166666666666674,
+          "kalshi_price": 0.675,
+          "polymarket_price": 0.285
+        },
+        {
+          "time": "2026-01-04T16:16:29.870247",
+          "profit_margin": 4.166666666666674,
+          "kalshi_price": 0.675,
+          "polymarket_price": 0.285
+        },
+        {
+          "time": "2026-01-04T16:16:30.871345",
+          "profit_margin": 4.166666666666674,
+          "kalshi_price": 0.675,
+          "polymarket_price": 0.285
+        },
+        {
+          "time": "2026-01-04T16:16:31.874096",
+          "profit_margin": 4.166666666666674,
+          "kalshi_price": 0.675,
+          "polymarket_price": 0.285
+        },
+        {
+          "time": "2026-01-04T16:16:32.875722",
+          "profit_margin": 4.166666666666674,
+          "kalshi_price": 0.675,
+          "polymarket_price": 0.285
+        },
+        {
+          "time": "2026-01-04T16:16:33.881284",
+          "profit_margin": 4.166666666666674,
+          "kalshi_price": 0.675,
+          "polymarket_price": 0.285
+        },
+        {
+          "time": "2026-01-04T16:16:34.885283",
+          "profit_margin": 4.166666666666674,
+          "kalshi_price": 0.675,
+          "polymarket_price": 0.285
+        },
+        {
+          "time": "2026-01-04T16:16:35.889374",
+          "profit_margin": 4.166666666666674,
+          "kalshi_price": 0.675,
+          "polymarket_price": 0.285
+        },
+        {
+          "time": "2026-01-04T16:16:36.891784",
+          "profit_margin": 4.166666666666674,
+          "kalshi_price": 0.675,
+          "polymarket_price": 0.285
+        },
+        {
+          "time": "2026-01-04T16:16:37.896697",
+          "profit_margin": 4.166666666666674,
+          "kalshi_price": 0.675,
+          "polymarket_price": 0.285
+        }
+      ]
+    },
+    {
+      "event_name": "HOU-PHX",
+      "team_name": "PHX",
+      "kalshi_market_id": "KXNBAGAME-26JAN05PHXHOU-PHX",
+      "polymarket_market_id": "0x9657ce6154f31ace3bb8f5472981b4d679566245704f2d53a5c110ed71e76c8a",
+      "start_time": "2026-01-04T16:16:26.865301",
+      "end_time": "2026-01-04T16:16:38.322796",
+      "duration_seconds": 11.457495,
+      "max_profit_margin": 3.626943005181338,
+      "max_profit_time": "2026-01-04T16:16:26.865301",
+      "profit_history": [
+        {
+          "time": "2026-01-04T16:16:26.865301",
+          "profit_margin": 3.626943005181338,
+          "kalshi_price": 0.29,
+          "polymarket_price": 0.675
+        },
+        {
+          "time": "2026-01-04T16:16:27.865701",
+          "profit_margin": 3.626943005181338,
+          "kalshi_price": 0.29,
+          "polymarket_price": 0.675
+        },
+        {
+          "time": "2026-01-04T16:16:28.868116",
+          "profit_margin": 3.626943005181338,
+          "kalshi_price": 0.29,
+          "polymarket_price": 0.675
+        },
+        {
+          "time": "2026-01-04T16:16:29.870269",
+          "profit_margin": 3.626943005181338,
+          "kalshi_price": 0.29,
+          "polymarket_price": 0.675
+        },
+        {
+          "time": "2026-01-04T16:16:30.871370",
+          "profit_margin": 3.626943005181338,
+          "kalshi_price": 0.29,
+          "polymarket_price": 0.675
+        },
+        {
+          "time": "2026-01-04T16:16:31.874116",
+          "profit_margin": 3.626943005181338,
+          "kalshi_price": 0.29,
+          "polymarket_price": 0.675
+        },
+        {
+          "time": "2026-01-04T16:16:32.875806",
+          "profit_margin": 3.626943005181338,
+          "kalshi_price": 0.29,
+          "polymarket_price": 0.675
+        },
+        {
+          "time": "2026-01-04T16:16:33.881347",
+          "profit_margin": 3.626943005181338,
+          "kalshi_price": 0.29,
+          "polymarket_price": 0.675
+        },
+        {
+          "time": "2026-01-04T16:16:34.885379",
+          "profit_margin": 3.626943005181338,
+          "kalshi_price": 0.29,
+          "polymarket_price": 0.675
+        },
+        {
+          "time": "2026-01-04T16:16:35.889423",
+          "profit_margin": 3.626943005181338,
+          "kalshi_price": 0.29,
+          "polymarket_price": 0.675
+        },
+        {
+          "time": "2026-01-04T16:16:36.891908",
+          "profit_margin": 3.626943005181338,
+          "kalshi_price": 0.29,
+          "polymarket_price": 0.675
+        },
+        {
+          "time": "2026-01-04T16:16:37.896796",
+          "profit_margin": 3.626943005181338,
+          "kalshi_price": 0.29,
+          "polymarket_price": 0.675
+        }
+      ]
+    },
+    {
+      "event_name": "DEN-PHI",
+      "team_name": "PHI",
+      "kalshi_market_id": "KXNBAGAME-26JAN05DENPHI-PHI",
+      "polymarket_market_id": "0x487afac93b298c8dd3ed4cc7849c886dc310ba282fc79e0ffe7172ed0aad1356",
+      "start_time": "2026-01-04T16:21:40.773433",
+      "end_time": "2026-01-04T16:21:42.955395",
+      "duration_seconds": 2.181962,
+      "max_profit_margin": 4.166666666666674,
+      "max_profit_time": "2026-01-04T16:21:40.773433",
+      "profit_history": [
+        {
+          "time": "2026-01-04T16:21:40.773433",
+          "profit_margin": 4.166666666666674,
+          "kalshi_price": 0.675,
+          "polymarket_price": 0.285
+        }
+      ]
+    }
+  ]
+}
