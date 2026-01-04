@@ -44,7 +44,7 @@ async def initialize_system():
     logger.info("=" * 60)
     
     # 1. 加载配置
-    config = Config.from_file("../config.toml")
+    config = Config.from_file("config.toml")
     config.validate_config()
     logger.info("✅ 配置加载成功")
     
@@ -149,11 +149,15 @@ async def broadcast_all_opportunities():
             from app.api.websocket import convert_opportunity_to_frontend
             
             # 广播完整列表
+            timestamp = None
+            if arbitrage_service and arbitrage_service.stats.last_update:
+                timestamp = arbitrage_service.stats.last_update.isoformat()
+            
             message = {
                 "type": "opportunities_list",
                 "data": [convert_opportunity_to_frontend(opp) for opp in latest_opportunities[:50]],
                 "count": len(latest_opportunities),
-                "timestamp": arbitrage_service.stats.last_update.isoformat() if arbitrage_service else None
+                "timestamp": timestamp
             }
             
             await broadcast_message(message)

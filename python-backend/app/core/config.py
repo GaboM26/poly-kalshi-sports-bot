@@ -33,9 +33,15 @@ class Config(BaseModel):
     settings: SettingsConfig
 
     @classmethod
-    def from_file(cls, config_path: str = "../config.toml") -> "Config":
+    def from_file(cls, config_path: str = "config.toml") -> "Config":
         """从 TOML 文件加载配置"""
-        path = Path(__file__).parent / config_path
+        # 从项目根目录（python-backend）查找配置文件
+        if Path(config_path).is_absolute():
+            path = Path(config_path)
+        else:
+            # 从当前文件向上两级到 python-backend 目录
+            path = Path(__file__).parent.parent.parent / config_path
+        
         with open(path, 'r') as f:
             data = toml.load(f)
         return cls(**data)
