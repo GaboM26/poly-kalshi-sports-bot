@@ -164,6 +164,85 @@ class ArbitrageService:
         """
         return self.matcher.get_subscription_info(self.matched_markets)
     
+    async def scan_for_new_markets(self) -> Tuple[List[MatchedMarket], List[str], List[str], dict]:
+        """扫描新市场，返回增量数据
+        
+        定时调用此方法检测新市场。只返回新增的匹配市场及其订阅信息，
+        用于热订阅到现有 WebSocket 连接。
+        
+        Returns:
+            (new_matched_markets, new_kalshi_tickers, new_poly_token_ids, new_market_lookup) 元组
+            如果没有新市场，返回空列表和空字典
+        """
+        logger.info("=" * 60)
+        logger.info("🔄 开始扫描新市场...")
+        logger.info("=" * 60)
+        
+        # 1. 保存旧的已匹配市场 ID 集合
+        old_matched_ids = set()
+        for mm in self.matched_markets:
+            # 使用 kalshi_market_id + team_name 作为唯一标识
+            key = f"{mm.kalshi_market.market_id}_{mm.team_name}"
+            old_matched_ids.add(key)
+        
+        old_count = len(self.matched_markets)
+        old_kalshi_count = len(self.kalshi_markets)
+        old_poly_count = len(self.polymarket_markets)
+        logger.info(f"   扫描前状态:")
+        logger.info(f"   - Kalshi: {old_kalshi_count} 个市场")
+        logger.info(f"   - Polymarket: {old_poly_count} 个市场")
+        logger.info(f"   - 已匹配: {old_count} 个市场对")
+        
+        # 2. 重新获取市场数据
+        try:
+            await self.fetch_market_data()
+            new_kalshi_count = len(self.kalshi_markets)
+            new_poly_count = len(self.polymarket_markets)
+            
+            kalshi_diff = new_kalshi_count - old_kalshi_count
+            poly_diff = new_poly_count - old_poly_count
+            
+            logger.info(f"   扫描后状态:")
+            logger.info(f"   - Kalshi: {new_kalshi_count} 个市场 ({'+' if kalshi_diff >= 0 else ''}{kalshi_diff})")
+            logger.info(f"   - Polymarket: {new_poly_count} 个市场 ({'+' if poly_diff >= 0 else ''}{poly_diff})")
+        except Exception as e:
+            logger.error(f"❌ 获取市场数据失败: {e}")
+            return [], [], [], {}
+        
+        # 3. 重新执行匹配
+        try:
+            await self.match_markets()
+        except Exception as e:
+            logger.error(f"❌ 匹配市场失败: {e}")
+            return [], [], [], {}
+        
+        # 4. 找出新增的匹配市场
+        new_matched_markets = []
+        for mm in self.matched_markets:
+            key = f"{mm.kalshi_market.market_id}_{mm.team_name}"
+            if key not in old_matched_ids:
+                new_matched_markets.append(mm)
+        
+        if not new_matched_markets:
+            logger.info("   ✅ 没有发现新的匹配市场")
+            logger.info("=" * 60)
+            return [], [], [], {}
+        
+        logger.info(f"   🆕 发现 {len(new_matched_markets)} 个新匹配市场:")
+        for i, mm in enumerate(new_matched_markets, 1):
+            logger.info(f"      {i}. {mm.event_name} ({mm.team_name})")
+        
+        # 5. 生成新市场的订阅信息
+        new_kalshi_tickers, new_poly_token_ids, new_market_lookup = \
+            self.matcher.get_subscription_info(new_matched_markets)
+        
+        logger.info(f"   📡 新订阅需求:")
+        logger.info(f"      - Kalshi: {len(new_kalshi_tickers)} 个市场")
+        logger.info(f"      - Polymarket: {len(new_poly_token_ids)} 个 token")
+        logger.info("=" * 60)
+        
+        return new_matched_markets, new_kalshi_tickers, new_poly_token_ids, new_market_lookup
+    
     def get_stats(self) -> SystemStats:
         """获取统计信息
         

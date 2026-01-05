@@ -365,6 +365,79 @@ class WebSocketManager:
         
         self.log(f"📊 已加载 {len(matched_markets)} 个配对市场 (等待实时价格)")
     
+    async def add_subscriptions(
+        self,
+        new_matched_markets: List[MatchedMarket],
+        new_kalshi_tickers: List[str],
+        new_poly_token_ids: List[str],
+        new_market_lookup: Dict[str, List[MatchedMarket]]
+    ) -> bool:
+        """动态添加新的订阅（热订阅）
+        
+        在现有 WebSocket 连接上订阅新发现的市场
+        
+        Args:
+            new_matched_markets: 新的配对市场列表
+            new_kalshi_tickers: 新的 Kalshi 市场 ticker 列表
+            new_poly_token_ids: 新的 Polymarket token ID 列表
+            new_market_lookup: 新的市场查找表
+            
+        Returns:
+            是否成功添加订阅
+        """
+        if not new_matched_markets:
+            return True
+        
+        self.log(f"🔄 动态添加 {len(new_matched_markets)} 个新配对市场")
+        
+        # 1. 更新内部数据结构
+        old_count = len(self.matched_markets)
+        self.matched_markets.extend(new_matched_markets)
+        
+        # 合并 market_lookup
+        for key, markets in new_market_lookup.items():
+            if key in self.market_lookup:
+                # 避免重复添加
+                existing_ids = {mm.kalshi_market.market_id for mm in self.market_lookup[key]}
+                for mm in markets:
+                    if mm.kalshi_market.market_id not in existing_ids:
+                        self.market_lookup[key].append(mm)
+            else:
+                self.market_lookup[key] = markets
+        
+        self.log(f"📊 市场数据已更新: {old_count} → {len(self.matched_markets)} 个配对市场")
+        
+        success = True
+        
+        # 2. 热订阅 Kalshi
+        if new_kalshi_tickers:
+            self.log(f"🔌 开始热订阅 Kalshi {len(new_kalshi_tickers)} 个市场...")
+            kalshi_success = await self.kalshi_client.subscribe_markets(
+                new_kalshi_tickers,
+                on_log=lambda msg: self.log(msg)
+            )
+            if not kalshi_success:
+                self.log("⚠️ Kalshi 热订阅失败")
+                success = False
+        
+        # 3. 热订阅 Polymarket
+        if new_poly_token_ids:
+            self.log(f"🔌 开始热订阅 Polymarket {len(new_poly_token_ids)} 个 token...")
+            poly_success = await self.polymarket_client.subscribe_tokens(
+                new_poly_token_ids,
+                on_log=lambda msg: self.log(msg)
+            )
+            if not poly_success:
+                self.log("⚠️ Polymarket 热订阅失败")
+                success = False
+        
+        if success:
+            self.log(f"✅ 动态订阅完成，当前共 {len(self.matched_markets)} 个配对市场")
+        else:
+            self.log(f"⚠️ 动态订阅部分失败，当前共 {len(self.matched_markets)} 个配对市场")
+        
+        return success
+    
     async def start(
         self,
         kalshi_tickers: List[str],

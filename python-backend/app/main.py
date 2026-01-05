@@ -3,6 +3,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import List
+from datetime import datetime
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,9 +28,13 @@ latest_opportunities: List[ArbitrageOpportunity] = []
 # 后台任务
 ws_task = None
 broadcast_task = None
+scan_task = None
 
 # 广播间隔（秒）
 BROADCAST_INTERVAL = 1.0
+
+# 市场扫描间隔（秒）- 5分钟
+SCAN_INTERVAL = 300
 
 # 计数器
 _opportunity_broadcast_count = 0
@@ -188,10 +193,120 @@ async def broadcast_all_opportunities():
             logger.error(f"❌ 广播任务异常: {e}")
 
 
+async def periodic_market_scan():
+    """定期扫描新市场并热订阅
+    
+    每 SCAN_INTERVAL 秒扫描一次两个平台的事件，
+    如果发现新的匹配市场，通过热订阅添加到现有 WebSocket 连接。
+    """
+    global arbitrage_service, ws_manager
+    
+    scan_count = 0  # 扫描次数计数器
+    
+    # 等待初始 WebSocket 连接就绪
+    log_msg = f"⏳ 市场扫描任务启动，等待 WebSocket 就绪..."
+    logger.info(log_msg)
+    await broadcast_log(log_msg)
+    
+    while ws_manager and not ws_manager.is_ready():
+        await asyncio.sleep(1.0)
+    
+    log_msg = f"🔍 市场扫描任务就绪，间隔 {SCAN_INTERVAL} 秒 ({SCAN_INTERVAL // 60} 分钟)"
+    logger.info(log_msg)
+    await broadcast_log(log_msg)
+    
+    while True:
+        try:
+            # 等待扫描间隔
+            await asyncio.sleep(SCAN_INTERVAL)
+            
+            scan_count += 1
+            log_msg = f"🔄 开始第 {scan_count} 次定期市场扫描..."
+            logger.info(log_msg)
+            await broadcast_log(log_msg)
+            
+            # 扫描新市场
+            new_markets, new_tickers, new_tokens, new_lookup = \
+                await arbitrage_service.scan_for_new_markets()
+            
+            if new_markets:
+                log_msg = f"🆕 发现 {len(new_markets)} 个新匹配市场，开始热订阅..."
+                logger.info(log_msg)
+                await broadcast_log(log_msg)
+                
+                # 列出新市场详情
+                for mm in new_markets[:5]:  # 最多显示前5个
+                    detail_msg = f"   - {mm.event_name} ({mm.team_name})"
+                    logger.info(detail_msg)
+                    await broadcast_log(detail_msg)
+                
+                if len(new_markets) > 5:
+                    more_msg = f"   ... 还有 {len(new_markets) - 5} 个新市场"
+                    logger.info(more_msg)
+                    await broadcast_log(more_msg)
+                
+                # 热订阅新市场
+                success = await ws_manager.add_subscriptions(
+                    new_markets,
+                    new_tickers,
+                    new_tokens,
+                    new_lookup
+                )
+                
+                if success:
+                    log_msg = f"✅ 热订阅成功，当前共 {len(ws_manager.matched_markets)} 个配对市场"
+                    logger.info(log_msg)
+                    await broadcast_log(log_msg)
+                    
+                    # 推送更新后的统计信息
+                    stats = arbitrage_service.get_stats()
+                    await broadcast_message({
+                        "type": "scan_stats",
+                        "scan_count": scan_count,
+                        "new_markets_found": len(new_markets),
+                        "total_matched_markets": len(ws_manager.matched_markets),
+                        "kalshi_markets": stats.total_kalshi_markets,
+                        "polymarket_markets": stats.total_polymarket_markets,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                else:
+                    log_msg = "⚠️ 热订阅部分失败，请检查日志"
+                    logger.warning(log_msg)
+                    await broadcast_log(log_msg)
+            else:
+                log_msg = f"✅ 第 {scan_count} 次扫描完成，没有发现新市场"
+                logger.info(log_msg)
+                await broadcast_log(log_msg)
+                
+                # 推送扫描统计信息
+                stats = arbitrage_service.get_stats()
+                await broadcast_message({
+                    "type": "scan_stats",
+                    "scan_count": scan_count,
+                    "new_markets_found": 0,
+                    "total_matched_markets": len(ws_manager.matched_markets),
+                    "kalshi_markets": stats.total_kalshi_markets,
+                    "polymarket_markets": stats.total_polymarket_markets,
+                    "timestamp": datetime.now().isoformat()
+                })
+                
+        except asyncio.CancelledError:
+            log_msg = "🛑 市场扫描任务被取消"
+            logger.info(log_msg)
+            await broadcast_log(log_msg)
+            break
+        except Exception as e:
+            log_msg = f"❌ 市场扫描任务异常: {e}"
+            logger.error(log_msg)
+            await broadcast_log(log_msg)
+            import traceback
+            traceback.print_exc()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global ws_task, broadcast_task
+    global ws_task, broadcast_task, scan_task
     
     # 启动时初始化
     result = await initialize_system()
@@ -211,12 +326,28 @@ async def lifespan(app: FastAPI):
     broadcast_task = asyncio.create_task(
         broadcast_all_opportunities()
     )
-    logger.info(f"📡 启动定期广播任务，间隔 {BROADCAST_INTERVAL} 秒")
+    log_msg = f"📡 启动定期广播任务，间隔 {BROADCAST_INTERVAL} 秒"
+    logger.info(log_msg)
+    
+    # 启动定期市场扫描任务
+    scan_task = asyncio.create_task(
+        periodic_market_scan()
+    )
+    log_msg = f"🔍 启动定期市场扫描任务，间隔 {SCAN_INTERVAL} 秒 ({SCAN_INTERVAL // 60} 分钟)"
+    logger.info(log_msg)
     
     yield
     
     # 关闭时清理
     logger.info("🛑 正在关闭服务器...")
+    
+    # 取消扫描任务
+    if scan_task and not scan_task.done():
+        scan_task.cancel()
+        try:
+            await asyncio.wait_for(scan_task, timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
     
     # 取消广播任务
     if broadcast_task and not broadcast_task.done():

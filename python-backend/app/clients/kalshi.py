@@ -389,6 +389,49 @@ class KalshiClient:
         
         log("⚠️ [Kalshi] 达到最大重试次数，停止重连")
     
+    async def subscribe_markets(self, market_tickers: List[str], on_log: Callable[[str], None] = None) -> bool:
+        """热订阅新的市场（不关闭连接）
+        
+        在现有 WebSocket 连接上发送订阅命令订阅新的市场
+        
+        Args:
+            market_tickers: 要订阅的市场 ticker 列表
+            on_log: 日志回调函数
+            
+        Returns:
+            是否成功发送订阅请求
+        """
+        def log(msg: str):
+            logger.info(msg)
+            if on_log:
+                on_log(msg)
+        
+        if not self.ws_connection or not self.ws_connected:
+            log("⚠️ [Kalshi] WebSocket 未连接，无法热订阅")
+            return False
+        
+        if not market_tickers:
+            return True
+        
+        try:
+            base_id = int(time.time() * 1000)
+            for idx, ticker in enumerate(market_tickers):
+                subscribe_msg = {
+                    "id": base_id + idx,
+                    "cmd": "subscribe",
+                    "params": {
+                        "channels": ["orderbook_delta"],
+                        "market_ticker": ticker
+                    }
+                }
+                await self.ws_connection.send(json.dumps(subscribe_msg))
+            
+            log(f"✅ [Kalshi] 热订阅 {len(market_tickers)} 个新市场")
+            return True
+        except Exception as e:
+            log(f"❌ [Kalshi] 热订阅失败: {e}")
+            return False
+    
     _ws_msg_log_count = 0
     _ws_msg_file_count = 0  # 文件中已保存的消息数
     # 订单簿缓存: market_ticker -> {"yes": [[price, qty], ...], "no": [[price, qty], ...]}
