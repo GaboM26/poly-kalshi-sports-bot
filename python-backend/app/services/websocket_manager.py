@@ -90,6 +90,10 @@ class WebSocketManager:
         self.kalshi_connected = False
         self.polymarket_connected = False
         
+        # 最新价格更新时间（用于计算延迟）
+        self.kalshi_last_update_time: Optional[datetime] = None
+        self.polymarket_last_update_time: Optional[datetime] = None
+        
         # 套利机会
         self.opportunities: List[ArbitrageOpportunity] = []
         
@@ -175,6 +179,17 @@ class WebSocketManager:
             if has_kalshi and has_poly:
                 both_ready += 1
         
+        # 计算延迟（毫秒）
+        now = datetime.now()
+        kalshi_latency_ms = None
+        polymarket_latency_ms = None
+        
+        if self.kalshi_last_update_time:
+            kalshi_latency_ms = int((now - self.kalshi_last_update_time).total_seconds() * 1000)
+        
+        if self.polymarket_last_update_time:
+            polymarket_latency_ms = int((now - self.polymarket_last_update_time).total_seconds() * 1000)
+        
         return {
             "total_markets": total,
             "kalshi_ready": kalshi_ready,
@@ -184,7 +199,9 @@ class WebSocketManager:
             "polymarket_coverage": f"{poly_ready}/{total}",
             "full_coverage": f"{both_ready}/{total}",
             "kalshi_connected": self.kalshi_connected,
-            "polymarket_connected": self.polymarket_connected
+            "polymarket_connected": self.polymarket_connected,
+            "kalshi_latency_ms": kalshi_latency_ms,
+            "polymarket_latency_ms": polymarket_latency_ms
         }
     
     def is_ready(self) -> bool:
@@ -417,6 +434,9 @@ class WebSocketManager:
         """处理 Kalshi 价格更新"""
         self.kalshi_update_count += 1
         
+        # 更新最后接收时间
+        self.kalshi_last_update_time = update.timestamp
+        
         # 标记连接成功（收到第一条价格更新）
         if not self.kalshi_connected:
             self.kalshi_connected = True
@@ -464,6 +484,9 @@ class WebSocketManager:
         不能用 1 - yes_ask 来计算 no_price，因为 1 - ask ≠ 对手的 ask
         """
         self.polymarket_update_count += 1
+        
+        # 更新最后接收时间
+        self.polymarket_last_update_time = update.timestamp
         
         # 标记连接成功（收到第一条价格更新）
         if not self.polymarket_connected:

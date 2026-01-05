@@ -33,7 +33,7 @@ function App() {
   const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking' | 'history'>('detail');
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-screen flex flex-col overflow-hidden">
       <Header 
         isConnected={isConnected} 
         stats={stats} 
@@ -45,7 +45,7 @@ function App() {
       
       <main className="flex-1 flex overflow-hidden">
         {/* 左侧套利列表 */}
-        <div className="flex-1 p-4 overflow-auto">
+        <div className="flex-1 p-4 overflow-hidden">
           <OpportunityList 
             matchedMarkets={matchedMarkets}
             onSelectMarket={setSelectedMarket}
@@ -91,113 +91,128 @@ function App() {
           {/* 上方：详细信息或追踪面板或历史 */}
           <div className="flex-1 overflow-y-auto border-b border-[--border-color]">
             {rightPanelTab === 'detail' ? (
-              <div className="p-4">
+              <div className="p-3">
                 {selectedMarket ? (
-                  <div className="card">
-                    <h3 className="text-lg font-semibold mb-4 text-[--text-primary]">市场详情</h3>
+                  <div className="space-y-3">
+                    {/* 标题栏 */}
+                    <div className="pb-2 border-b border-[--border-color]">
+                      <h3 className="text-xs font-semibold text-[--text-muted] uppercase tracking-wider">市场详情</h3>
+                    </div>
                     
-                    <div className="space-y-4">
-                      {/* 事件信息 */}
-                      <div>
-                        <div className="text-xs text-[--text-muted] mb-1">事件</div>
-                        <div className="text-sm text-[--text-primary] font-medium">
-                          {selectedMarket.event_name}
-                        </div>
-                        {selectedMarket.team_name && (
-                          <div className="text-xs text-[--accent-yellow] mt-1">
-                            {selectedMarket.team_name}
-                          </div>
-                        )}
-                        {selectedMarket.end_time && (
-                          <div className="text-xs text-[--text-muted] mt-2 flex items-center gap-1">
-                            <span>🕐</span>
-                            <span>比赛时间: {formatDateTime(selectedMarket.end_time)}</span>
-                          </div>
-                        )}
+                    {/* 事件信息 - 紧凑卡片 */}
+                    <div className="bg-[--bg-tertiary] rounded p-2.5">
+                      <div className="text-[10px] text-[--text-muted] mb-1">事件</div>
+                      <div className="text-xs text-[--text-primary] font-medium leading-tight">
+                        {selectedMarket.event_name}
                       </div>
+                      {selectedMarket.team_name && (
+                        <div className="text-xs text-[--accent-yellow] mt-1 font-medium">
+                          {selectedMarket.team_name}
+                        </div>
+                      )}
+                      {selectedMarket.end_time && (
+                        <div className="text-[10px] text-[--text-muted] mt-1.5 flex items-center gap-1">
+                          <span>🕐</span>
+                          <span>{formatDateTime(selectedMarket.end_time)}</span>
+                        </div>
+                      )}
+                    </div>
 
+                    {/* 数据状态 + 利润信息 - 合并显示 */}
+                    <div className="grid grid-cols-2 gap-2">
                       {/* 数据状态 */}
-                      <div className="flex gap-2">
-                        <span className={`px-2 py-1 rounded text-xs ${selectedMarket.kalshi_ready ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}`}>
-                          Kalshi {selectedMarket.kalshi_ready ? '✓' : '○'}
-                        </span>
-                        <span className={`px-2 py-1 rounded text-xs ${selectedMarket.poly_ready ? 'bg-purple-500/20 text-purple-400' : 'bg-gray-500/20 text-gray-400'}`}>
-                          Poly {selectedMarket.poly_ready ? '✓' : '○'}
-                        </span>
+                      <div className="bg-[--bg-tertiary] rounded p-2">
+                        <div className="text-[10px] text-[--text-muted] mb-1.5">数据状态</div>
+                        <div className="flex flex-col gap-1">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] ${selectedMarket.kalshi_ready ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}`}>
+                            Kalshi {selectedMarket.kalshi_ready ? '✓' : '○'}
+                          </span>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] ${selectedMarket.poly_ready ? 'bg-purple-500/20 text-purple-400' : 'bg-gray-500/20 text-gray-400'}`}>
+                            Poly {selectedMarket.poly_ready ? '✓' : '○'}
+                          </span>
+                        </div>
                       </div>
 
                       {/* 利润信息 */}
-                      {selectedMarket.has_opportunity && (
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <div className="text-xs text-[--text-muted] mb-1">利润率</div>
-                            <div className="text-lg font-bold text-[--accent-green]">
-                              {selectedMarket.profit_margin.toFixed(2)}%
-                            </div>
+                      {selectedMarket.has_opportunity ? (
+                        <div className="bg-gradient-to-br from-green-500/10 to-emerald-500/5 rounded p-2 border border-green-500/20">
+                          <div className="text-[10px] text-[--text-muted] mb-1">套利机会</div>
+                          <div className="text-base font-bold text-[--accent-green] leading-tight">
+                            {selectedMarket.profit_margin.toFixed(2)}%
                           </div>
-                          <div>
-                            <div className="text-xs text-[--text-muted] mb-1">预期利润</div>
-                            <div className="text-lg font-bold text-[--accent-green]">
-                              ${selectedMarket.expected_profit.toFixed(2)}
-                            </div>
+                          <div className="text-[10px] text-green-400 mt-0.5">
+                            ${selectedMarket.expected_profit.toFixed(2)}
                           </div>
                         </div>
+                      ) : (
+                        <div className="bg-[--bg-tertiary] rounded p-2 flex items-center justify-center">
+                          <span className="text-[10px] text-[--text-muted]">无套利机会</span>
+                        </div>
                       )}
+                    </div>
 
-                      {/* Kalshi 市场 */}
-                      <div>
-                        <div className="text-xs text-[--text-muted] mb-2">Kalshi 市场</div>
-                        <div className="bg-[--bg-tertiary] rounded p-3 space-y-2">
-                          <div className="flex justify-between text-sm">
-                            <span className="text-[--text-secondary]">Yes 价格:</span>
-                            <span className="text-green-400 font-mono">
+                    {/* 价格对比 - 紧凑布局 */}
+                    <div className="bg-[--bg-tertiary] rounded p-2.5">
+                      <div className="text-[10px] text-[--text-muted] mb-2">价格对比</div>
+                      
+                      {/* Kalshi */}
+                      <div className="mb-2 pb-2 border-b border-[--border-color]">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] text-blue-400 font-medium">Kalshi</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <div className="flex items-center gap-1">
+                            <span className="text-[9px] text-[--text-muted]">Yes</span>
+                            <span className="text-xs text-green-400 font-mono font-semibold">
                               {(selectedMarket.kalshi_yes_price * 100).toFixed(0)}¢
                             </span>
                           </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-[--text-secondary]">No 价格:</span>
-                            <span className="text-red-400 font-mono">
+                          <div className="flex items-center gap-1">
+                            <span className="text-[9px] text-[--text-muted]">No</span>
+                            <span className="text-xs text-red-400 font-mono font-semibold">
                               {(selectedMarket.kalshi_no_price * 100).toFixed(0)}¢
                             </span>
                           </div>
                         </div>
                       </div>
 
-                      {/* Polymarket 市场 */}
+                      {/* Polymarket */}
                       <div>
-                        <div className="text-xs text-[--text-muted] mb-2">Polymarket 市场</div>
-                        <div className="bg-[--bg-tertiary] rounded p-3 space-y-2">
-                          <div className="flex justify-between text-sm">
-                            <span className="text-[--text-secondary]">Yes 价格:</span>
-                            <span className="text-green-400 font-mono">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] text-purple-400 font-medium">Polymarket</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <div className="flex items-center gap-1">
+                            <span className="text-[9px] text-[--text-muted]">Yes</span>
+                            <span className="text-xs text-green-400 font-mono font-semibold">
                               {(selectedMarket.poly_yes_price * 100).toFixed(0)}¢
                             </span>
                           </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-[--text-secondary]">No 价格:</span>
-                            <span className="text-red-400 font-mono">
+                          <div className="flex items-center gap-1">
+                            <span className="text-[9px] text-[--text-muted]">No</span>
+                            <span className="text-xs text-red-400 font-mono font-semibold">
                               {(selectedMarket.poly_no_price * 100).toFixed(0)}¢
                             </span>
                           </div>
                         </div>
                       </div>
-
-                      {/* 策略 */}
-                      {selectedMarket.has_opportunity && selectedMarket.arbitrage_type && (
-                        <div>
-                          <div className="text-xs text-[--text-muted] mb-1">套利策略</div>
-                          <div className="text-sm text-[--text-primary] bg-[--bg-tertiary] rounded px-3 py-2">
-                            {selectedMarket.arbitrage_type}
-                          </div>
-                        </div>
-                      )}
                     </div>
+
+                    {/* 策略 */}
+                    {selectedMarket.has_opportunity && selectedMarket.arbitrage_type && (
+                      <div className="bg-[--bg-tertiary] rounded p-2.5">
+                        <div className="text-[10px] text-[--text-muted] mb-1">套利策略</div>
+                        <div className="text-xs text-[--text-primary] font-mono">
+                          {selectedMarket.arbitrage_type}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : (
-                  <div className="card p-8 text-center">
-                    <div className="text-4xl mb-3">👆</div>
-                    <div className="text-[--text-secondary]">选择一个市场</div>
-                    <div className="text-[--text-muted] text-xs mt-1">查看详细信息</div>
+                  <div className="flex flex-col items-center justify-center h-full py-12">
+                    <div className="text-3xl mb-2">👆</div>
+                    <div className="text-xs text-[--text-secondary]">选择一个市场</div>
+                    <div className="text-[10px] text-[--text-muted] mt-1">查看详细信息</div>
                   </div>
                 )}
               </div>
@@ -209,7 +224,7 @@ function App() {
           </div>
           
           {/* 下方：日志 */}
-          <div className="h-48 flex-shrink-0">
+          <div className="h-56 flex-shrink-0 px-3 pb-3">
             <LogPanel logs={logs} />
           </div>
         </aside>

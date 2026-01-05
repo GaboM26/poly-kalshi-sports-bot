@@ -24,23 +24,23 @@ export function LogPanel({ logs }: LogPanelProps) {
   };
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="px-3 py-2 border-b border-[--border-color] flex-shrink-0">
-        <span className="text-xs text-[--text-secondary] uppercase tracking-wider font-medium">
-          Logs
+    <div className="h-full flex flex-col card overflow-hidden">
+      <div className="px-3 py-1.5 border-b border-[--border-color] flex-shrink-0 bg-[--bg-secondary]">
+        <span className="text-[10px] text-[--text-secondary] uppercase tracking-wider font-semibold">
+          LOGS
         </span>
-        <span className="text-xs text-[--text-muted] ml-2">({logs.length})</span>
+        <span className="text-[10px] text-[--text-muted] ml-2">({logs.length})</span>
       </div>
       
-      <div className="flex-1 overflow-y-auto p-2 font-mono">
+      <div className="flex-1 overflow-y-auto p-2 font-mono bg-[--bg-primary]">
         {logs.length === 0 ? (
-          <div className="text-[--text-muted] text-xs">
-            Waiting...
+          <div className="text-[--text-muted] text-[10px]">
+            Waiting for logs...
           </div>
         ) : (
           <div className="space-y-0.5">
             {logs.map((log, index) => (
-              <div key={index} className="text-xs leading-relaxed">
+              <div key={index} className="text-[10px] leading-relaxed hover:bg-[--bg-secondary] px-1 py-0.5 rounded transition-colors">
                 <span className="text-[--text-muted] tabular-nums">
                   {new Date(log.time).toLocaleTimeString('en', { hour12: false })}
                 </span>

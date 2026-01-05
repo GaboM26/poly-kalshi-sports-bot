@@ -50,6 +50,22 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
 
   const coveragePercent = getCoveragePercent();
 
+  // 格式化延迟显示
+  const formatLatency = (latencyMs?: number) => {
+    if (latencyMs === undefined || latencyMs === null) return '--';
+    if (latencyMs < 1000) return `${latencyMs}ms`;
+    return `${(latencyMs / 1000).toFixed(1)}s`;
+  };
+
+  // 获取延迟颜色
+  const getLatencyColor = (latencyMs?: number) => {
+    if (latencyMs === undefined || latencyMs === null) return 'text-gray-500';
+    if (latencyMs < 100) return 'text-green-400';
+    if (latencyMs < 500) return 'text-yellow-400';
+    if (latencyMs < 2000) return 'text-orange-400';
+    return 'text-red-400';
+  };
+
   return (
     <header className="border-b border-[--border-color] bg-[--bg-secondary]">
       <div className="max-w-7xl mx-auto px-4 h-12 flex items-center justify-between">
@@ -72,6 +88,17 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
             </span>
             <span className={`font-mono text-xs font-semibold ${coveragePercent >= 80 ? 'text-green-400' : coveragePercent >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
               ✓:{dataCoverage.full_coverage}
+            </span>
+          </div>
+
+          {/* 平台延迟 */}
+          <div className="flex items-center gap-2 px-3 py-1 rounded bg-[--bg-tertiary]" title="平台数据延迟：从交易所接收到数据到现在的时间">
+            <span className="text-xs text-[--text-muted]">⚡ 延迟:</span>
+            <span className={`font-mono text-xs ${getLatencyColor(dataCoverage.kalshi_latency_ms)}`}>
+              K:{formatLatency(dataCoverage.kalshi_latency_ms)}
+            </span>
+            <span className={`font-mono text-xs ${getLatencyColor(dataCoverage.polymarket_latency_ms)}`}>
+              P:{formatLatency(dataCoverage.polymarket_latency_ms)}
             </span>
           </div>
 

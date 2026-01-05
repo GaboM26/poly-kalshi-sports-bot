@@ -104,7 +104,9 @@ async def get_data_coverage():
         "polymarket_coverage": "0/0",
         "full_coverage": "0/0",
         "kalshi_connected": False,
-        "polymarket_connected": False
+        "polymarket_connected": False,
+        "kalshi_latency_ms": None,
+        "polymarket_latency_ms": None
     }
 
 

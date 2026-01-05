@@ -119,4 +119,6 @@ export interface DataCoverage {
   full_coverage: string;
   kalshi_connected: boolean;
   polymarket_connected: boolean;
+  kalshi_latency_ms?: number;
+  polymarket_latency_ms?: number;
 }

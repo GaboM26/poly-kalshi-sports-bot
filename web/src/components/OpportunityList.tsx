@@ -6,10 +6,15 @@ interface OpportunityListProps {
   onSelectMarket?: (market: MatchedMarketData) => void;
 }
 
+type SortOption = 'profit' | 'event' | 'team';
+
 export function OpportunityList({ matchedMarkets, onSelectMarket }: OpportunityListProps) {
   // 追踪价格变化用于高亮动画
   const [flashingCells, setFlashingCells] = useState<Set<string>>(new Set());
   const prevPricesRef = useRef<Map<string, { k_yes: number; k_no: number; p_yes: number; p_no: number }>>(new Map());
+  
+  // 排序选项
+  const [sortBy, setSortBy] = useState<SortOption>('profit');
 
   useEffect(() => {
     const newFlashing = new Set<string>();
@@ -57,11 +62,74 @@ export function OpportunityList({ matchedMarkets, onSelectMarket }: OpportunityL
   // 统计有套利机会的数量
   const oppCount = matchedMarkets.filter(m => m.has_opportunity).length;
 
+  // 排序市场
+  const sortedMarkets = [...matchedMarkets].sort((a, b) => {
+    switch (sortBy) {
+      case 'profit':
+        // 按利润率降序（有套利机会的排在前面）
+        if (a.has_opportunity && !b.has_opportunity) return -1;
+        if (!a.has_opportunity && b.has_opportunity) return 1;
+        if (a.has_opportunity && b.has_opportunity) {
+          return b.profit_margin - a.profit_margin;
+        }
+        return a.event_name.localeCompare(b.event_name);
+      
+      case 'event':
+        // 按事件名称字母序
+        return a.event_name.localeCompare(b.event_name);
+      
+      case 'team':
+        // 按队伍名称字母序
+        return (a.team_name || '').localeCompare(b.team_name || '');
+      
+      default:
+        return 0;
+    }
+  });
+
   return (
-    <div className="card overflow-hidden">
-      <div className="overflow-x-auto">
+    <div className="card overflow-hidden flex flex-col h-full">
+      {/* 排序选择器 */}
+      <div className="px-4 py-2 bg-[--bg-tertiary] border-b border-[--border-color] flex items-center justify-between">
+        <span className="text-xs text-[--text-muted]">排序方式:</span>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setSortBy('profit')}
+            className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+              sortBy === 'profit'
+                ? 'bg-[--accent-green] text-white'
+                : 'bg-[--bg-secondary] text-[--text-secondary] hover:bg-[--bg-primary]'
+            }`}
+          >
+            💰 收益率
+          </button>
+          <button
+            onClick={() => setSortBy('event')}
+            className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+              sortBy === 'event'
+                ? 'bg-[--accent-purple] text-white'
+                : 'bg-[--bg-secondary] text-[--text-secondary] hover:bg-[--bg-primary]'
+            }`}
+          >
+            📅 事件
+          </button>
+          <button
+            onClick={() => setSortBy('team')}
+            className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+              sortBy === 'team'
+                ? 'bg-[--accent-yellow] text-white'
+                : 'bg-[--bg-secondary] text-[--text-secondary] hover:bg-[--bg-primary]'
+            }`}
+          >
+            🏀 队伍
+          </button>
+        </div>
+      </div>
+
+      {/* 表格容器 - 可滚动 */}
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
         <table>
-          <thead>
+          <thead className="sticky top-0 bg-[--bg-secondary] z-10">
             <tr>
               <th>Event</th>
               <th className="text-center">Team</th>
@@ -72,7 +140,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket }: OpportunityL
             </tr>
           </thead>
           <tbody>
-            {matchedMarkets.map((market) => {
+            {sortedMarkets.map((market) => {
               const key = `${market.event_name}_${market.team_name}`;
               const kalshiFlashing = flashingCells.has(`${key}_kalshi`);
               const polyFlashing = flashingCells.has(`${key}_poly`);
@@ -145,7 +213,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket }: OpportunityL
       </div>
       
       {/* 底部统计 */}
-      <div className="px-4 py-2 bg-[--bg-tertiary] border-t border-[--border-color] flex justify-between items-center text-xs text-[--text-muted]">
+      <div className="px-4 py-2 bg-[--bg-tertiary] border-t border-[--border-color] flex justify-between items-center text-xs text-[--text-muted] flex-shrink-0">
         <span>Total: {matchedMarkets.length} matched markets</span>
         <span className={oppCount > 0 ? 'text-[--accent-green]' : ''}>
           {oppCount > 0 ? `🔥 ${oppCount} opportunities` : 'No opportunities'}

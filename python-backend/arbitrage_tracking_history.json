@@ -1,0 +1,1496 @@
+{
+  "last_updated": "2026-01-05T16:50:07.267400",
+  "total_records": 2,
+  "completed": [
+    {
+      "event_name": "ORL-WAS",
+      "team_name": "WAS",
+      "kalshi_market_id": "KXNBAGAME-26JAN06ORLWAS-WAS",
+      "polymarket_market_id": "0x830abaf0256b97a96cac8cd3ac823addaf254ef395f96d885bddeb5c10f26410",
+      "start_time": "2026-01-05T16:47:31.699134",
+      "end_time": "2026-01-05T16:48:25.827755",
+      "duration_seconds": 54.128621,
+      "max_profit_margin": 3.0927835051546504,
+      "max_profit_time": "2026-01-05T16:47:31.699134",
+      "profit_history": [
+        {
+          "time": "2026-01-05T16:47:31.699134",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:31.699334",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:32.060776",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:32.060905",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:32.061004",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:32.061029",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:32.066723",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:32.067030",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:32.123804",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:32.615850",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:32.615892",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:32.616083",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:32.616118",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:32.616488",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:32.616765",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:33.127088",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:33.349616",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:33.349773",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:34.129503",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:35.132877",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:36.140628",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:37.146789",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:38.149647",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:39.152988",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:40.155507",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:41.158853",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:42.160840",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:43.164386",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:44.166731",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:45.171681",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:46.174663",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:47.176370",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:48.179953",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:49.182636",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:49.793348",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:49.793380",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:49.793426",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:49.793452",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:49.793493",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:49.793517",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:49.815123",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:49.815159",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:49.815217",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:49.815339",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:50.185498",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:51.192318",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:52.193529",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:53.196146",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:54.197981",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:55.200938",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:55.582670",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:55.582770",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:56.204586",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:57.214779",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:58.216626",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:47:59.219037",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:00.220682",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:01.223029",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:02.225128",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:03.231465",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:04.235652",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:05.238015",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:06.242610",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:06.782267",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:06.782324",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:07.198628",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:07.198662",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:07.244640",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:08.246267",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:09.247815",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:10.249285",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:11.250507",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:11.576599",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:11.576641",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:12.256686",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:13.192882",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:13.192917",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:13.260227",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:14.265257",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:15.267596",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:16.279324",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:16.548014",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:16.548052",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:17.286366",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:18.289349",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:19.295295",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:19.498500",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:19.498559",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:20.183789",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:20.183891",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:20.302202",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:21.306544",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:22.312445",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:23.316971",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:24.018963",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:24.019028",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:24.322283",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:24.630444",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:24.630487",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:25.324493",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        }
+      ]
+    },
+    {
+      "event_name": "ORL-WAS",
+      "team_name": "WAS",
+      "kalshi_market_id": "KXNBAGAME-26JAN06ORLWAS-WAS",
+      "polymarket_market_id": "0x830abaf0256b97a96cac8cd3ac823addaf254ef395f96d885bddeb5c10f26410",
+      "start_time": "2026-01-05T16:48:45.646965",
+      "end_time": "2026-01-05T16:50:07.267275",
+      "duration_seconds": 81.62031,
+      "max_profit_margin": 3.0927835051546504,
+      "max_profit_time": "2026-01-05T16:48:45.646965",
+      "profit_history": [
+        {
+          "time": "2026-01-05T16:48:45.646965",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:45.647192",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:45.647225",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:45.650652",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:45.650763",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:45.651054",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:45.651103",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:46.405130",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:47.116001",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:47.116041",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:47.407244",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:48.411873",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:49.414498",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:50.416829",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:51.423838",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:52.428783",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:53.431808",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:54.256564",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:54.256795",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:54.322672",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:54.322707",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:54.434400",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:54.434442",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:54.437941",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:55.273397",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:55.273435",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:55.412730",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:55.412792",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:55.439995",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:56.341076",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:56.341130",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:56.441589",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:56.507042",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:56.507080",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:57.444269",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:58.445886",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:59.218205",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:59.218241",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:48:59.448811",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:00.456281",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:01.461442",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:01.781641",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:02.247180",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:02.465158",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:03.439422",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:03.439492",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:03.439522",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:03.439546",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:03.439568",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:03.456757",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:03.456812",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:03.467014",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:03.689158",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:03.716688",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:03.716744",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:03.716773",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:04.471282",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:05.474326",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:06.478510",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:07.481823",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:08.485451",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:09.489146",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:10.492492",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:11.498681",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:12.512388",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:13.516219",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:14.520970",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:15.525551",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:16.531849",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:17.539676",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:18.541953",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:19.547803",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:20.551112",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:21.553848",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:22.556657",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:23.560861",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:24.564385",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:25.567771",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:26.572990",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:27.575717",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:28.577233",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:29.579882",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:30.581491",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:31.198779",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:31.198842",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:31.585550",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:32.587349",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:33.588590",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:34.590364",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:35.597970",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:36.538749",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:36.538846",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:36.611620",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:37.613664",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:38.616758",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:39.619794",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:40.628542",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:41.633090",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:42.639760",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:43.646623",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:44.655772",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:44.867883",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:44.867931",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:44.868048",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:44.868080",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:44.868179",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:44.868208",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:45.662034",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:46.667115",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:47.669403",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:48.673437",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:49.519388",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:49.519588",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:49.681384",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:50.686115",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:51.691434",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:52.099348",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:52.099399",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:52.099444",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:52.698966",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:53.701868",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:54.703493",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:55.705700",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:56.715127",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:57.133711",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:57.157234",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:57.157347",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:57.235001",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:57.718832",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:58.722551",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:49:59.729887",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:50:00.733425",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:50:01.736180",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:50:02.739600",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:50:02.878134",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:50:02.878195",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:50:03.742542",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:50:04.411540",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:50:04.589730",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:50:04.628961",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:50:04.750581",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:50:05.753444",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:50:06.755574",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        },
+        {
+          "time": "2026-01-05T16:50:07.267228",
+          "profit_margin": 3.0927835051546504,
+          "kalshi_price": 0.27,
+          "polymarket_price": 0.7
+        }
+      ]
+    }
+  ]
+}
