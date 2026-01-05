@@ -3,8 +3,9 @@ import { Header } from './components/Header';
 import { OpportunityList } from './components/OpportunityList';
 import { LogPanel } from './components/LogPanel';
 import { TrackingPanel } from './components/TrackingPanel';
+import { ArbitrageHistory } from './components/ArbitrageHistory';
 import { useWebSocket } from './hooks/useWebSocket';
-import { ArbitrageOpportunity } from './types';
+import { MatchedMarketData } from './types';
 
 function App() {
   const wsUrl = useMemo(() => {
@@ -23,10 +24,13 @@ function App() {
       : `${window.location.protocol}//${window.location.host}`;
   }, []);
   
-  const { opportunities, logs, isConnected, stats, lastUpdateTime, updateCount, dataCoverage } = useWebSocket(wsUrl);
-  const totalProfit = opportunities.reduce((sum, opp) => sum + opp.expected_profit, 0);
-  const [selectedOpportunity, setSelectedOpportunity] = useState<ArbitrageOpportunity | null>(null);
-  const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking'>('detail');
+  const { matchedMarkets, logs, isConnected, stats, lastUpdateTime, updateCount, dataCoverage } = useWebSocket(wsUrl);
+  // 从匹配市场计算总利润（只计算有套利机会的市场）
+  const totalProfit = matchedMarkets
+    .filter(m => m.has_opportunity)
+    .reduce((sum, m) => sum + m.expected_profit, 0);
+  const [selectedMarket, setSelectedMarket] = useState<MatchedMarketData | null>(null);
+  const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking' | 'history'>('detail');
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -43,17 +47,17 @@ function App() {
         {/* 左侧套利列表 */}
         <div className="flex-1 p-4 overflow-auto">
           <OpportunityList 
-            opportunities={opportunities}
-            onSelectOpportunity={setSelectedOpportunity}
+            matchedMarkets={matchedMarkets}
+            onSelectMarket={setSelectedMarket}
           />
         </div>
         
-        {/* 右侧面板：详细信息/追踪 + 日志 */}
+        {/* 右侧面板：详细信息/追踪/历史 + 日志 */}
         <aside className="w-96 flex-shrink-0 border-l border-[--border-color] bg-[--bg-secondary] flex flex-col">
           {/* 标签页切换 */}
           <div className="flex border-b border-[--border-color]">
             <button
-              className={`flex-1 px-4 py-2 text-sm font-medium transition-colors ${
+              className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
                 rightPanelTab === 'detail'
                   ? 'text-[--accent-purple] border-b-2 border-[--accent-purple] bg-[--bg-tertiary]'
                   : 'text-[--text-muted] hover:text-[--text-secondary]'
@@ -63,60 +67,82 @@ function App() {
               📋 详情
             </button>
             <button
-              className={`flex-1 px-4 py-2 text-sm font-medium transition-colors ${
+              className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
                 rightPanelTab === 'tracking'
                   ? 'text-[--accent-green] border-b-2 border-[--accent-green] bg-[--bg-tertiary]'
                   : 'text-[--text-muted] hover:text-[--text-secondary]'
               }`}
               onClick={() => setRightPanelTab('tracking')}
             >
-              🎯 追踪记录
+              🎯 追踪
+            </button>
+            <button
+              className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
+                rightPanelTab === 'history'
+                  ? 'text-[--accent-yellow] border-b-2 border-[--accent-yellow] bg-[--bg-tertiary]'
+                  : 'text-[--text-muted] hover:text-[--text-secondary]'
+              }`}
+              onClick={() => setRightPanelTab('history')}
+            >
+              📜 历史
             </button>
           </div>
 
-          {/* 上方：详细信息或追踪面板 */}
+          {/* 上方：详细信息或追踪面板或历史 */}
           <div className="flex-1 overflow-y-auto border-b border-[--border-color]">
             {rightPanelTab === 'detail' ? (
               <div className="p-4">
-                {selectedOpportunity ? (
+                {selectedMarket ? (
                   <div className="card">
-                    <h3 className="text-lg font-semibold mb-4 text-[--text-primary]">套利详情</h3>
+                    <h3 className="text-lg font-semibold mb-4 text-[--text-primary]">市场详情</h3>
                     
                     <div className="space-y-4">
                       {/* 事件信息 */}
                       <div>
                         <div className="text-xs text-[--text-muted] mb-1">事件</div>
                         <div className="text-sm text-[--text-primary] font-medium">
-                          {selectedOpportunity.kalshi_market.event_name}
+                          {selectedMarket.event_name}
                         </div>
-                        {selectedOpportunity.kalshi_market.team_name && (
+                        {selectedMarket.team_name && (
                           <div className="text-xs text-[--accent-yellow] mt-1">
-                            {selectedOpportunity.kalshi_market.team_name}
+                            {selectedMarket.team_name}
                           </div>
                         )}
-                        {selectedOpportunity.kalshi_market.end_time && (
+                        {selectedMarket.end_time && (
                           <div className="text-xs text-[--text-muted] mt-2 flex items-center gap-1">
                             <span>🕐</span>
-                            <span>比赛时间: {formatDateTime(selectedOpportunity.kalshi_market.end_time)}</span>
+                            <span>比赛时间: {formatDateTime(selectedMarket.end_time)}</span>
                           </div>
                         )}
                       </div>
 
-                      {/* 利润信息 */}
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <div className="text-xs text-[--text-muted] mb-1">利润率</div>
-                          <div className="text-lg font-bold text-[--accent-green]">
-                            {selectedOpportunity.profit_margin.toFixed(2)}%
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-xs text-[--text-muted] mb-1">预期利润</div>
-                          <div className="text-lg font-bold text-[--accent-green]">
-                            ${selectedOpportunity.expected_profit.toFixed(2)}
-                          </div>
-                        </div>
+                      {/* 数据状态 */}
+                      <div className="flex gap-2">
+                        <span className={`px-2 py-1 rounded text-xs ${selectedMarket.kalshi_ready ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}`}>
+                          Kalshi {selectedMarket.kalshi_ready ? '✓' : '○'}
+                        </span>
+                        <span className={`px-2 py-1 rounded text-xs ${selectedMarket.poly_ready ? 'bg-purple-500/20 text-purple-400' : 'bg-gray-500/20 text-gray-400'}`}>
+                          Poly {selectedMarket.poly_ready ? '✓' : '○'}
+                        </span>
                       </div>
+
+                      {/* 利润信息 */}
+                      {selectedMarket.has_opportunity && (
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <div className="text-xs text-[--text-muted] mb-1">利润率</div>
+                            <div className="text-lg font-bold text-[--accent-green]">
+                              {selectedMarket.profit_margin.toFixed(2)}%
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-[--text-muted] mb-1">预期利润</div>
+                            <div className="text-lg font-bold text-[--accent-green]">
+                              ${selectedMarket.expected_profit.toFixed(2)}
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Kalshi 市场 */}
                       <div>
@@ -125,19 +151,13 @@ function App() {
                           <div className="flex justify-between text-sm">
                             <span className="text-[--text-secondary]">Yes 价格:</span>
                             <span className="text-green-400 font-mono">
-                              {(selectedOpportunity.kalshi_market.yes_price * 100).toFixed(0)}¢
+                              {(selectedMarket.kalshi_yes_price * 100).toFixed(0)}¢
                             </span>
                           </div>
                           <div className="flex justify-between text-sm">
                             <span className="text-[--text-secondary]">No 价格:</span>
                             <span className="text-red-400 font-mono">
-                              {(selectedOpportunity.kalshi_market.no_price * 100).toFixed(0)}¢
-                            </span>
-                          </div>
-                          <div className="flex justify-between text-xs">
-                            <span className="text-[--text-muted]">交易量:</span>
-                            <span className="text-[--text-secondary]">
-                              ${selectedOpportunity.kalshi_market.volume.toFixed(0)}
+                              {(selectedMarket.kalshi_no_price * 100).toFixed(0)}¢
                             </span>
                           </div>
                         </div>
@@ -150,43 +170,41 @@ function App() {
                           <div className="flex justify-between text-sm">
                             <span className="text-[--text-secondary]">Yes 价格:</span>
                             <span className="text-green-400 font-mono">
-                              {(selectedOpportunity.polymarket_market.yes_price * 100).toFixed(0)}¢
+                              {(selectedMarket.poly_yes_price * 100).toFixed(0)}¢
                             </span>
                           </div>
                           <div className="flex justify-between text-sm">
                             <span className="text-[--text-secondary]">No 价格:</span>
                             <span className="text-red-400 font-mono">
-                              {(selectedOpportunity.polymarket_market.no_price * 100).toFixed(0)}¢
-                            </span>
-                          </div>
-                          <div className="flex justify-between text-xs">
-                            <span className="text-[--text-muted]">交易量:</span>
-                            <span className="text-[--text-secondary]">
-                              ${selectedOpportunity.polymarket_market.volume.toFixed(0)}
+                              {(selectedMarket.poly_no_price * 100).toFixed(0)}¢
                             </span>
                           </div>
                         </div>
                       </div>
 
                       {/* 策略 */}
-                      <div>
-                        <div className="text-xs text-[--text-muted] mb-1">套利策略</div>
-                        <div className="text-sm text-[--text-primary] bg-[--bg-tertiary] rounded px-3 py-2">
-                          {selectedOpportunity.arbitrage_type}
+                      {selectedMarket.has_opportunity && selectedMarket.arbitrage_type && (
+                        <div>
+                          <div className="text-xs text-[--text-muted] mb-1">套利策略</div>
+                          <div className="text-sm text-[--text-primary] bg-[--bg-tertiary] rounded px-3 py-2">
+                            {selectedMarket.arbitrage_type}
+                          </div>
                         </div>
-                      </div>
+                      )}
                     </div>
                   </div>
                 ) : (
                   <div className="card p-8 text-center">
                     <div className="text-4xl mb-3">👆</div>
-                    <div className="text-[--text-secondary]">选择一个套利机会</div>
+                    <div className="text-[--text-secondary]">选择一个市场</div>
                     <div className="text-[--text-muted] text-xs mt-1">查看详细信息</div>
                   </div>
                 )}
               </div>
-            ) : (
+            ) : rightPanelTab === 'tracking' ? (
               <TrackingPanel apiBaseUrl={apiBaseUrl} />
+            ) : (
+              <ArbitrageHistory apiBaseUrl={apiBaseUrl} />
             )}
           </div>
           

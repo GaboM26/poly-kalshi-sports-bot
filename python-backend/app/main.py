@@ -12,7 +12,7 @@ from app.core.models import ArbitrageOpportunity
 from app.services.arbitrage import ArbitrageService
 from app.services.websocket_manager import WebSocketManager
 from app.api import routes
-from app.api.websocket import handle_websocket, broadcast_message, broadcast_opportunity, broadcast_log
+from app.api.websocket import handle_websocket, broadcast_message, broadcast_log
 from app.utils.logger import setup_logger
 
 # 配置日志
@@ -94,16 +94,16 @@ async def initialize_system():
 
 
 def on_arbitrage_opportunity(opportunity: ArbitrageOpportunity):
-    """处理新的套利机会"""
+    """处理新的套利机会 - 只更新缓存，不立即广播"""
     global latest_opportunities, _opportunity_broadcast_count
     
     _opportunity_broadcast_count += 1
     
-    # 记录前几次调用和每 50 次调用
-    if _opportunity_broadcast_count <= 5 or _opportunity_broadcast_count % 50 == 0:
+    # 记录前几次调用和每 100 次调用（减少日志频率）
+    if _opportunity_broadcast_count <= 3 or _opportunity_broadcast_count % 100 == 0:
         logger.info(f"🔔 套利机会 #{_opportunity_broadcast_count}: {opportunity.event_name} {opportunity.team_name}")
     
-    # 更新或添加机会
+    # 更新或添加机会到缓存
     found = False
     for i, opp in enumerate(latest_opportunities):
         if opp.event_name == opportunity.event_name and opp.team_name == opportunity.team_name:
@@ -116,12 +116,7 @@ def on_arbitrage_opportunity(opportunity: ArbitrageOpportunity):
     
     # 按利润率排序
     latest_opportunities.sort(key=lambda x: x.profit_margin, reverse=True)
-    
-    # 广播到前端
-    try:
-        asyncio.create_task(broadcast_opportunity(opportunity))
-    except Exception as e:
-        logger.error(f"❌ 广播失败: {e}")
+    # 不再立即广播，由定时任务统一推送
 
 
 def on_ws_log(message: str):
@@ -130,7 +125,7 @@ def on_ws_log(message: str):
 
 
 async def broadcast_all_opportunities():
-    """定期广播完整的套利机会列表"""
+    """定期广播完整的套利机会列表和所有匹配市场"""
     global latest_opportunities, ws_manager
     
     # 等待 WebSocket 连接成功
@@ -147,25 +142,44 @@ async def broadcast_all_opportunities():
             if ws_manager and ws_manager.is_ready():
                 latest_opportunities = ws_manager.calculate_all()
             
-            if not latest_opportunities:
-                continue
-            
             # 导入转换函数
-            from app.api.websocket import convert_opportunity_to_frontend
+            from app.api.websocket import convert_matched_market_to_frontend
             
-            # 广播完整列表
+            # 构建套利机会的 lookup，用于关联匹配市场
+            opp_lookup = {}
+            for opp in latest_opportunities:
+                key = f"{opp.event_name}_{opp.team_name}"
+                opp_lookup[key] = opp
+            
+            # 构建所有匹配市场的数据（按 event_name 排序）
+            matched_markets_data = []
+            for mm in ws_manager.matched_markets:
+                key = f"{mm.event_name}_{mm.team_name}"
+                opp = opp_lookup.get(key)
+                market_data = convert_matched_market_to_frontend(
+                    mm,
+                    ws_manager.kalshi_prices,
+                    ws_manager.poly_token_prices,
+                    opp
+                )
+                matched_markets_data.append(market_data)
+            
+            # 按 event_name 排序（稳定排序，不随利润变动）
+            matched_markets_data.sort(key=lambda x: (x["event_name"], x["team_name"]))
+            
             timestamp = None
             if arbitrage_service and arbitrage_service.stats.last_update:
                 timestamp = arbitrage_service.stats.last_update.isoformat()
             
-            message = {
-                "type": "opportunities_list",
-                "data": [convert_opportunity_to_frontend(opp) for opp in latest_opportunities[:50]],
-                "count": len(latest_opportunities),
+            # 只广播匹配市场数据（包含套利信息），减少消息量
+            markets_message = {
+                "type": "matched_markets_list",
+                "data": matched_markets_data,
+                "count": len(matched_markets_data),
+                "opportunities_count": len(latest_opportunities),
                 "timestamp": timestamp
             }
-            
-            await broadcast_message(message)
+            await broadcast_message(markets_message)
             
         except asyncio.CancelledError:
             logger.info("🛑 广播任务被取消")

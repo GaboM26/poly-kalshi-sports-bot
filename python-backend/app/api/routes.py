@@ -106,3 +106,30 @@ async def get_data_coverage():
         "kalshi_connected": False,
         "polymarket_connected": False
     }
+
+
+@router.get("/api/arbitrage-history")
+async def get_arbitrage_history():
+    """获取历史套利机会"""
+    if ws_manager:
+        completed = ws_manager.completed_tracking
+        active = ws_manager.active_tracking
+        
+        return {
+            "active": [
+                {
+                    "event_name": r.event_name,
+                    "team_name": r.team_name,
+                    "kalshi_market_id": r.kalshi_market_id,
+                    "polymarket_market_id": r.polymarket_market_id,
+                    "start_time": r.start_time.isoformat(),
+                    "duration_seconds": (r.end_time - r.start_time).total_seconds() if r.end_time else None,
+                    "max_profit_margin": r.max_profit_margin,
+                    "max_profit_time": r.max_profit_time.isoformat() if r.max_profit_time else None,
+                    "profit_history": r.profit_history
+                }
+                for r in active.values()
+            ],
+            "completed": [r.to_dict() for r in reversed(completed)]  # 最新的在前
+        }
+    return {"active": [], "completed": []}

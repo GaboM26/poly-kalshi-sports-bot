@@ -32,8 +32,8 @@ export interface ScanResponse {
 }
 
 export interface WsMessage {
-  type: 'opportunity' | 'opportunities_list' | 'scan_started' | 'scan_completed' | 'log' | 'ping' | 'pong' | 'connected';
-  data?: ArbitrageOpportunity | ArbitrageOpportunity[];
+  type: 'opportunity' | 'opportunities_list' | 'matched_markets_list' | 'scan_started' | 'scan_completed' | 'log' | 'ping' | 'pong' | 'connected';
+  data?: ArbitrageOpportunity | ArbitrageOpportunity[] | MatchedMarketData[];
   kalshi_count?: number;
   polymarket_count?: number;
   matched_count?: number;
@@ -42,6 +42,28 @@ export interface WsMessage {
   level?: string;
   message?: string;
   timestamp?: string;
+}
+
+// 匹配市场数据（包含实时价格）
+export interface MatchedMarketData {
+  event_name: string;
+  team_name: string;
+  kalshi_market_id: string;
+  polymarket_market_id: string;
+  kalshi_yes_price: number;
+  kalshi_no_price: number;
+  poly_yes_price: number;
+  poly_no_price: number;
+  kalshi_ready: boolean;
+  poly_ready: boolean;
+  both_ready: boolean;
+  confidence: number;
+  end_time?: string;
+  // 套利相关
+  has_opportunity: boolean;
+  profit_margin: number;
+  expected_profit: number;
+  arbitrage_type?: string;
 }
 
 export interface LogEntry {

@@ -167,3 +167,66 @@ def convert_opportunity_to_frontend(opp: ArbitrageOpportunity) -> dict:
         "match_confidence": 0.95,
         "timestamp": opp.timestamp.isoformat()
     }
+
+
+def convert_matched_market_to_frontend(mm, kalshi_prices: dict, poly_token_prices: dict, opportunity=None) -> dict:
+    """转换匹配市场为前端格式（包含实时价格）
+    
+    Args:
+        mm: MatchedMarket 对象
+        kalshi_prices: Kalshi 价格缓存 {market_id: (yes_bid, yes_ask, no_bid, no_ask)}
+        poly_token_prices: Polymarket token 价格缓存 {token_id: price}
+        opportunity: 可选的套利机会对象
+    
+    Returns:
+        前端格式的字典
+    """
+    k_id = mm.kalshi_market.market_id
+    k_prices = kalshi_prices.get(k_id)
+    
+    # 获取 Kalshi 实时价格
+    if k_prices and len(k_prices) == 4:
+        k_yes = k_prices[1]  # yes_ask
+        k_no = k_prices[3]   # no_ask
+        kalshi_ready = True
+    else:
+        k_yes = mm.kalshi_market.yes_price
+        k_no = mm.kalshi_market.no_price
+        kalshi_ready = False
+    
+    # 获取 Polymarket 实时价格
+    p_yes = mm.poly_yes_price
+    p_no = mm.poly_no_price
+    
+    # 检查 Poly 是否 ready
+    poly_market = mm.polymarket_market
+    own_token = poly_market.get_token_for_team(mm.team_name)
+    if mm.team_name.upper() == poly_market.team_a.upper():
+        opponent_token = poly_market.token_id_b
+    else:
+        opponent_token = poly_market.token_id_a
+    
+    poly_ready = (own_token in poly_token_prices) and (opponent_token in poly_token_prices)
+    
+    result = {
+        "event_name": mm.event_name,
+        "team_name": mm.team_name,
+        "kalshi_market_id": mm.kalshi_market.market_id,
+        "polymarket_market_id": mm.polymarket_market.market_id,
+        "kalshi_yes_price": k_yes,
+        "kalshi_no_price": k_no,
+        "poly_yes_price": p_yes,
+        "poly_no_price": p_no,
+        "kalshi_ready": kalshi_ready,
+        "poly_ready": poly_ready,
+        "both_ready": kalshi_ready and poly_ready,
+        "confidence": mm.confidence,
+        "end_time": mm.kalshi_market.start_time.isoformat() if mm.kalshi_market.start_time else None,
+        # 套利相关
+        "has_opportunity": opportunity is not None,
+        "profit_margin": opportunity.profit_margin if opportunity else 0,
+        "expected_profit": opportunity.expected_profit if opportunity else 0,
+        "arbitrage_type": f"Kalshi{opportunity.kalshi_side.capitalize()}Polymarket{opportunity.polymarket_side.capitalize()}" if opportunity else None
+    }
+    
+    return result
