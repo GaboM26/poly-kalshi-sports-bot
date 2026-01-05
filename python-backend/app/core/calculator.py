@@ -59,9 +59,13 @@ class ArbitrageCalculator:
             kalshi_market=kalshi_market,
             kalshi_price=kalshi_yes_price,
             kalshi_side="yes",
+            kalshi_yes_price=kalshi_yes_price,
+            kalshi_no_price=kalshi_no_price,
             polymarket_market=polymarket_market,
             polymarket_price=polymarket_no_price,
-            polymarket_side="no"
+            polymarket_side="no",
+            polymarket_yes_price=polymarket_yes_price,
+            polymarket_no_price=polymarket_no_price
         )
         
         if opp1 and (not best_opportunity or opp1.profit_margin > best_opportunity.profit_margin):
@@ -75,9 +79,13 @@ class ArbitrageCalculator:
             kalshi_market=kalshi_market,
             kalshi_price=kalshi_no_price,
             kalshi_side="no",
+            kalshi_yes_price=kalshi_yes_price,
+            kalshi_no_price=kalshi_no_price,
             polymarket_market=polymarket_market,
             polymarket_price=polymarket_yes_price,
-            polymarket_side="yes"
+            polymarket_side="yes",
+            polymarket_yes_price=polymarket_yes_price,
+            polymarket_no_price=polymarket_no_price
         )
         
         if opp2 and (not best_opportunity or opp2.profit_margin > best_opportunity.profit_margin):
@@ -105,9 +113,13 @@ class ArbitrageCalculator:
         kalshi_market: KalshiMarket,
         kalshi_price: float,
         kalshi_side: str,
+        kalshi_yes_price: float,
+        kalshi_no_price: float,
         polymarket_market: PolymarketMarket,
         polymarket_price: float,
-        polymarket_side: str
+        polymarket_side: str,
+        polymarket_yes_price: float,
+        polymarket_no_price: float
     ) -> Optional[ArbitrageOpportunity]:
         """计算单个策略的套利"""
         
@@ -146,10 +158,14 @@ class ArbitrageCalculator:
             kalshi_price=kalshi_price,
             kalshi_side=kalshi_side,
             kalshi_bet=kalshi_bet,
+            kalshi_yes_price=kalshi_yes_price,
+            kalshi_no_price=kalshi_no_price,
             polymarket_market_id=polymarket_market.market_id,
             polymarket_price=polymarket_price,
             polymarket_side=polymarket_side,
             polymarket_bet=polymarket_bet,
+            polymarket_yes_price=polymarket_yes_price,
+            polymarket_no_price=polymarket_no_price,
             total_bet=total_bet,
             profit_margin=profit_margin,
             expected_profit=expected_profit,

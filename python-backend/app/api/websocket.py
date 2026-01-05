@@ -127,20 +127,11 @@ def convert_opportunity_to_frontend(opp: ArbitrageOpportunity) -> dict:
     Returns:
         前端格式的字典
     """
-    # 计算 Yes/No 价格
-    if opp.kalshi_side == "yes":
-        kalshi_yes = opp.kalshi_price
-        kalshi_no = 1.0 - opp.kalshi_price
-    else:
-        kalshi_yes = 1.0 - opp.kalshi_price
-        kalshi_no = opp.kalshi_price
-    
-    if opp.polymarket_side == "yes":
-        poly_yes = opp.polymarket_price
-        poly_no = 1.0 - opp.polymarket_price
-    else:
-        poly_yes = 1.0 - opp.polymarket_price
-        poly_no = opp.polymarket_price
+    # 使用存储的完整价格（不再用 1 - price 计算）
+    kalshi_yes = opp.kalshi_yes_price
+    kalshi_no = opp.kalshi_no_price
+    poly_yes = opp.polymarket_yes_price
+    poly_no = opp.polymarket_no_price
     
     return {
         "kalshi_market": {

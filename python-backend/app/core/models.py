@@ -158,15 +158,19 @@ class ArbitrageOpportunity(BaseModel):
     
     # Kalshi 端
     kalshi_market_id: str
-    kalshi_price: float
+    kalshi_price: float  # 策略使用的价格
     kalshi_side: str  # "yes" 或 "no"
     kalshi_bet: float
+    kalshi_yes_price: float = 0.0  # 显示用: Yes 价格
+    kalshi_no_price: float = 0.0   # 显示用: No 价格
     
     # Polymarket 端
     polymarket_market_id: str
-    polymarket_price: float
+    polymarket_price: float  # 策略使用的价格
     polymarket_side: str  # "yes" 或 "no"
     polymarket_bet: float
+    polymarket_yes_price: float = 0.0  # 显示用: Yes 价格 (自己的 ask)
+    polymarket_no_price: float = 0.0   # 显示用: No 价格 (对手的 ask)
     
     # 套利信息
     total_bet: float
