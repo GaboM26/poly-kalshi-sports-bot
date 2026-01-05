@@ -115,21 +115,36 @@ class WebSocketManager:
             self.on_log(msg)
     
     def _is_market_ready(self, matched_market: MatchedMarket) -> bool:
-        """检查单个市场对是否数据完整（两个平台都有实时价格）"""
+        """检查单个市场对是否数据完整（两个平台都有实时价格）
+        
+        Polymarket 需要两个 token 的价格：自己的和对手的
+        """
         k_id = matched_market.kalshi_market.market_id
-        p_token = matched_market.polymarket_market.get_token_for_team(matched_market.team_name)
+        poly_market = matched_market.polymarket_market
         
         # 检查 Kalshi 是否有实时价格（4个值的格式：yes_bid, yes_ask, no_bid, no_ask）
         k_prices = self.kalshi_prices.get(k_id)
         has_kalshi = k_prices is not None and len(k_prices) == 4
         
-        # 检查 Polymarket 是否有实时价格
-        has_poly = p_token and p_token in self.poly_token_prices
+        # 检查 Polymarket 两个 token 是否都有实时价格
+        own_token = poly_market.get_token_for_team(matched_market.team_name)
         
-        return has_kalshi and has_poly
+        # 获取对手 token
+        if matched_market.team_name.upper() == poly_market.team_a.upper():
+            opponent_token = poly_market.token_id_b
+        else:
+            opponent_token = poly_market.token_id_a
+        
+        has_own_poly = own_token and own_token in self.poly_token_prices
+        has_opponent_poly = opponent_token and opponent_token in self.poly_token_prices
+        
+        return has_kalshi and has_own_poly and has_opponent_poly
     
     def get_data_coverage(self) -> dict:
-        """获取数据覆盖率统计"""
+        """获取数据覆盖率统计
+        
+        Polymarket 需要两个 token 都有价格才算 ready
+        """
         total = len(self.matched_markets)
         kalshi_ready = 0
         poly_ready = 0
@@ -137,11 +152,21 @@ class WebSocketManager:
         
         for mm in self.matched_markets:
             k_id = mm.kalshi_market.market_id
-            p_token = mm.polymarket_market.get_token_for_team(mm.team_name)
+            poly_market = mm.polymarket_market
             
             k_prices = self.kalshi_prices.get(k_id)
             has_kalshi = k_prices is not None and len(k_prices) == 4
-            has_poly = p_token and p_token in self.poly_token_prices
+            
+            # 检查两个 Poly token
+            own_token = poly_market.get_token_for_team(mm.team_name)
+            if mm.team_name.upper() == poly_market.team_a.upper():
+                opponent_token = poly_market.token_id_b
+            else:
+                opponent_token = poly_market.token_id_a
+            
+            has_own_poly = own_token and own_token in self.poly_token_prices
+            has_opponent_poly = opponent_token and opponent_token in self.poly_token_prices
+            has_poly = has_own_poly and has_opponent_poly
             
             if has_kalshi:
                 kalshi_ready += 1
@@ -430,7 +455,13 @@ class WebSocketManager:
     def _on_polymarket_price_update(self, update: PriceUpdate):
         """处理 Polymarket 价格更新
         
-        Poly 的 WebSocket 返回的是 token_id 和该 token 的价格
+        Poly 的 WebSocket 返回的是 token_id 和该 token 的 Ask 价格
+        
+        重要: 每个 MatchedMarket 有两个相关 token:
+        - 自己的 token: Ask 价格 = poly_yes_price (买入该队获胜)
+        - 对手的 token: Ask 价格 = poly_no_price (买入该队不获胜 = 对手获胜)
+        
+        不能用 1 - yes_ask 来计算 no_price，因为 1 - ask ≠ 对手的 ask
         """
         self.polymarket_update_count += 1
         
@@ -454,9 +485,15 @@ class WebSocketManager:
             # 找到使用该 token 的所有配对市场
             if update.market_id in self.market_lookup:
                 for mm in self.market_lookup[update.market_id]:
-                    # 更新 MatchedMarket 中缓存的 Poly 价格
-                    mm.poly_yes_price = yes_price
-                    mm.poly_no_price = 1.0 - yes_price
+                    # 判断这个 token 是自己的还是对手的
+                    own_token = mm.polymarket_market.get_token_for_team(mm.team_name)
+                    
+                    if update.market_id == own_token:
+                        # 自己的 token → 更新 yes_price
+                        mm.poly_yes_price = yes_price
+                    else:
+                        # 对手的 token → 更新 no_price (对手的 yes = 自己的 no)
+                        mm.poly_no_price = yes_price
                     
                     self._calculate_and_notify(mm)
             elif self.polymarket_update_count <= 5:
@@ -484,16 +521,23 @@ class WebSocketManager:
         k_yes_ask = k_prices[1]  # yes_ask - 买入 Yes 的价格
         k_no_ask = k_prices[3]   # no_ask - 买入 No 的价格
         
-        # 获取实时 Polymarket 价格
-        p_token = matched_market.polymarket_market.get_token_for_team(matched_market.team_name)
-        p_yes = self.poly_token_prices[p_token]
-        p_no = 1.0 - p_yes
+        # 获取实时 Polymarket 价格 - 需要两个 token 的价格
+        poly_market = matched_market.polymarket_market
+        own_token = poly_market.get_token_for_team(matched_market.team_name)
         
-        # 更新 MatchedMarket 中的价格（用于其他地方引用）
+        # 获取对手 token
+        if matched_market.team_name.upper() == poly_market.team_a.upper():
+            opponent_token = poly_market.token_id_b
+        else:
+            opponent_token = poly_market.token_id_a
+        
+        # 使用缓存中的 MatchedMarket 价格（已由 _on_polymarket_price_update 更新）
+        p_yes = matched_market.poly_yes_price
+        p_no = matched_market.poly_no_price
+        
+        # 更新 MatchedMarket 中的 Kalshi 价格（用于其他地方引用）
         matched_market.kalshi_market.yes_price = k_yes_ask
         matched_market.kalshi_market.no_price = k_no_ask
-        matched_market.poly_yes_price = p_yes
-        matched_market.poly_no_price = p_no
         
         # 记录前几次计算
         if self.calculation_count <= 3:
@@ -557,6 +601,9 @@ class WebSocketManager:
         
         使用实时 Ask 价格计算（与 _calculate_and_notify 保持一致）
         只计算两个平台都有实时数据的市场对
+        
+        Polymarket 价格使用 MatchedMarket 中缓存的价格
+        （由 _on_polymarket_price_update 分别更新 yes 和 no）
         """
         opportunities = []
         
@@ -572,10 +619,10 @@ class WebSocketManager:
             k_yes_price = k_prices[1]  # yes_ask
             k_no_price = k_prices[3]   # no_ask
             
-            # 使用实时 Polymarket 价格
-            p_token = mm.polymarket_market.get_token_for_team(mm.team_name)
-            p_yes_price = self.poly_token_prices[p_token]
-            p_no_price = 1.0 - p_yes_price
+            # 使用 MatchedMarket 中缓存的 Polymarket 价格
+            # 这些价格已由 _on_polymarket_price_update 正确更新
+            p_yes_price = mm.poly_yes_price
+            p_no_price = mm.poly_no_price
             
             opportunity = self.calculator.calculate_single(
                 event_name=mm.event_name,

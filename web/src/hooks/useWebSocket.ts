@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { WsMessage, ArbitrageOpportunity, LogEntry } from '../types';
+import { useEffect, useRef, useState } from 'react';
+import { WsMessage, ArbitrageOpportunity, LogEntry, DataCoverage } from '../types';
 
 export function useWebSocket(url: string) {
   const [opportunities, setOpportunities] = useState<ArbitrageOpportunity[]>([]);
@@ -13,6 +13,17 @@ export function useWebSocket(url: string) {
     polymarketCount: 0,
     matchedCount: 0,
     opportunitiesCount: 0,
+  });
+  const [dataCoverage, setDataCoverage] = useState<DataCoverage>({
+    total_markets: 0,
+    kalshi_ready: 0,
+    polymarket_ready: 0,
+    both_ready: 0,
+    kalshi_coverage: '0/0',
+    polymarket_coverage: '0/0',
+    full_coverage: '0/0',
+    kalshi_connected: false,
+    polymarket_connected: false,
   });
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -169,6 +180,29 @@ export function useWebSocket(url: string) {
     });
   };
 
+  // 定期获取数据覆盖率
+  useEffect(() => {
+    const fetchCoverage = async () => {
+      try {
+        // 从 ws url 推断 api url
+        const apiUrl = url.replace('ws://', 'http://').replace('wss://', 'https://').replace('/ws', '');
+        const response = await fetch(`${apiUrl}/api/data-coverage`);
+        if (response.ok) {
+          const data = await response.json();
+          setDataCoverage(data);
+        }
+      } catch (error) {
+        // 静默失败
+      }
+    };
+
+    // 初始获取
+    fetchCoverage();
+    // 每 3 秒更新一次
+    const interval = setInterval(fetchCoverage, 3000);
+    return () => clearInterval(interval);
+  }, [url]);
+
   return {
     opportunities,
     logs,
@@ -177,5 +211,6 @@ export function useWebSocket(url: string) {
     lastUpdateTime,
     updateCount,
     stats,
+    dataCoverage,
   };
 }

@@ -23,7 +23,7 @@ function App() {
       : `${window.location.protocol}//${window.location.host}`;
   }, []);
   
-  const { opportunities, logs, isConnected, stats, lastUpdateTime, updateCount } = useWebSocket(wsUrl);
+  const { opportunities, logs, isConnected, stats, lastUpdateTime, updateCount, dataCoverage } = useWebSocket(wsUrl);
   const totalProfit = opportunities.reduce((sum, opp) => sum + opp.expected_profit, 0);
   const [selectedOpportunity, setSelectedOpportunity] = useState<ArbitrageOpportunity | null>(null);
   const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking'>('detail');
@@ -36,6 +36,7 @@ function App() {
         totalProfit={totalProfit}
         lastUpdateTime={lastUpdateTime}
         updateCount={updateCount}
+        dataCoverage={dataCoverage}
       />
       
       <main className="flex-1 flex overflow-hidden">

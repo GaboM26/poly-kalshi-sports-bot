@@ -187,6 +187,13 @@ class EventMatcher:
     ) -> Tuple[List[str], List[str], Dict[str, List[MatchedMarket]]]:
         """获取 WebSocket 订阅信息
         
+        重要: 每个 MatchedMarket 需要订阅两个 Poly token:
+        - 自己的 token (用于 poly_yes_price)
+        - 对手的 token (用于 poly_no_price)
+        
+        因为 poly_no_price 不等于 1 - poly_yes_ask，
+        而是等于对手 token 的 ask 价格
+        
         Returns:
             kalshi_tickers: Kalshi 需要订阅的 ticker 列表
             polymarket_token_ids: Polymarket 需要订阅的 token ID 列表
@@ -211,17 +218,32 @@ class EventMatcher:
                 market_lookup[k_id] = []
             market_lookup[k_id].append(mm)
             
-            # Polymarket token (根据队伍获取对应的 token)
-            p_token = mm.polymarket_market.get_token_for_team(mm.team_name)
-            if p_token and p_token not in seen_poly:
-                polymarket_token_ids.append(p_token)
-                seen_poly.add(p_token)
+            # Polymarket: 订阅两个 token (自己的和对手的)
+            poly_market = mm.polymarket_market
             
-            # Poly token 也添加到 lookup
-            if p_token:
-                if p_token not in market_lookup:
-                    market_lookup[p_token] = []
-                market_lookup[p_token].append(mm)
+            # 自己的 token (用于 yes_price)
+            own_token = poly_market.get_token_for_team(mm.team_name)
+            
+            # 对手的 token (用于 no_price)
+            if mm.team_name.upper() == poly_market.team_a.upper():
+                opponent = poly_market.team_b
+            else:
+                opponent = poly_market.team_a
+            opponent_token = poly_market.get_token_for_team(opponent)
+            
+            # 订阅两个 token
+            for p_token in [own_token, opponent_token]:
+                if p_token and p_token not in seen_poly:
+                    polymarket_token_ids.append(p_token)
+                    seen_poly.add(p_token)
+                
+                # 两个 token 都添加到 lookup，指向同一个 MatchedMarket
+                if p_token:
+                    if p_token not in market_lookup:
+                        market_lookup[p_token] = []
+                    # 避免重复添加
+                    if mm not in market_lookup[p_token]:
+                        market_lookup[p_token].append(mm)
         
         logger.info(f"📡 订阅信息: Kalshi {len(kalshi_tickers)} 个, Polymarket {len(polymarket_token_ids)} 个 token")
         

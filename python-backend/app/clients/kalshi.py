@@ -391,24 +391,68 @@ class KalshiClient:
     
     _ws_msg_log_count = 0
     _ws_msg_file_count = 0  # 文件中已保存的消息数
+    # 订单簿缓存: market_ticker -> {"yes": [[price, qty], ...], "no": [[price, qty], ...]}
+    _orderbook_cache: Dict[str, dict] = {}
+    
+    def _apply_delta(self, ticker: str, side: str, price: int, delta: int):
+        """应用增量更新到订单簿
+        
+        Args:
+            ticker: 市场 ticker
+            side: "yes" 或 "no"
+            price: 价格（美分）
+            delta: 数量变化（正数为增加，负数为减少）
+        """
+        if ticker not in KalshiClient._orderbook_cache:
+            return
+        
+        book = KalshiClient._orderbook_cache[ticker][side]
+        
+        # 查找该价格是否存在
+        found_idx = -1
+        for i, entry in enumerate(book):
+            if entry[0] == price:
+                found_idx = i
+                break
+        
+        if found_idx >= 0:
+            # 更新现有价格的数量
+            new_qty = book[found_idx][1] + delta
+            if new_qty <= 0:
+                # 数量为0或负数，删除该价格
+                book.pop(found_idx)
+            else:
+                book[found_idx][1] = new_qty
+        else:
+            # 新价格，添加到订单簿（仅当 delta > 0）
+            if delta > 0:
+                book.append([price, delta])
+                # 按价格排序
+                book.sort(key=lambda x: x[0])
+    
+    def _get_best_bid(self, ticker: str, side: str) -> Optional[float]:
+        """获取订单簿的最佳买价（最高价）"""
+        if ticker not in KalshiClient._orderbook_cache:
+            return None
+        
+        book = KalshiClient._orderbook_cache[ticker][side]
+        if book and len(book) > 0:
+            # 最高买价 = 列表最后一个（已按价格升序排列）
+            return book[-1][0] / 100.0
+        return None
     
     def _parse_ws_message(self, text: str) -> Optional[PriceUpdate]:
-        """解析 WebSocket 消息"""
+        """解析 WebSocket 消息
+        
+        支持两种消息类型:
+        - orderbook_snapshot: 完整订单簿快照（包含 yes 和 no 数组）
+        - orderbook_delta: 增量更新（单个 price/delta/side 更新）
+        
+        维护订单簿缓存以正确处理增量更新
+        """
         try:
             data = json.loads(text)
             msg_type = data.get("type", "")
-            
-            # 保存 orderbook 消息到文件（只保存前 10 条）
-            if msg_type in ["orderbook_delta", "orderbook_snapshot"] and KalshiClient._ws_msg_file_count < 10:
-                msg = data.get("msg", {})
-                market_ticker = msg.get("market_ticker", "")
-                KalshiClient._ws_msg_file_count += 1
-                with open("/Users/meloner/rustcode/tiyutaoli/kalshi_ws_raw_messages.txt", "a") as f:
-                    f.write(f"\n{'='*70}\n")
-                    f.write(f"消息 #{KalshiClient._ws_msg_file_count} | 类型: {msg_type} | 市场: {market_ticker}\n")
-                    f.write(f"{'='*70}\n")
-                    f.write(json.dumps(data, indent=2))
-                    f.write("\n")
             
             # 记录前几条消息的原始格式
             KalshiClient._ws_msg_log_count += 1
@@ -418,49 +462,85 @@ class KalshiClient:
                 if "msg" in data:
                     logger.info(f"   msg keys: {list(data['msg'].keys())}")
             
-            if msg_type in ["orderbook_delta", "orderbook_snapshot"]:
+            if msg_type == "orderbook_snapshot":
+                # 完整快照：替换整个订单簿
                 msg = data.get("msg", {})
                 market_ticker = msg.get("market_ticker", "")
                 
                 if not market_ticker:
                     return None
                 
-                # 解析订单簿数据
-                # 格式: [[price_cents, quantity], ...] - 按价格升序排列
-                # yes_data: Yes 合约的买单 (Bid)
-                # no_data: No 合约的买单 (Bid)
                 yes_data = msg.get("yes", [])
                 no_data = msg.get("no", [])
                 
-                # 提取 Best Bid（最高买价 = 列表最后一个）
-                # Kalshi 价格是美分，需要除以 100
-                yes_bid = None
-                no_bid = None
+                # 初始化/替换订单簿缓存
+                KalshiClient._orderbook_cache[market_ticker] = {
+                    "yes": [list(entry) for entry in yes_data],  # 深拷贝
+                    "no": [list(entry) for entry in no_data]     # 深拷贝
+                }
                 
-                if yes_data and len(yes_data) > 0:
-                    yes_bid = yes_data[-1][0] / 100.0
-                
-                if no_data and len(no_data) > 0:
-                    no_bid = no_data[-1][0] / 100.0
-                
-                # 计算 Ask 价格（关键！）
-                # 在二元期权市场中：Yes Ask ≈ 1 - No Bid, No Ask ≈ 1 - Yes Bid
-                # 这是因为：卖出 Yes ≈ 买入 No，卖出 No ≈ 买入 Yes
-                yes_ask = (1.0 - no_bid) if no_bid is not None else None
-                no_ask = (1.0 - yes_bid) if yes_bid is not None else None
+                # 计算价格
+                yes_bid = self._get_best_bid(market_ticker, "yes")
+                no_bid = self._get_best_bid(market_ticker, "no")
                 
                 if KalshiClient._ws_msg_log_count <= 5:
-                    logger.info(f"   parsed: yes_bid={yes_bid}, yes_ask={yes_ask}, no_bid={no_bid}, no_ask={no_ask}")
+                    logger.info(f"   [Snapshot] {market_ticker}: yes_bid={yes_bid}, no_bid={no_bid}")
                 
-                return PriceUpdate(
-                    platform=Platform.KALSHI,
-                    market_id=market_ticker,
-                    yes_bid=yes_bid,
-                    yes_ask=yes_ask,  # 正确的 Ask 价格
-                    no_bid=no_bid,
-                    no_ask=no_ask,    # 正确的 Ask 价格
-                    timestamp=datetime.now()
-                )
+                # 计算 Ask 价格
+                if yes_bid is not None and no_bid is not None:
+                    yes_ask = 1.0 - no_bid
+                    no_ask = 1.0 - yes_bid
+                    
+                    return PriceUpdate(
+                        platform=Platform.KALSHI,
+                        market_id=market_ticker,
+                        yes_bid=yes_bid,
+                        yes_ask=yes_ask,
+                        no_bid=no_bid,
+                        no_ask=no_ask,
+                        timestamp=datetime.now()
+                    )
+            
+            elif msg_type == "orderbook_delta":
+                # 增量更新：单个价格点的变化
+                # 格式: {"price": 31, "delta": 125, "side": "yes", "market_ticker": "..."}
+                msg = data.get("msg", {})
+                market_ticker = msg.get("market_ticker", "")
+                
+                if not market_ticker:
+                    return None
+                
+                # 如果没有该市场的快照，忽略 delta
+                if market_ticker not in KalshiClient._orderbook_cache:
+                    return None
+                
+                price = msg.get("price")
+                delta = msg.get("delta")
+                side = msg.get("side")
+                
+                if price is not None and delta is not None and side in ["yes", "no"]:
+                    # 应用增量更新
+                    self._apply_delta(market_ticker, side, price, delta)
+                    
+                    # 重新计算价格
+                    yes_bid = self._get_best_bid(market_ticker, "yes")
+                    no_bid = self._get_best_bid(market_ticker, "no")
+                    
+                    # 计算 Ask 价格
+                    if yes_bid is not None and no_bid is not None:
+                        yes_ask = 1.0 - no_bid
+                        no_ask = 1.0 - yes_bid
+                        
+                        return PriceUpdate(
+                            platform=Platform.KALSHI,
+                            market_id=market_ticker,
+                            yes_bid=yes_bid,
+                            yes_ask=yes_ask,
+                            no_bid=no_bid,
+                            no_ask=no_ask,
+                            timestamp=datetime.now()
+                        )
+                
         except Exception as e:
             logger.debug(f"解析 Kalshi WS 消息失败: {e}")
         

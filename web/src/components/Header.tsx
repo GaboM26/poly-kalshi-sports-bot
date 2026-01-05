@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { DataCoverage } from '../types';
 
 interface HeaderProps {
   isConnected: boolean;
@@ -11,9 +12,10 @@ interface HeaderProps {
   totalProfit: number;
   lastUpdateTime: Date | null;
   updateCount: number;
+  dataCoverage: DataCoverage;
 }
 
-export function Header({ isConnected, stats, totalProfit, lastUpdateTime, updateCount }: HeaderProps) {
+export function Header({ isConnected, stats, totalProfit, lastUpdateTime, updateCount, dataCoverage }: HeaderProps) {
   const [isFlashing, setIsFlashing] = useState(false);
   
   // 当收到新数据时闪烁动画
@@ -40,6 +42,14 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
     return () => clearInterval(timer);
   }, []);
 
+  // 计算覆盖率百分比
+  const getCoveragePercent = () => {
+    if (dataCoverage.total_markets === 0) return 0;
+    return Math.round((dataCoverage.both_ready / dataCoverage.total_markets) * 100);
+  };
+
+  const coveragePercent = getCoveragePercent();
+
   return (
     <header className="border-b border-[--border-color] bg-[--bg-secondary]">
       <div className="max-w-7xl mx-auto px-4 h-12 flex items-center justify-between">
@@ -50,10 +60,23 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
         </div>
 
         {/* 统计信息 */}
-        <div className="flex items-center gap-6 text-sm">
-          <StatItem label="K" value={stats.kalshiCount} color="text-blue-400" />
-          <StatItem label="P" value={stats.polymarketCount} color="text-purple-400" />
-          <StatItem label="Matched" value={stats.matchedCount} color="text-[--text-secondary]" />
+        <div className="flex items-center gap-4 text-sm">
+          {/* 数据覆盖率 */}
+          <div className="flex items-center gap-2 px-3 py-1 rounded bg-[--bg-tertiary]" title="数据覆盖率：两个平台都有实时数据的市场对数量">
+            <span className="text-xs text-[--text-muted]">📡 数据:</span>
+            <span className={`font-mono text-xs ${dataCoverage.kalshi_connected ? 'text-blue-400' : 'text-gray-500'}`}>
+              K:{dataCoverage.kalshi_coverage}
+            </span>
+            <span className={`font-mono text-xs ${dataCoverage.polymarket_connected ? 'text-purple-400' : 'text-gray-500'}`}>
+              P:{dataCoverage.polymarket_coverage}
+            </span>
+            <span className={`font-mono text-xs font-semibold ${coveragePercent >= 80 ? 'text-green-400' : coveragePercent >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
+              ✓:{dataCoverage.full_coverage}
+            </span>
+          </div>
+
+          <div className="h-4 w-px bg-[--border-color]" />
+          
           <StatItem 
             label="Opps" 
             value={stats.opportunitiesCount} 
@@ -63,14 +86,14 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
           <StatItem label="Profit" value={`$${totalProfit.toFixed(0)}`} color="text-emerald-400" />
           
           {/* 最后更新时间 */}
-          <div className="flex items-center gap-1.5 pl-4 border-l border-[--border-color]">
+          <div className="flex items-center gap-1.5 pl-3 border-l border-[--border-color]">
             <span className={`text-xs transition-colors duration-300 ${isFlashing ? 'text-cyan-400' : 'text-[--text-muted]'}`}>
               ⏱ {formatLastUpdate()}
             </span>
           </div>
           
           {/* 连接状态 */}
-          <div className="flex items-center gap-1.5 pl-4 border-l border-[--border-color]">
+          <div className="flex items-center gap-1.5 pl-3 border-l border-[--border-color]">
             <span className={`status-dot ${isConnected ? 'status-connected animate-pulse-dot' : 'status-disconnected'}`} />
             <span className={`text-xs ${isConnected ? 'text-green-400' : 'text-red-400'}`}>
               {isConnected ? 'Live' : 'Offline'}

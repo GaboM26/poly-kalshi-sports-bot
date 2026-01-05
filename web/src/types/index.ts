@@ -85,3 +85,16 @@ export interface TrackingStats {
   active: ActiveTracking[];
   recent_completed: TrackingRecord[];
 }
+
+// 数据覆盖率
+export interface DataCoverage {
+  total_markets: number;
+  kalshi_ready: number;
+  polymarket_ready: number;
+  both_ready: number;
+  kalshi_coverage: string;
+  polymarket_coverage: string;
+  full_coverage: string;
+  kalshi_connected: boolean;
+  polymarket_connected: boolean;
+}

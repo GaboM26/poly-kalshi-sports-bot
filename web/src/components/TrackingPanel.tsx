@@ -153,7 +153,7 @@ function CompletedTrackingList({
 
   return (
     <div className="space-y-2">
-      {items.slice().reverse().map((item, index) => {
+      {items.slice().reverse().map((item) => {
         const itemId = `${item.event_name}_${item.team_name}_${item.start_time}`;
         const isSelected = selectedId === itemId;
         

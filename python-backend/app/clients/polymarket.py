@@ -426,17 +426,42 @@ class PolymarketClient:
         1. book 消息 (订阅时的初始快照) - 单个 asset
         2. price_change 消息 (新格式) - 包含多个 asset 的 price_changes 数组
         
+        注意: WebSocket 可能返回列表格式 [{...}] 而不是单个字典
+        
         Returns:
             List[PriceUpdate]: 价格更新列表 (可能为空)
         """
         updates = []
         try:
-            data = json.loads(text)
+            raw_data = json.loads(text)
+            
+            # 处理列表格式
+            items = raw_data if isinstance(raw_data, list) else [raw_data]
+            
+            for data in items:
+                if not isinstance(data, dict):
+                    continue
+                
+                update = self._parse_single_message(data)
+                if update:
+                    updates.extend(update)
+                    
+        except Exception as e:
+            logger.debug(f"解析 Polymarket WS 消息失败: {e}")
+        
+        return updates
+    
+    def _parse_single_message(self, data: dict) -> List[PriceUpdate]:
+        """解析单个消息字典"""
+        updates = []
+        try:
             event_type = data.get("event_type", "")
             
             if event_type == "book":
                 # book 消息：订阅时的初始订单簿快照
                 # 格式: { "event_type": "book", "asset_id": "...", "bids": [...], "asks": [...] }
+                # bids 按价格升序排列，最高买价在最后
+                # asks 按价格降序排列，最低卖价在最后
                 asset_id = data.get("asset_id", "")
                 if not asset_id:
                     return updates
@@ -447,15 +472,25 @@ class PolymarketClient:
                 yes_bid = None
                 yes_ask = None
                 
+                # Best Bid = 最高买价 (bids 最后一个)
                 if bids and len(bids) > 0:
                     try:
-                        yes_bid = float(bids[0].get("price", 0))
+                        best_bid = bids[-1]
+                        if isinstance(best_bid, dict):
+                            yes_bid = float(best_bid.get("price", 0))
+                        elif isinstance(best_bid, (list, tuple)) and len(best_bid) > 0:
+                            yes_bid = float(best_bid[0])
                     except:
                         pass
                 
+                # Best Ask = 最低卖价 (asks 最后一个)
                 if asks and len(asks) > 0:
                     try:
-                        yes_ask = float(asks[0].get("price", 0))
+                        best_ask = asks[-1]
+                        if isinstance(best_ask, dict):
+                            yes_ask = float(best_ask.get("price", 0))
+                        elif isinstance(best_ask, (list, tuple)) and len(best_ask) > 0:
+                            yes_ask = float(best_ask[0])
                     except:
                         pass
                 
@@ -487,13 +522,14 @@ class PolymarketClient:
                     yes_bid = None
                     yes_ask = None
                     
-                    if best_bid:
+                    # 使用 is not None 检查，因为 "0" 或 0 也是有效值
+                    if best_bid is not None and best_bid != "":
                         try:
                             yes_bid = float(best_bid)
                         except:
                             pass
                     
-                    if best_ask:
+                    if best_ask is not None and best_ask != "":
                         try:
                             yes_ask = float(best_ask)
                         except:
