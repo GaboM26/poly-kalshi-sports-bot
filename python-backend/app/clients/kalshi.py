@@ -98,6 +98,37 @@ class KalshiClient:
             logger.error(f"❌ Kalshi 连接异常: {e}")
             return False
     
+    async def get_balance(self) -> Optional[Dict]:
+        """获取账户余额
+        
+        Returns:
+            Dict with keys:
+            - balance: 可用余额（美分）
+            - portfolio_value: 持仓价值（美分）
+            - updated_ts: 更新时间戳
+            返回 None 如果请求失败
+        """
+        try:
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+            
+            path = "/trade-api/v2/portfolio/balance"
+            url = f"{self.base_url}/portfolio/balance"
+            headers = self._get_headers("GET", path)
+            
+            async with self.session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    logger.debug(f"✅ Kalshi 余额: ${data.get('balance', 0) / 100:.2f}")
+                    return data
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"❌ 获取 Kalshi 余额失败: {resp.status} - {error_text}")
+                    return None
+        except Exception as e:
+            logger.error(f"❌ 获取 Kalshi 余额异常: {e}")
+            return None
+    
     async def get_nba_events_and_markets(self) -> tuple[List[KalshiEvent], List[KalshiMarket]]:
         """获取 NBA 事件和市场"""
         try:

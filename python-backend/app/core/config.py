@@ -13,10 +13,27 @@ class KalshiConfig(BaseModel):
 
 
 class PolymarketConfig(BaseModel):
-    """Polymarket API 配置"""
-    api_key: str = ""
+    """Polymarket API 配置
+    
+    对于 Magic Link 用户，只需配置:
+    - private_key: Controller 私钥（从 https://reveal.magic.link/polymarket 获取）
+    - wallet_address: Smart Wallet 地址（从 polymarket.com/settings 查看）
+    
+    API 凭据会自动派生，无需手动配置
+    """
+    # 必需配置
+    private_key: str = ""  # Controller 私钥
+    wallet_address: str = ""  # Smart Wallet 地址
+    
+    # 可选配置（有默认值）
     base_url: str = "https://gamma-api.polymarket.com"
     clob_url: str = "https://clob.polymarket.com"
+    signature_type: int = 1  # 1=Magic Link 用户
+    
+    # API 凭据（自动派生，无需手动配置）
+    api_key: str = ""
+    api_secret: str = ""
+    api_passphrase: str = ""
 
 
 class SettingsConfig(BaseModel):

@@ -135,3 +135,51 @@ async def get_arbitrage_history():
             "completed": [r.to_dict() for r in reversed(completed)]  # 最新的在前
         }
     return {"active": [], "completed": []}
+
+
+@router.get("/api/account-balance")
+async def get_account_balance():
+    """获取两个平台的账户余额"""
+    if not arbitrage_service:
+        return {
+            "kalshi": {"available": False, "error": "服务未初始化"},
+            "polymarket": {"available": False, "error": "服务未初始化"}
+        }
+    
+    # 获取 Kalshi 余额
+    kalshi_data = {"available": False}
+    try:
+        kalshi_balance = await arbitrage_service.kalshi_client.get_balance()
+        if kalshi_balance:
+            kalshi_data = {
+                "available": True,
+                "balance": kalshi_balance.get('balance', 0) / 100.0,  # 美分转美元
+                "portfolio_value": kalshi_balance.get('portfolio_value', 0) / 100.0,  # 美分转美元
+                "updated_ts": kalshi_balance.get('updated_ts', 0)
+            }
+        else:
+            kalshi_data = {"available": False, "error": "获取失败"}
+    except Exception as e:
+        kalshi_data = {"available": False, "error": str(e)}
+    
+    # 获取 Polymarket 余额
+    poly_data = {"available": False}
+    try:
+        poly_balance = await arbitrage_service.polymarket_client.get_balance()
+        if poly_balance:
+            poly_data = {
+                "available": True,
+                "balance": poly_balance.get('balance', 0),  # 已经是美元
+                "pnl": poly_balance.get('pnl', '0'),
+                "trades": poly_balance.get('trades', 0),
+                "positions": poly_balance.get('positions', 0)
+            }
+        else:
+            poly_data = {"available": False, "error": "未配置钱包地址或获取失败"}
+    except Exception as e:
+        poly_data = {"available": False, "error": str(e)}
+    
+    return {
+        "kalshi": kalshi_data,
+        "polymarket": poly_data
+    }

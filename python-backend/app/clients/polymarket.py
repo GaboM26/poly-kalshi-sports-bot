@@ -80,6 +80,269 @@ class PolymarketClient:
         team_upper = team_name.strip().upper()
         return self.team_mappings.get(team_upper, team_upper)
     
+    def _build_hmac_signature(self, timestamp: int, method: str, request_path: str, body: str = "") -> str:
+        """
+        构建 HMAC 签名（L2 认证）
+        
+        Args:
+            timestamp: Unix 时间戳
+            method: HTTP 方法
+            request_path: API 端点路径
+            body: 请求体字符串
+            
+        Returns:
+            URL-safe base64 编码的 HMAC 签名
+        """
+        import hmac
+        import hashlib
+        import base64
+        
+        # 构建消息: timestamp + method + requestPath + body
+        message = f"{timestamp}{method.upper()}{request_path}{body}"
+        
+        # 解码 base64 密钥
+        secret = self.config.api_secret.replace('-', '+').replace('_', '/')
+        # 添加填充
+        padding_needed = (4 - len(secret) % 4) % 4
+        secret += '=' * padding_needed
+        
+        secret_bytes = base64.b64decode(secret)
+        
+        # 创建 HMAC-SHA256 签名
+        signature = hmac.new(secret_bytes, message.encode(), hashlib.sha256).digest()
+        
+        # 编码为 base64 并转为 URL-safe
+        sig_b64 = base64.b64encode(signature).decode()
+        sig_urlsafe = sig_b64.replace('+', '-').replace('/', '_')
+        
+        return sig_urlsafe
+    
+    def _get_controller_address(self) -> str:
+        """从私钥获取控制器地址"""
+        from eth_account import Account
+        
+        private_key = self.config.private_key
+        if private_key.startswith('0x'):
+            private_key = private_key[2:]
+        
+        account = Account.from_key(private_key)
+        return account.address
+    
+    def _build_eip712_signature(self, timestamp: int, nonce: int = 0) -> str:
+        """构建 EIP-712 签名用于 L1 认证"""
+        from eth_account import Account
+        from eth_account.messages import encode_typed_data
+        
+        private_key = self.config.private_key
+        if private_key.startswith('0x'):
+            private_key = private_key[2:]
+        
+        account = Account.from_key(private_key)
+        
+        # EIP-712 domain
+        domain_data = {
+            "name": "ClobAuthDomain",
+            "version": "1",
+            "chainId": 137,  # Polygon
+        }
+        
+        message_types = {
+            "ClobAuth": [
+                {"name": "address", "type": "address"},
+                {"name": "timestamp", "type": "string"},
+                {"name": "nonce", "type": "uint256"},
+                {"name": "message", "type": "string"},
+            ]
+        }
+        
+        message_data = {
+            "address": account.address,
+            "timestamp": str(timestamp),
+            "nonce": nonce,
+            "message": "This message attests that I control the given wallet",
+        }
+        
+        signable_message = encode_typed_data(
+            domain_data=domain_data,
+            message_types=message_types,
+            message_data=message_data
+        )
+        
+        signed_message = account.sign_message(signable_message)
+        return "0x" + signed_message.signature.hex()
+    
+    async def _derive_api_credentials(self) -> bool:
+        """自动派生 API 凭据（如果未配置）
+        
+        Returns:
+            True 如果凭据已存在或派生成功，False 如果失败
+        """
+        # 如果已有凭据，直接返回
+        if self.config.api_key and self.config.api_secret and self.config.api_passphrase:
+            return True
+        
+        if not self.config.private_key:
+            logger.error("❌ 未配置私钥，无法派生 API 凭据")
+            return False
+        
+        try:
+            import time
+            import requests
+            
+            controller_address = self._get_controller_address()
+            timestamp = int(time.time())
+            signature = self._build_eip712_signature(timestamp)
+            
+            headers = {
+                "Content-Type": "application/json",
+                "POLY_ADDRESS": controller_address,
+                "POLY_SIGNATURE": signature,
+                "POLY_TIMESTAMP": str(timestamp),
+                "POLY_NONCE": "0",
+            }
+            
+            # 先尝试派生已有的 API Key
+            url = f"{self.clob_url}/auth/derive-api-key"
+            resp = requests.get(url, headers=headers, timeout=10)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                self.config.api_key = data["apiKey"]
+                self.config.api_secret = data["secret"]
+                self.config.api_passphrase = data["passphrase"]
+                logger.info(f"✅ API 凭据派生成功")
+                return True
+            
+            # 派生失败，尝试创建新的
+            logger.info("📝 未找到已有 API Key，正在创建新的...")
+            
+            # 重新生成签名（时间戳可能过期）
+            timestamp = int(time.time())
+            signature = self._build_eip712_signature(timestamp)
+            headers["POLY_SIGNATURE"] = signature
+            headers["POLY_TIMESTAMP"] = str(timestamp)
+            
+            url = f"{self.clob_url}/auth/api-key"
+            resp = requests.post(url, headers=headers, timeout=10)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                self.config.api_key = data["apiKey"]
+                self.config.api_secret = data["secret"]
+                self.config.api_passphrase = data["passphrase"]
+                logger.info(f"✅ API 凭据创建成功")
+                return True
+            else:
+                logger.error(f"❌ 创建 API 凭据失败: {resp.status_code} - {resp.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ 派生 API 凭据异常: {e}")
+            return False
+    
+    async def get_balance(self) -> Optional[Dict]:
+        """获取 Smart Wallet 账户余额（使用 CLOB API L2 认证）
+        
+        对于 Magic Link 用户:
+        - controller_address: 从私钥派生，用于签名
+        - wallet_address: Smart Wallet 地址，资金存放位置
+        - API 会自动返回关联的 Smart Wallet 余额
+        
+        只需配置: private_key, wallet_address
+        API 凭据会自动派生
+        
+        Returns:
+            Dict with keys:
+            - balance: 可用余额（USDC，已转换为美元）
+            - allowances: 授权额度字典
+            - smart_wallet: Smart Wallet 地址
+            返回 None 如果未配置凭据或请求失败
+        """
+        if not self.config.wallet_address:
+            logger.debug("⚠️ Polymarket Smart Wallet 地址未配置")
+            return None
+        
+        if not self.config.private_key:
+            logger.debug("⚠️ Polymarket 私钥未配置")
+            return None
+        
+        # 自动派生 API 凭据
+        if not await self._derive_api_credentials():
+            logger.error("❌ 无法获取 API 凭据")
+            return None
+        
+        try:
+            import time
+            
+            # 获取控制器地址（从私钥派生，用于 L2 认证签名）
+            controller_address = self._get_controller_address()
+            
+            # 构建请求
+            timestamp = int(time.time())
+            method = "GET"
+            request_path = "/balance-allowance"
+            
+            # 构建查询参数
+            # 对于 Magic Link 用户，使用 signature_type = 1
+            # API 会自动返回关联的 Smart Wallet 余额
+            params = {
+                "asset_type": "COLLATERAL",
+                "signature_type": str(self.config.signature_type)
+            }
+            
+            # 构建 HMAC 签名（路径不包含查询参数）
+            signature = self._build_hmac_signature(timestamp, method, request_path, "")
+            
+            # 构建请求头（L2 认证使用控制器地址）
+            headers = {
+                "Content-Type": "application/json",
+                "POLY_ADDRESS": controller_address,
+                "POLY_SIGNATURE": signature,
+                "POLY_TIMESTAMP": str(timestamp),
+                "POLY_API_KEY": self.config.api_key,
+                "POLY_PASSPHRASE": self.config.api_passphrase,
+            }
+            
+            url = f"{self.clob_url}{request_path}"
+            
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+            
+            async with self.session.get(url, headers=headers, params=params) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    
+                    # 转换余额（从 wei 到美元，USDC 有 6 位小数）
+                    balance = float(data.get('balance', 0)) / 1e6
+                    
+                    # allowances 是一个字典，包含多个合约的授权额度
+                    allowances = data.get('allowances', {})
+                    
+                    logger.info(f"✅ Polymarket Smart Wallet 余额: ${balance:.2f}")
+                    logger.debug(f"   Smart Wallet: {self.config.wallet_address}")
+                    logger.debug(f"   Controller: {controller_address}")
+                    
+                    return {
+                        'balance': balance,
+                        'allowances': allowances,
+                        'smart_wallet': self.config.wallet_address,
+                        'controller': controller_address
+                    }
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"❌ 获取 Polymarket 余额失败: {resp.status} - {error_text}")
+                    return None
+                    
+        except ImportError as e:
+            logger.error(f"⚠️ 缺少依赖库: {e}")
+            logger.error("请运行: pip install web3 eth-account")
+            return None
+        except Exception as e:
+            logger.error(f"❌ 获取 Polymarket 余额异常: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
     async def get_nba_events_and_markets(self) -> tuple[List[PolymarketEvent], List[PolymarketMarket]]:
         """获取 NBA 事件和市场
         

@@ -18,6 +18,11 @@ pydantic-settings==2.1.0
 python-jose[cryptography]==3.3.0
 cryptography==41.0.7
 
+# Polymarket CLOB API（EIP-712 签名）
+web3==6.11.3
+eth-account==0.10.0
+eth-utils==2.2.0
+
 # 配置管理
 toml==0.10.2
 python-dotenv==1.0.0
