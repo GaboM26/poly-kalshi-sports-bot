@@ -12,6 +12,7 @@ from app.core.config import Config
 from app.core.models import ArbitrageOpportunity
 from app.services.arbitrage import ArbitrageService
 from app.services.websocket_manager import WebSocketManager
+from app.services.storage import ArbitrageStorage
 from app.api import routes
 from app.api.websocket import handle_websocket, broadcast_message, broadcast_log
 from app.utils.logger import setup_logger
@@ -23,12 +24,14 @@ logger = setup_logger("arbitrage_scanner", logging.INFO)
 config: Config = None
 arbitrage_service: ArbitrageService = None
 ws_manager: WebSocketManager = None
+storage: ArbitrageStorage = None
 latest_opportunities: List[ArbitrageOpportunity] = []
 
 # 后台任务
 ws_task = None
 broadcast_task = None
 scan_task = None
+storage_task = None
 
 # 广播间隔（秒）
 BROADCAST_INTERVAL = 1.0
@@ -42,7 +45,7 @@ _opportunity_broadcast_count = 0
 
 async def initialize_system():
     """初始化系统"""
-    global config, arbitrage_service, ws_manager, latest_opportunities
+    global config, arbitrage_service, ws_manager, storage, latest_opportunities
     
     logger.info("=" * 60)
     logger.info("🚀 启动预测市场套利扫描器 (模块化版)")
@@ -69,13 +72,18 @@ async def initialize_system():
     # 5. 获取订阅信息
     kalshi_tickers, polymarket_token_ids, market_lookup = arbitrage_service.get_subscription_info()
     
-    # 6. 初始化 WebSocket 管理器
+    # 6. 初始化 SQLite 存储服务（异步队列，不阻塞业务）
+    storage = ArbitrageStorage(db_path="arbitrage_history.db")
+    logger.info("✅ SQLite 存储服务初始化完成")
+    
+    # 7. 初始化 WebSocket 管理器（使用存储服务）
     ws_manager = WebSocketManager(
         kalshi_client=arbitrage_service.kalshi_client,
         polymarket_client=arbitrage_service.polymarket_client,
         calculator=arbitrage_service.calculator,
         on_opportunity=on_arbitrage_opportunity,
-        on_log=on_ws_log
+        on_log=on_ws_log,
+        storage=storage
     )
     ws_manager.set_matched_markets(arbitrage_service.matched_markets, market_lookup)
     
@@ -306,7 +314,7 @@ async def periodic_market_scan():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global ws_task, broadcast_task, scan_task
+    global ws_task, broadcast_task, scan_task, storage_task
     
     # 启动时初始化
     result = await initialize_system()
@@ -316,6 +324,10 @@ async def lifespan(app: FastAPI):
         return
     
     kalshi_tickers, polymarket_token_ids = result
+    
+    # 启动存储 Worker（异步写入数据库）
+    await storage.start()
+    logger.info("📦 存储 Worker 已启动")
     
     # 启动 WebSocket 监听
     ws_task = asyncio.create_task(
@@ -364,6 +376,11 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(ws_task, timeout=5.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
+    
+    # 停止存储服务（flush 剩余数据）
+    if storage:
+        await storage.stop()
+        logger.info("📦 存储服务已停止")
     
     # 关闭服务
     if arbitrage_service:

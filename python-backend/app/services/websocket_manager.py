@@ -3,14 +3,13 @@
 关键改动:
 - Polymarket 价格更新时，需要更新所有使用该 token 的 MatchedMarket
 - 一个 Poly 市场的 token 可能被多个 Kalshi 市场引用（但实际上是同一队伍）
+- 使用 SQLite 异步存储套利记录，存储与业务解耦
 """
 import asyncio
 import logging
-import json
-import os
 from typing import List, Dict, Callable, Optional
 from datetime import datetime
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from app.core.models import (
     PriceUpdate, MatchedMarket, Platform, 
     ArbitrageOpportunity, KalshiMarket, PolymarketMarket
@@ -18,6 +17,7 @@ from app.core.models import (
 from app.clients.kalshi import KalshiClient
 from app.clients.polymarket import PolymarketClient
 from app.core.calculator import ArbitrageCalculator
+from app.services.storage import ArbitrageStorage, get_storage
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ ARBITRAGE_TRACKING_THRESHOLD = 3.0  # 3%
 
 @dataclass
 class ArbitrageTrackingRecord:
-    """套利机会追踪记录"""
+    """套利机会追踪记录（内存中的活跃追踪）"""
     event_name: str
     team_name: str
     kalshi_market_id: str
@@ -36,14 +36,9 @@ class ArbitrageTrackingRecord:
     end_time: Optional[datetime] = None
     max_profit_margin: float = 0.0
     max_profit_time: Optional[datetime] = None
-    profit_history: List[Dict] = None  # 利润变化历史
-    
-    def __post_init__(self):
-        if self.profit_history is None:
-            self.profit_history = []
     
     def to_dict(self) -> dict:
-        """转换为字典（用于JSON序列化）"""
+        """转换为字典（用于API响应）"""
         return {
             "event_name": self.event_name,
             "team_name": self.team_name,
@@ -53,8 +48,7 @@ class ArbitrageTrackingRecord:
             "end_time": self.end_time.isoformat() if self.end_time else None,
             "duration_seconds": (self.end_time - self.start_time).total_seconds() if self.end_time else None,
             "max_profit_margin": self.max_profit_margin,
-            "max_profit_time": self.max_profit_time.isoformat() if self.max_profit_time else None,
-            "profit_history": self.profit_history
+            "max_profit_time": self.max_profit_time.isoformat() if self.max_profit_time else None
         }
 
 
@@ -67,13 +61,17 @@ class WebSocketManager:
         polymarket_client: PolymarketClient,
         calculator: ArbitrageCalculator,
         on_opportunity: Callable[[ArbitrageOpportunity], None] = None,
-        on_log: Callable[[str], None] = None
+        on_log: Callable[[str], None] = None,
+        storage: ArbitrageStorage = None
     ):
         self.kalshi_client = kalshi_client
         self.polymarket_client = polymarket_client
         self.calculator = calculator
         self.on_opportunity = on_opportunity
         self.on_log = on_log
+        
+        # 存储服务（异步队列，不阻塞业务）
+        self.storage = storage or get_storage()
         
         # 配对市场数据
         self.matched_markets: List[MatchedMarket] = []
@@ -102,15 +100,9 @@ class WebSocketManager:
         self.polymarket_update_count = 0
         self.calculation_count = 0
         
-        # 套利追踪
+        # 套利追踪（仅内存中的活跃追踪，历史记录在 SQLite 中）
         # key: "{event_name}_{team_name}" -> ArbitrageTrackingRecord
         self.active_tracking: Dict[str, ArbitrageTrackingRecord] = {}
-        # 已完成的套利记录
-        self.completed_tracking: List[ArbitrageTrackingRecord] = []
-        # 历史记录文件路径
-        self.tracking_file = "arbitrage_tracking_history.json"
-        # 加载历史记录
-        self._load_tracking_history()
     
     def log(self, msg: str):
         """记录日志"""
@@ -211,49 +203,16 @@ class WebSocketManager:
                 return True
         return False
     
-    def _load_tracking_history(self):
-        """加载历史追踪记录"""
-        try:
-            if os.path.exists(self.tracking_file):
-                with open(self.tracking_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self.completed_tracking = []
-                    for record in data.get("completed", []):
-                        self.completed_tracking.append(ArbitrageTrackingRecord(
-                            event_name=record["event_name"],
-                            team_name=record["team_name"],
-                            kalshi_market_id=record["kalshi_market_id"],
-                            polymarket_market_id=record["polymarket_market_id"],
-                            start_time=datetime.fromisoformat(record["start_time"]),
-                            end_time=datetime.fromisoformat(record["end_time"]) if record.get("end_time") else None,
-                            max_profit_margin=record["max_profit_margin"],
-                            max_profit_time=datetime.fromisoformat(record["max_profit_time"]) if record.get("max_profit_time") else None,
-                            profit_history=record.get("profit_history", [])
-                        ))
-                    logger.info(f"📂 加载了 {len(self.completed_tracking)} 条历史套利记录")
-        except Exception as e:
-            logger.error(f"❌ 加载追踪历史失败: {e}")
-    
-    def _save_tracking_history(self):
-        """保存追踪记录到文件"""
-        try:
-            data = {
-                "last_updated": datetime.now().isoformat(),
-                "total_records": len(self.completed_tracking),
-                "completed": [record.to_dict() for record in self.completed_tracking]
-            }
-            with open(self.tracking_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            logger.info(f"💾 保存了 {len(self.completed_tracking)} 条套利记录")
-        except Exception as e:
-            logger.error(f"❌ 保存追踪历史失败: {e}")
     
     def _get_tracking_key(self, event_name: str, team_name: str) -> str:
         """生成追踪记录的唯一key"""
         return f"{event_name}_{team_name}"
     
     def _track_opportunity(self, opportunity: ArbitrageOpportunity):
-        """追踪套利机会（利润超过阈值时开始，低于阈值时结束）"""
+        """追踪套利机会（利润超过阈值时开始，低于阈值时结束）
+        
+        使用异步存储服务，不阻塞业务逻辑
+        """
         key = self._get_tracking_key(opportunity.event_name, opportunity.team_name)
         now = datetime.now()
         profit_margin = opportunity.profit_margin
@@ -261,7 +220,7 @@ class WebSocketManager:
         if profit_margin >= ARBITRAGE_TRACKING_THRESHOLD:
             # 利润超过阈值
             if key not in self.active_tracking:
-                # 开始新的追踪
+                # 开始新的追踪（内存 + SQLite）
                 record = ArbitrageTrackingRecord(
                     event_name=opportunity.event_name,
                     team_name=opportunity.team_name,
@@ -273,21 +232,36 @@ class WebSocketManager:
                 )
                 self.active_tracking[key] = record
                 self.log(f"🎯 开始追踪套利: {opportunity.event_name} {opportunity.team_name} 利润={profit_margin:.2f}%")
+                
+                # 异步存储到 SQLite（非阻塞）
+                self.storage.track_start(
+                    tracking_key=key,
+                    event_name=opportunity.event_name,
+                    team_name=opportunity.team_name,
+                    kalshi_market_id=opportunity.kalshi_market_id,
+                    polymarket_market_id=opportunity.polymarket_market_id,
+                    profit_margin=profit_margin,
+                    kalshi_price=opportunity.kalshi_price,
+                    polymarket_price=opportunity.polymarket_price
+                )
             else:
                 # 更新现有追踪
                 record = self.active_tracking[key]
-                if profit_margin > record.max_profit_margin:
+                is_new_max = profit_margin > record.max_profit_margin
+                
+                if is_new_max:
                     record.max_profit_margin = profit_margin
                     record.max_profit_time = now
                     self.log(f"📈 套利新高: {opportunity.event_name} {opportunity.team_name} 最高利润={profit_margin:.2f}%")
-            
-            # 记录利润历史（每次更新都记录）
-            self.active_tracking[key].profit_history.append({
-                "time": now.isoformat(),
-                "profit_margin": profit_margin,
-                "kalshi_price": opportunity.kalshi_price,
-                "polymarket_price": opportunity.polymarket_price
-            })
+                
+                # 异步记录利润历史到 SQLite（非阻塞）
+                self.storage.track_update(
+                    tracking_key=key,
+                    profit_margin=profit_margin,
+                    is_new_max=is_new_max,
+                    kalshi_price=opportunity.kalshi_price,
+                    polymarket_price=opportunity.polymarket_price
+                )
         else:
             # 利润低于阈值
             if key in self.active_tracking:
@@ -299,12 +273,11 @@ class WebSocketManager:
                 self.log(f"⏹️ 套利结束: {record.event_name} {record.team_name}")
                 self.log(f"   持续时间: {duration:.1f}秒, 最高利润: {record.max_profit_margin:.2f}%")
                 
-                # 移到已完成列表
-                self.completed_tracking.append(record)
+                # 从内存中移除
                 del self.active_tracking[key]
                 
-                # 保存到文件
-                self._save_tracking_history()
+                # 异步保存到 SQLite（非阻塞）
+                self.storage.track_end(key)
     
     def _check_expired_tracking(self, current_opportunities: List[ArbitrageOpportunity]):
         """检查并结束不再存在的套利追踪"""
@@ -325,17 +298,25 @@ class WebSocketManager:
             self.log(f"⏹️ 套利结束(消失): {record.event_name} {record.team_name}")
             self.log(f"   持续时间: {duration:.1f}秒, 最高利润: {record.max_profit_margin:.2f}%")
             
-            self.completed_tracking.append(record)
+            # 从内存中移除
             del self.active_tracking[key]
-        
-        if expired_keys:
-            self._save_tracking_history()
+            
+            # 异步保存到 SQLite（非阻塞）
+            self.storage.track_end(key)
     
     def get_tracking_stats(self) -> dict:
         """获取追踪统计信息"""
+        # 从 SQLite 获取统计信息
+        storage_stats = self.storage.get_stats()
+        
+        # 从 SQLite 获取最近完成的记录
+        recent_completed = self.storage.get_all_completed_with_history(limit=10)
+        
         return {
             "active_count": len(self.active_tracking),
-            "completed_count": len(self.completed_tracking),
+            "completed_count": storage_stats['completed_count'],
+            "total_history_points": storage_stats['total_history_points'],
+            "storage_queue_size": storage_stats['queue_size'],
             "active": [
                 {
                     "event_name": r.event_name,
@@ -346,9 +327,7 @@ class WebSocketManager:
                 }
                 for r in self.active_tracking.values()
             ],
-            "recent_completed": [
-                r.to_dict() for r in self.completed_tracking[-10:]  # 最近10条
-            ]
+            "recent_completed": recent_completed
         }
     
     def set_matched_markets(
@@ -681,9 +660,12 @@ class WebSocketManager:
                 duration = (record.end_time - record.start_time).total_seconds()
                 self.log(f"⏹️ 套利结束(无机会): {record.event_name} {record.team_name}")
                 self.log(f"   持续时间: {duration:.1f}秒, 最高利润: {record.max_profit_margin:.2f}%")
-                self.completed_tracking.append(record)
+                
+                # 从内存中移除
                 del self.active_tracking[key]
-                self._save_tracking_history()
+                
+                # 异步保存到 SQLite（非阻塞）
+                self.storage.track_end(key)
         
         # 每 100 次计算记录统计
         total = self._opportunity_count + self._no_opportunity_count
@@ -748,6 +730,8 @@ class WebSocketManager:
     def get_stats(self) -> dict:
         """获取统计信息"""
         coverage = self.get_data_coverage()
+        storage_stats = self.storage.get_stats()
+        
         return {
             "matched_markets": len(self.matched_markets),
             "kalshi_connected": self.kalshi_connected,
@@ -757,7 +741,9 @@ class WebSocketManager:
             "calculations": self.calculation_count,
             "opportunities": len(self.opportunities),
             "active_tracking": len(self.active_tracking),
-            "completed_tracking": len(self.completed_tracking),
+            "completed_tracking": storage_stats['completed_count'],
+            "total_history_points": storage_stats['total_history_points'],
+            "storage_queue_size": storage_stats['queue_size'],
             # 数据覆盖率
             "data_coverage": coverage
         }
