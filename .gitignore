@@ -23,6 +23,15 @@ wheels/
 .installed.cfg
 *.egg
 
+# Rust
+rust-backend/target/
+**/*.rs.bk
+*.pdb
+
+# Node.js
+node_modules/
+web/dist/
+
 # IDE
 .vscode/
 .idea/
@@ -30,9 +39,30 @@ wheels/
 *.swo
 *~
 
+py-clob-client/
+
 # Logs
 *.log
 
 # Environment
 .env
 .env.local
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+arbitrage_history.db
+arbitrage_tracking_history.json
+
+# Config files (may contain sensitive info)
+config.toml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.orig

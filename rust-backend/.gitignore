@@ -1,0 +1,39 @@
+# Rust 编译产物
+target/
+**/*.rs.bk
+*.pdb
+
+# Cargo
+Cargo.lock
+
+# 数据库文件（运行时生成）
+*.db
+*.db-shm
+*.db-wal
+arbitrage_history.db
+
+# 配置文件（包含敏感信息，使用符号链接）
+config.toml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 日志文件
+*.log
+
+# 环境变量
+.env
+.env.local
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.bak
+*.orig
