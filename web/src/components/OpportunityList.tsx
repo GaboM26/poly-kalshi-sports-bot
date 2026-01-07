@@ -258,12 +258,12 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                     )}
                   </td>
 
-                  {/* Profit */}
+                  {/* Profit (净利润) */}
                   <td className="text-right">
                     {market.has_opportunity ? (
                       <div className={getProfitClass(market.profit_margin)}>
                         <span className="text-base font-bold tabular-nums">{market.profit_margin.toFixed(2)}%</span>
-                        <span className="text-xs ml-1 opacity-70">${market.expected_profit.toFixed(0)}</span>
+                        <span className="text-xs ml-1 opacity-70" title="净利润（扣除Kalshi手续费）">${market.expected_profit.toFixed(2)}</span>
                       </div>
                     ) : (
                       <span className="text-[--text-muted] text-xs">-</span>

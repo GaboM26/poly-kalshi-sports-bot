@@ -17,6 +17,7 @@ pydantic-settings==2.1.0
 # 加密和认证
 python-jose[cryptography]==3.3.0
 cryptography==41.0.7
+passlib[bcrypt]==1.7.4
 
 # Polymarket CLOB API（py-clob-client 自带 web3, eth-account, eth-utils）
 py-clob-client>=0.18.0

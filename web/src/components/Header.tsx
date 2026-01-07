@@ -14,9 +14,11 @@ interface HeaderProps {
   updateCount: number;
   dataCoverage: DataCoverage;
   apiBaseUrl: string;
+  onLogout?: () => void;
+  username?: string | null;
 }
 
-export function Header({ isConnected, stats, totalProfit, lastUpdateTime, updateCount, dataCoverage, apiBaseUrl }: HeaderProps) {
+export function Header({ isConnected, stats, totalProfit, lastUpdateTime, updateCount, dataCoverage, apiBaseUrl, onLogout, username }: HeaderProps) {
   const [isFlashing, setIsFlashing] = useState(false);
   const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null);
   
@@ -168,6 +170,20 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
               {isConnected ? 'Live' : 'Offline'}
             </span>
           </div>
+
+          {/* 用户信息和退出 */}
+          {username && onLogout && (
+            <div className="flex items-center gap-2 pl-3 border-l border-[--border-color]">
+              <span className="text-xs text-[--text-muted]">👤 {username}</span>
+              <button
+                onClick={onLogout}
+                className="px-2 py-1 text-xs text-[--text-muted] hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                title="退出登录"
+              >
+                退出
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </header>

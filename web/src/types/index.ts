@@ -62,7 +62,10 @@ export interface MatchedMarketData {
   // 套利相关
   has_opportunity: boolean;
   profit_margin: number;
-  expected_profit: number;
+  expected_profit: number;  // 净利润（扣除费用后）
+  gross_profit?: number;    // 毛利润（扣除费用前）
+  kalshi_contracts?: number;  // Kalshi 合约数量
+  kalshi_fee?: number;      // Kalshi 交易费用
   arbitrage_type?: string;
 }
 

@@ -1,11 +1,25 @@
 """API 路由定义"""
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException, status
 from pydantic import BaseModel
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from app.services.arbitrage import ArbitrageService
     from app.services.websocket_manager import WebSocketManager
+
+
+# 认证请求模型
+class LoginRequest(BaseModel):
+    """登录请求"""
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    """登录响应"""
+    access_token: str
+    token_type: str = "bearer"
+    username: str
 
 
 # 请求模型
@@ -43,6 +57,7 @@ router = APIRouter()
 arbitrage_service: 'ArbitrageService' = None
 ws_manager: 'WebSocketManager' = None
 latest_opportunities = []
+config = None  # 将由 main.py 设置
 
 
 def set_services(arb_service: 'ArbitrageService', ws_mgr: 'WebSocketManager', opportunities: list):
@@ -53,6 +68,12 @@ def set_services(arb_service: 'ArbitrageService', ws_mgr: 'WebSocketManager', op
     latest_opportunities = opportunities
 
 
+def set_config(cfg):
+    """设置配置实例（由 main.py 调用）"""
+    global config
+    config = cfg
+
+
 @router.get("/")
 async def root():
     """根路径"""
@@ -61,6 +82,41 @@ async def root():
         "version": "2.0.0",
         "status": "running"
     }
+
+
+@router.post("/api/auth/login", response_model=LoginResponse)
+async def login(request: LoginRequest):
+    """用户登录
+    
+    验证用户名和密码，返回 JWT token
+    """
+    from app.utils.auth import create_access_token
+    
+    if not config:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="服务器配置未初始化"
+        )
+    
+    # 验证用户名和密码（简单比对，配置文件中的密码是明文）
+    if (request.username != config.auth.username or 
+        request.password != config.auth.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户名或密码错误",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # 创建访问令牌
+    access_token = create_access_token(
+        data={"sub": request.username},
+        auth_config=config.auth
+    )
+    
+    return LoginResponse(
+        access_token=access_token,
+        username=request.username
+    )
 
 
 @router.get("/api/stats")

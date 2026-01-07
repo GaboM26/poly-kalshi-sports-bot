@@ -15,6 +15,22 @@ import {
 
 const API_BASE = '/api';
 
+/**
+ * 获取认证头
+ */
+function getAuthHeaders(): HeadersInit {
+  const token = localStorage.getItem('auth_token');
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+  };
+  
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  
+  return headers;
+}
+
 export async function fetchKalshiMarkets(): Promise<Market[]> {
   const response = await fetch(`${API_BASE}/markets/kalshi`);
   if (!response.ok) {
@@ -68,9 +84,7 @@ export async function createKalshiOrder(
 ): Promise<OrderResponse> {
   const response = await fetch(`${baseUrl}/api/order/kalshi`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: getAuthHeaders(),
     body: JSON.stringify(request),
   });
   return response.json();
@@ -124,9 +138,7 @@ export async function createPolymarketOrder(
 ): Promise<PolymarketOrderResponse> {
   const response = await fetch(`${baseUrl}/api/order/polymarket`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: getAuthHeaders(),
     body: JSON.stringify(request),
   });
   return response.json();
@@ -176,9 +188,7 @@ export async function executeArbitrage(
 ): Promise<ArbitrageExecuteResponse> {
   const response = await fetch(`${baseUrl}/api/arbitrage/execute`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: getAuthHeaders(),
     body: JSON.stringify(request),
   });
   return response.json();

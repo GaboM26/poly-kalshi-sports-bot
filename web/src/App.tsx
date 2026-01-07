@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { OpportunityList } from './components/OpportunityList';
 import { LogPanel } from './components/LogPanel';
@@ -7,10 +7,38 @@ import { ArbitrageHistory } from './components/ArbitrageHistory';
 import { HistoryExplorer } from './components/HistoryExplorer';
 import { OrderPanel } from './components/OrderPanel';
 import { OrderForm } from './components/OrderForm';
+import { Login } from './components/Login';
 import { useWebSocket } from './hooks/useWebSocket';
 import { MatchedMarketData } from './types';
 
 function App() {
+  // 登录状态管理
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [currentUsername, setCurrentUsername] = useState<string | null>(null);
+
+  // 检查本地存储的 token
+  useEffect(() => {
+    const token = localStorage.getItem('auth_token');
+    const username = localStorage.getItem('username');
+    if (token && username) {
+      setCurrentUsername(username);
+      setIsAuthenticated(true);
+    }
+  }, []);
+
+  // 登录成功处理
+  const handleLoginSuccess = (_token: string, username: string) => {
+    setCurrentUsername(username);
+    setIsAuthenticated(true);
+  };
+
+  // 退出登录
+  const handleLogout = () => {
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('username');
+    setCurrentUsername(null);
+    setIsAuthenticated(false);
+  };
   const wsUrl = useMemo(() => {
     const devPorts = ['5175', '5176', '5177', '5173'];
     const isDev = devPorts.includes(window.location.port);
@@ -36,6 +64,11 @@ function App() {
   const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking' | 'history'>('detail');
   const [showHistoryExplorer, setShowHistoryExplorer] = useState(false);
 
+  // 如果未登录，显示登录页面
+  if (!isAuthenticated) {
+    return <Login onLoginSuccess={handleLoginSuccess} apiBaseUrl={apiBaseUrl} />;
+  }
+
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <Header 
@@ -46,6 +79,8 @@ function App() {
         updateCount={updateCount}
         dataCoverage={dataCoverage}
         apiBaseUrl={apiBaseUrl}
+        onLogout={handleLogout}
+        username={currentUsername}
       />
       
       <main className="flex-1 flex overflow-hidden">
@@ -154,7 +189,7 @@ function App() {
                             {selectedMarket.profit_margin.toFixed(2)}%
                           </div>
                           <div className="text-[10px] text-green-400 mt-0.5">
-                            ${selectedMarket.expected_profit.toFixed(2)}
+                            净利润: ${selectedMarket.expected_profit.toFixed(2)}
                           </div>
                         </div>
                       ) : (
@@ -211,12 +246,45 @@ function App() {
                       </div>
                     </div>
 
-                    {/* 策略 */}
-                    {selectedMarket.has_opportunity && selectedMarket.arbitrage_type && (
-                      <div className="bg-[--bg-tertiary] rounded p-2.5">
-                        <div className="text-[10px] text-[--text-muted] mb-1">套利策略</div>
-                        <div className="text-xs text-[--text-primary] font-mono">
-                          {selectedMarket.arbitrage_type}
+                    {/* 策略和费用 */}
+                    {selectedMarket.has_opportunity && (
+                      <div className="bg-[--bg-tertiary] rounded p-2.5 space-y-2">
+                        {selectedMarket.arbitrage_type && (
+                          <div>
+                            <div className="text-[10px] text-[--text-muted] mb-1">套利策略</div>
+                            <div className="text-xs text-[--text-primary] font-mono">
+                              {selectedMarket.arbitrage_type}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* 费用明细 */}
+                        <div className="pt-2 border-t border-[--border-color]">
+                          <div className="text-[10px] text-[--text-muted] mb-1.5">费用明细</div>
+                          <div className="space-y-1 text-[10px]">
+                            {selectedMarket.kalshi_contracts !== undefined && (
+                              <div className="flex justify-between">
+                                <span className="text-[--text-muted]">Kalshi 合约数</span>
+                                <span className="text-blue-400 font-mono">{Math.round(selectedMarket.kalshi_contracts)}</span>
+                              </div>
+                            )}
+                            {selectedMarket.kalshi_fee !== undefined && (
+                              <div className="flex justify-between">
+                                <span className="text-[--text-muted]">Kalshi 手续费</span>
+                                <span className="text-orange-400 font-mono">-${selectedMarket.kalshi_fee.toFixed(2)}</span>
+                              </div>
+                            )}
+                            {selectedMarket.gross_profit !== undefined && (
+                              <div className="flex justify-between">
+                                <span className="text-[--text-muted]">毛利润</span>
+                                <span className="text-[--text-secondary] font-mono">${selectedMarket.gross_profit.toFixed(2)}</span>
+                              </div>
+                            )}
+                            <div className="flex justify-between pt-1 border-t border-[--border-color]">
+                              <span className="text-[--text-muted] font-medium">净利润</span>
+                              <span className="text-green-400 font-mono font-medium">${selectedMarket.expected_profit.toFixed(2)}</span>
+                            </div>
+                          </div>
                         </div>
                       </div>
                     )}

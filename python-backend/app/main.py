@@ -91,8 +91,9 @@ async def initialize_system():
     # 初始套利机会列表为空
     arbitrage_service.stats.arbitrage_opportunities = 0
     
-    # 8. 设置 API 路由的服务实例
+    # 8. 设置 API 路由的服务实例和配置
     routes.set_services(arbitrage_service, ws_manager, latest_opportunities)
+    routes.set_config(config)
     
     stats = arbitrage_service.get_stats()
     logger.info("=" * 60)

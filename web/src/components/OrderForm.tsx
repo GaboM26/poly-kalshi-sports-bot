@@ -8,7 +8,6 @@ interface OrderFormProps {
   onOrderPlaced?: () => void;
 }
 
-type Platform = 'kalshi' | 'polymarket';
 type Side = 'yes' | 'no';
 type Action = 'buy' | 'sell';
 

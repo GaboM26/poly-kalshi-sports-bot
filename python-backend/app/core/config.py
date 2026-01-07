@@ -43,11 +43,20 @@ class SettingsConfig(BaseModel):
     default_bet_amount: float = 100.0
 
 
+class AuthConfig(BaseModel):
+    """认证配置"""
+    username: str = "admin"
+    password: str = "admin123"
+    secret_key: str = "your-secret-key-change-this-in-production"
+    token_expire_hours: int = 24
+
+
 class Config(BaseModel):
     """主配置类"""
     kalshi: KalshiConfig
     polymarket: PolymarketConfig
     settings: SettingsConfig
+    auth: AuthConfig = AuthConfig()  # 默认值，兼容旧配置
 
     @classmethod
     def from_file(cls, config_path: str = "config.toml") -> "Config":
