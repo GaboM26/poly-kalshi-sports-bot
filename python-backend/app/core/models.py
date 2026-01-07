@@ -163,6 +163,8 @@ class ArbitrageOpportunity(BaseModel):
     kalshi_bet: float
     kalshi_yes_price: float = 0.0  # 显示用: Yes 价格
     kalshi_no_price: float = 0.0   # 显示用: No 价格
+    kalshi_contracts: float = 0.0  # Kalshi 合约数量
+    kalshi_fee: float = 0.0  # Kalshi Trading Fee
     
     # Polymarket 端
     polymarket_market_id: str
@@ -176,6 +178,7 @@ class ArbitrageOpportunity(BaseModel):
     total_bet: float
     profit_margin: float
     expected_profit: float
+    gross_profit: float = 0.0  # 扣除费用前的毛利润
     timestamp: datetime
     start_time: Optional[datetime] = None  # 比赛开始时间
 

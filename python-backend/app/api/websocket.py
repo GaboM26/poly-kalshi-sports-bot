@@ -226,6 +226,9 @@ def convert_matched_market_to_frontend(mm, kalshi_prices: dict, poly_token_price
         "has_opportunity": opportunity is not None,
         "profit_margin": opportunity.profit_margin if opportunity else 0,
         "expected_profit": opportunity.expected_profit if opportunity else 0,
+        "gross_profit": opportunity.gross_profit if opportunity else 0,
+        "kalshi_contracts": opportunity.kalshi_contracts if opportunity else 0,
+        "kalshi_fee": opportunity.kalshi_fee if opportunity else 0,
         "arbitrage_type": f"Kalshi{opportunity.kalshi_side.capitalize()}Polymarket{opportunity.polymarket_side.capitalize()}" if opportunity else None
     }
     

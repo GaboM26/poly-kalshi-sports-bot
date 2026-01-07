@@ -9,8 +9,15 @@
 - Kalshi MEM No: 买 MEM 不获胜
 - Poly MEM Yes: 买 MEM 获胜 (= prices[0] 如果 MEM 是 team_a)
 - Poly MEM No: 买 MEM 不获胜 (= prices[1] = LAL 获胜)
+
+Kalshi Trading Fees:
+- fees = round up(0.07 x C x P x (1-P))
+- P = 合约价格（美元），例如 50 cents = 0.5
+- C = 交易的合约数量
+- round up = 向上取整到下一个美分
 """
 import logging
+import math
 from typing import Optional
 from datetime import datetime
 from .models import KalshiMarket, PolymarketMarket, ArbitrageOpportunity
@@ -21,9 +28,35 @@ logger = logging.getLogger(__name__)
 class ArbitrageCalculator:
     """套利计算器"""
     
+    # Kalshi Trading Fee 费率
+    KALSHI_TRADING_FEE_RATE = 0.07
+    
     def __init__(self, min_profit_margin: float = 1.0, default_bet_amount: float = 100.0):
         self.min_profit_margin = min_profit_margin
         self.default_bet_amount = default_bet_amount
+    
+    def _calculate_kalshi_trading_fee(self, contracts: float, price: float) -> float:
+        """计算 Kalshi Trading Fee
+        
+        公式: fees = round up(0.07 x C x P x (1-P))
+        
+        Args:
+            contracts: 合约数量 C
+            price: 合约价格 P（美元，例如 0.45 = 45 cents）
+            
+        Returns:
+            费用金额（美元），向上取整到美分
+        """
+        if contracts <= 0 or price <= 0 or price >= 1:
+            return 0.0
+        
+        # 计算原始费用
+        raw_fee = self.KALSHI_TRADING_FEE_RATE * contracts * price * (1 - price)
+        
+        # 向上取整到美分 (round up to next cent)
+        fee = math.ceil(raw_fee * 100) / 100
+        
+        return fee
     
     def calculate_single(
         self,
@@ -121,21 +154,13 @@ class ArbitrageCalculator:
         polymarket_yes_price: float,
         polymarket_no_price: float
     ) -> Optional[ArbitrageOpportunity]:
-        """计算单个策略的套利"""
+        """计算单个策略的套利（含 Kalshi Trading Fee）"""
         
         # 计算隐含概率总和
         implied_prob_sum = kalshi_price + polymarket_price
         
         # 如果总和 >= 1，没有套利机会
         if implied_prob_sum >= 1.0:
-            return None
-        
-        # 计算利润率
-        profit_rate = (1.0 / implied_prob_sum - 1.0)
-        profit_margin = profit_rate * 100.0
-        
-        # 检查是否满足最小利润率
-        if profit_margin < self.min_profit_margin:
             return None
         
         # 计算最优下注金额
@@ -145,11 +170,26 @@ class ArbitrageCalculator:
         kalshi_bet = guaranteed_return * kalshi_price
         polymarket_bet = guaranteed_return * polymarket_price
         
-        expected_profit = guaranteed_return - total_bet
+        # 计算 Kalshi 合约数量和交易费用
+        # 合约数量 = 下注金额 / 合约价格
+        kalshi_contracts = kalshi_bet / kalshi_price if kalshi_price > 0 else 0
+        kalshi_fee = self._calculate_kalshi_trading_fee(kalshi_contracts, kalshi_price)
+        
+        # 计算扣除费用后的预期利润
+        gross_profit = guaranteed_return - total_bet
+        expected_profit = gross_profit - kalshi_fee
+        
+        # 计算扣除费用后的利润率
+        profit_margin = (expected_profit / total_bet) * 100.0 if total_bet > 0 else 0.0
+        
+        # 检查是否满足最小利润率（扣除费用后）
+        if profit_margin < self.min_profit_margin:
+            return None
         
         logger.debug(f"💰 套利机会: {event_name} - {team_name}")
         logger.debug(f"   Kalshi {kalshi_side}: {kalshi_price:.2f}, Poly {polymarket_side}: {polymarket_price:.2f}")
-        logger.debug(f"   利润率: {profit_margin:.2f}%, 预期利润: ${expected_profit:.2f}")
+        logger.debug(f"   合约数: {kalshi_contracts:.0f}, Kalshi费用: ${kalshi_fee:.2f}")
+        logger.debug(f"   利润率: {profit_margin:.2f}%, 预期利润: ${expected_profit:.2f} (毛利: ${gross_profit:.2f})")
         
         return ArbitrageOpportunity(
             event_name=event_name,
@@ -160,6 +200,8 @@ class ArbitrageCalculator:
             kalshi_bet=kalshi_bet,
             kalshi_yes_price=kalshi_yes_price,
             kalshi_no_price=kalshi_no_price,
+            kalshi_contracts=kalshi_contracts,
+            kalshi_fee=kalshi_fee,
             polymarket_market_id=polymarket_market.market_id,
             polymarket_price=polymarket_price,
             polymarket_side=polymarket_side,
@@ -169,6 +211,7 @@ class ArbitrageCalculator:
             total_bet=total_bet,
             profit_margin=profit_margin,
             expected_profit=expected_profit,
+            gross_profit=gross_profit,
             timestamp=datetime.now(),
             start_time=kalshi_market.start_time  # 从 Kalshi 市场获取开始时间
         )
