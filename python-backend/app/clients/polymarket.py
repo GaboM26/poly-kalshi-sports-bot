@@ -10,7 +10,8 @@ import asyncio
 import websockets
 import json
 import logging
-from typing import List, Optional, Dict, Callable
+import time
+from typing import List, Optional, Dict, Callable, Tuple
 from datetime import datetime
 from app.core.models import PolymarketMarket, PolymarketEvent, Platform, PriceUpdate
 from app.core.config import PolymarketConfig
@@ -342,6 +343,195 @@ class PolymarketClient:
             import traceback
             traceback.print_exc()
             return None
+    
+    def _get_clob_client(self):
+        """获取 py-clob-client 的 ClobClient 实例
+        
+        Returns:
+            ClobClient 实例，失败返回 None
+        """
+        try:
+            from py_clob_client.client import ClobClient
+            from py_clob_client.clob_types import ApiCreds
+            
+            # 确保有 API 凭据
+            if not self.config.api_key or not self.config.api_secret or not self.config.api_passphrase:
+                logger.error("❌ API 凭据未配置，请先调用 get_balance() 或 _derive_api_credentials()")
+                return None
+            
+            api_creds = ApiCreds(
+                api_key=self.config.api_key,
+                api_secret=self.config.api_secret,
+                api_passphrase=self.config.api_passphrase
+            )
+            
+            # 获取私钥（去掉 0x 前缀）
+            private_key = self.config.private_key
+            if private_key.startswith('0x'):
+                private_key = private_key[2:]
+            
+            # 创建客户端
+            # signature_type: 1 = Magic Link 用户 (EOA signing for Polymarket Proxy Wallet)
+            # funder: Smart Wallet 地址（资金来源）
+            client = ClobClient(
+                host=self.clob_url,
+                chain_id=137,  # Polygon
+                key=private_key,
+                creds=api_creds,
+                signature_type=self.config.signature_type,  # 1 for Magic Link
+                funder=self.config.wallet_address  # Smart Wallet 地址
+            )
+            
+            return client
+            
+        except ImportError as e:
+            logger.error(f"❌ 缺少 py-clob-client 库: {e}")
+            logger.error("请运行: pip install py-clob-client")
+            return None
+        except Exception as e:
+            logger.error(f"❌ 创建 ClobClient 失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    async def create_market_order(
+        self,
+        token_id: str,
+        side: str,
+        amount: float,
+        price: Optional[float] = None,
+        tick_size: str = "0.01"
+    ) -> Tuple[Optional[Dict], float]:
+        """创建市价订单
+        
+        Args:
+            token_id: Token ID（从市场数据中获取）
+            side: "buy" 或 "sell"
+            amount: 下单金额（USDC）
+            price: 可选的价格限制（市价单通常不需要）
+            tick_size: 价格精度（"0.1", "0.01", "0.001", "0.0001"）
+            
+        Returns:
+            (订单响应, 下单耗时ms)
+            订单响应为 None 表示下单失败
+        """
+        start_time = time.perf_counter()
+        
+        try:
+            # 确保有 API 凭据
+            if not await self._derive_api_credentials():
+                logger.error("❌ 无法获取 API 凭据")
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                return None, elapsed_ms
+            
+            # 获取 ClobClient
+            client = self._get_clob_client()
+            if not client:
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                return None, elapsed_ms
+            
+            from py_clob_client.clob_types import MarketOrderArgs, OrderType, PartialCreateOrderOptions
+            
+            # 构建市价订单参数
+            # side: BUY 或 SELL
+            side_enum = "BUY" if side.lower() == "buy" else "SELL"
+            
+            logger.info(f"📤 [Polymarket] 下单请求: {side_enum} ${amount:.2f} @ token={token_id[:16]}...")
+            
+            # 创建市价订单参数
+            order_args = MarketOrderArgs(
+                token_id=token_id,
+                amount=amount,
+                side=side_enum,
+                price=price if price is not None else 0.0,  # 市价单用 0 表示不限价
+            )
+            
+            # 设置订单选项
+            options = PartialCreateOrderOptions(tick_size=tick_size)
+            
+            # 1. 创建签名订单
+            signed_order = client.create_market_order(order_args, options)
+            
+            # 2. 提交订单 (FOK = Fill or Kill)
+            result = client.post_order(signed_order, OrderType.FOK)
+            
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            
+            if result and result.get("success"):
+                order_id = result.get("orderID", "unknown")
+                status = result.get("status", "unknown")
+                taking_amount = result.get("takingAmount", "0")
+                making_amount = result.get("makingAmount", "0")
+                
+                logger.info(f"✅ [Polymarket] 下单成功: order_id={order_id}, status={status}, "
+                           f"taking={taking_amount}, making={making_amount}, 耗时={elapsed_ms:.2f}ms")
+                return result, elapsed_ms
+            else:
+                error_msg = result.get("errorMsg", "Unknown error") if result else "No response"
+                logger.error(f"❌ [Polymarket] 下单失败: {error_msg}, 耗时={elapsed_ms:.2f}ms")
+                return result, elapsed_ms
+                
+        except Exception as e:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            logger.error(f"❌ [Polymarket] 下单异常: {e}, 耗时={elapsed_ms:.2f}ms")
+            import traceback
+            traceback.print_exc()
+            return None, elapsed_ms
+    
+    async def get_open_orders(self) -> Optional[List[Dict]]:
+        """获取当前挂单列表
+        
+        Returns:
+            订单列表，失败返回 None
+        """
+        try:
+            # 确保有 API 凭据
+            if not await self._derive_api_credentials():
+                return None
+            
+            client = self._get_clob_client()
+            if not client:
+                return None
+            
+            orders = client.get_open_orders()
+            logger.debug(f"✅ [Polymarket] 获取 {len(orders) if orders else 0} 个挂单")
+            return orders
+            
+        except Exception as e:
+            logger.error(f"❌ [Polymarket] 获取挂单失败: {e}")
+            return None
+    
+    async def cancel_order(self, order_id: str) -> bool:
+        """取消订单
+        
+        Args:
+            order_id: 订单 ID
+            
+        Returns:
+            是否成功取消
+        """
+        try:
+            # 确保有 API 凭据
+            if not await self._derive_api_credentials():
+                return False
+            
+            client = self._get_clob_client()
+            if not client:
+                return False
+            
+            result = client.cancel_order(order_id)
+            
+            if result and order_id in result.get("canceled", []):
+                logger.info(f"✅ [Polymarket] 订单已取消: {order_id}")
+                return True
+            else:
+                not_canceled = result.get("not_canceled", {}) if result else {}
+                logger.error(f"❌ [Polymarket] 取消订单失败: {not_canceled}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ [Polymarket] 取消订单异常: {e}")
+            return False
     
     async def get_nba_events_and_markets(self) -> tuple[List[PolymarketEvent], List[PolymarketMarket]]:
         """获取 NBA 事件和市场

@@ -1,10 +1,41 @@
 """API 路由定义"""
 from fastapi import APIRouter, Query
+from pydantic import BaseModel
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from app.services.arbitrage import ArbitrageService
     from app.services.websocket_manager import WebSocketManager
+
+
+# 请求模型
+class KalshiOrderRequest(BaseModel):
+    """Kalshi 下单请求"""
+    ticker: str
+    side: str  # "yes" 或 "no"
+    action: str  # "buy" 或 "sell"
+    count: int = 1
+
+
+class PolymarketOrderRequest(BaseModel):
+    """Polymarket 下单请求"""
+    token_id: str
+    side: str  # "buy" 或 "sell"
+    amount: float  # USDC 金额
+
+
+class ArbitrageExecuteRequest(BaseModel):
+    """套利执行请求"""
+    # Kalshi 端
+    kalshi_ticker: str
+    kalshi_side: str  # "yes" 或 "no"
+    kalshi_bet: float  # 下注金额（美元）
+    kalshi_price: float  # 价格（用于计算合约数量）
+    
+    # Polymarket 端
+    poly_token_id: str
+    poly_side: str  # "buy" 或 "sell"
+    poly_amount: float  # USDC 金额
 
 router = APIRouter()
 
@@ -241,3 +272,231 @@ async def get_history_statistics():
         }
     
     return ws_manager.storage.get_statistics()
+
+
+# ==================== 交易相关 API ====================
+
+@router.post("/api/order/kalshi")
+async def create_kalshi_order(request: KalshiOrderRequest):
+    """Kalshi 市价下单"""
+    if not arbitrage_service:
+        return {"success": False, "error": "服务未初始化"}
+    
+    try:
+        result, elapsed_ms = await arbitrage_service.kalshi_client.create_market_order(
+            ticker=request.ticker,
+            side=request.side,
+            action=request.action,
+            count=request.count
+        )
+        
+        if result:
+            return {
+                "success": True,
+                "order": result.get("order", {}),
+                "elapsed_ms": elapsed_ms
+            }
+        else:
+            return {
+                "success": False,
+                "error": "下单失败",
+                "elapsed_ms": elapsed_ms
+            }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/orders/kalshi")
+async def get_kalshi_orders(status: Optional[str] = Query(None, description="订单状态过滤")):
+    """获取 Kalshi 订单列表"""
+    if not arbitrage_service:
+        return {"orders": [], "error": "服务未初始化"}
+    
+    try:
+        orders = await arbitrage_service.kalshi_client.get_orders(status=status)
+        if orders is not None:
+            return {"orders": orders}
+        else:
+            return {"orders": [], "error": "获取订单失败"}
+    except Exception as e:
+        return {"orders": [], "error": str(e)}
+
+
+@router.get("/api/positions/kalshi")
+async def get_kalshi_positions():
+    """获取 Kalshi 持仓列表"""
+    if not arbitrage_service:
+        return {"positions": [], "error": "服务未初始化"}
+    
+    try:
+        positions = await arbitrage_service.kalshi_client.get_positions()
+        if positions is not None:
+            return {"positions": positions}
+        else:
+            return {"positions": [], "error": "获取持仓失败"}
+    except Exception as e:
+        return {"positions": [], "error": str(e)}
+
+
+@router.delete("/api/orders/kalshi/{order_id}")
+async def cancel_kalshi_order(order_id: str):
+    """取消 Kalshi 订单"""
+    if not arbitrage_service:
+        return {"success": False, "error": "服务未初始化"}
+    
+    try:
+        success = await arbitrage_service.kalshi_client.cancel_order(order_id)
+        return {"success": success}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ==================== Polymarket 交易 API ====================
+
+@router.post("/api/order/polymarket")
+async def create_polymarket_order(request: PolymarketOrderRequest):
+    """Polymarket 市价下单"""
+    if not arbitrage_service:
+        return {"success": False, "error": "服务未初始化"}
+    
+    try:
+        result, elapsed_ms = await arbitrage_service.polymarket_client.create_market_order(
+            token_id=request.token_id,
+            side=request.side,
+            amount=request.amount
+        )
+        
+        if result and result.get("success"):
+            return {
+                "success": True,
+                "order_id": result.get("orderID"),
+                "status": result.get("status"),
+                "taking_amount": result.get("takingAmount"),
+                "making_amount": result.get("makingAmount"),
+                "elapsed_ms": elapsed_ms
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.get("errorMsg", "下单失败") if result else "下单失败",
+                "elapsed_ms": elapsed_ms
+            }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/orders/polymarket")
+async def get_polymarket_orders():
+    """获取 Polymarket 订单列表"""
+    if not arbitrage_service:
+        return {"orders": [], "error": "服务未初始化"}
+    
+    try:
+        orders = await arbitrage_service.polymarket_client.get_open_orders()
+        if orders is not None:
+            return {"orders": orders}
+        else:
+            return {"orders": [], "error": "获取订单失败"}
+    except Exception as e:
+        return {"orders": [], "error": str(e)}
+
+
+@router.delete("/api/orders/polymarket/{order_id}")
+async def cancel_polymarket_order(order_id: str):
+    """取消 Polymarket 订单"""
+    if not arbitrage_service:
+        return {"success": False, "error": "服务未初始化"}
+    
+    try:
+        success = await arbitrage_service.polymarket_client.cancel_order(order_id)
+        return {"success": success}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ==================== 套利执行 API ====================
+
+@router.post("/api/arbitrage/execute")
+async def execute_arbitrage(request: ArbitrageExecuteRequest):
+    """执行套利交易（同时在两个平台下单）
+    
+    注意：这会同时在 Kalshi 和 Polymarket 下单
+    Kalshi 使用合约数量，Polymarket 使用 USDC 金额
+    """
+    if not arbitrage_service:
+        return {"success": False, "error": "服务未初始化"}
+    
+    results = {
+        "success": False,
+        "kalshi": {"success": False},
+        "polymarket": {"success": False}
+    }
+    
+    try:
+        import asyncio
+        
+        # 计算 Kalshi 合约数量（单位转换）
+        # count = bet / price
+        # 例如：bet = $50, price = 0.50 -> count = 100
+        kalshi_count = max(1, int(round(request.kalshi_bet / request.kalshi_price)))
+        
+        # 同时执行两个下单请求
+        kalshi_task = arbitrage_service.kalshi_client.create_market_order(
+            ticker=request.kalshi_ticker,
+            side=request.kalshi_side,
+            action="buy",
+            count=kalshi_count
+        )
+        
+        poly_task = arbitrage_service.polymarket_client.create_market_order(
+            token_id=request.poly_token_id,
+            side=request.poly_side,
+            amount=request.poly_amount
+        )
+        
+        # 并行执行
+        kalshi_result, poly_result = await asyncio.gather(
+            kalshi_task,
+            poly_task,
+            return_exceptions=True
+        )
+        
+        # 处理 Kalshi 结果
+        if isinstance(kalshi_result, Exception):
+            results["kalshi"] = {"success": False, "error": str(kalshi_result)}
+        else:
+            kalshi_data, kalshi_ms = kalshi_result
+            if kalshi_data:
+                results["kalshi"] = {
+                    "success": True,
+                    "order": kalshi_data.get("order", {}),
+                    "elapsed_ms": kalshi_ms,
+                    "count": kalshi_count
+                }
+            else:
+                results["kalshi"] = {"success": False, "error": "下单失败", "elapsed_ms": kalshi_ms}
+        
+        # 处理 Polymarket 结果
+        if isinstance(poly_result, Exception):
+            results["polymarket"] = {"success": False, "error": str(poly_result)}
+        else:
+            poly_data, poly_ms = poly_result
+            if poly_data and poly_data.get("success"):
+                results["polymarket"] = {
+                    "success": True,
+                    "order_id": poly_data.get("orderID"),
+                    "status": poly_data.get("status"),
+                    "elapsed_ms": poly_ms,
+                    "amount": request.poly_amount
+                }
+            else:
+                error_msg = poly_data.get("errorMsg", "下单失败") if poly_data else "下单失败"
+                results["polymarket"] = {"success": False, "error": error_msg, "elapsed_ms": poly_ms}
+        
+        # 判断整体是否成功（两边都成功才算成功）
+        results["success"] = results["kalshi"]["success"] and results["polymarket"]["success"]
+        
+        return results
+        
+    except Exception as e:
+        return {"success": False, "error": str(e), "kalshi": results["kalshi"], "polymarket": results["polymarket"]}

@@ -129,6 +129,171 @@ class KalshiClient:
             logger.error(f"❌ 获取 Kalshi 余额异常: {e}")
             return None
     
+    async def create_market_order(
+        self,
+        ticker: str,
+        side: str,
+        action: str,
+        count: int = 1
+    ) -> tuple[Optional[Dict], float]:
+        """创建市价订单
+        
+        Args:
+            ticker: 市场 ticker (如 KXNBAGAME-26JAN07CLELAL-CLE)
+            side: "yes" 或 "no"
+            action: "buy" 或 "sell"
+            count: 合约数量（最小 1）
+            
+        Returns:
+            (订单响应, 下单耗时ms)
+            订单响应为 None 表示下单失败
+        """
+        try:
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+            
+            path = "/trade-api/v2/portfolio/orders"
+            url = f"{self.base_url}/portfolio/orders"
+            headers = self._get_headers("POST", path)
+            
+            # 市价订单：买入用高价（99），卖出用低价（1），确保能成交
+            price = 99 if action == "buy" else 1
+            
+            payload = {
+                "ticker": ticker,
+                "side": side,
+                "action": action,
+                "count": count,
+                "type": "market"
+            }
+            
+            # 根据 side 设置对应的价格参数
+            if side == "yes":
+                payload["yes_price"] = price
+            else:
+                payload["no_price"] = price
+            
+            logger.info(f"📤 [Kalshi] 下单请求: {action} {count}x {side} @ {ticker}, price={price}¢")
+            
+            # 计时开始
+            start_time = time.perf_counter()
+            
+            async with self.session.post(url, headers=headers, json=payload) as resp:
+                # 计时结束
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                
+                if resp.status == 201:
+                    data = await resp.json()
+                    order = data.get("order", {})
+                    order_id = order.get("order_id", "unknown")
+                    status = order.get("status", "unknown")
+                    fill_count = order.get("fill_count", 0)
+                    
+                    logger.info(f"✅ [Kalshi] 下单成功: order_id={order_id}, status={status}, "
+                               f"fill_count={fill_count}, 耗时={elapsed_ms:.2f}ms")
+                    return data, elapsed_ms
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"❌ [Kalshi] 下单失败: {resp.status} - {error_text}, 耗时={elapsed_ms:.2f}ms")
+                    return None, elapsed_ms
+                    
+        except Exception as e:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000 if 'start_time' in locals() else 0
+            logger.error(f"❌ [Kalshi] 下单异常: {e}, 耗时={elapsed_ms:.2f}ms")
+            return None, elapsed_ms
+    
+    async def get_orders(self, status: str = None) -> Optional[List[Dict]]:
+        """获取订单列表
+        
+        Args:
+            status: 订单状态过滤 (resting, canceled, executed)
+            
+        Returns:
+            订单列表，失败返回 None
+        """
+        try:
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+            
+            path = "/trade-api/v2/portfolio/orders"
+            url = f"{self.base_url}/portfolio/orders"
+            headers = self._get_headers("GET", path)
+            
+            params = {}
+            if status:
+                params["status"] = status
+            
+            async with self.session.get(url, headers=headers, params=params) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    orders = data.get("orders", [])
+                    logger.debug(f"✅ [Kalshi] 获取 {len(orders)} 个订单")
+                    return orders
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"❌ [Kalshi] 获取订单失败: {resp.status} - {error_text}")
+                    return None
+        except Exception as e:
+            logger.error(f"❌ [Kalshi] 获取订单异常: {e}")
+            return None
+    
+    async def get_positions(self) -> Optional[List[Dict]]:
+        """获取持仓列表
+        
+        Returns:
+            持仓列表，失败返回 None
+        """
+        try:
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+            
+            path = "/trade-api/v2/portfolio/positions"
+            url = f"{self.base_url}/portfolio/positions"
+            headers = self._get_headers("GET", path)
+            
+            async with self.session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    positions = data.get("market_positions", [])
+                    logger.debug(f"✅ [Kalshi] 获取 {len(positions)} 个持仓")
+                    return positions
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"❌ [Kalshi] 获取持仓失败: {resp.status} - {error_text}")
+                    return None
+        except Exception as e:
+            logger.error(f"❌ [Kalshi] 获取持仓异常: {e}")
+            return None
+    
+    async def cancel_order(self, order_id: str) -> bool:
+        """取消订单
+        
+        Args:
+            order_id: 订单 ID
+            
+        Returns:
+            是否成功取消
+        """
+        try:
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+            
+            path = f"/trade-api/v2/portfolio/orders/{order_id}"
+            url = f"{self.base_url}/portfolio/orders/{order_id}"
+            headers = self._get_headers("DELETE", path)
+            
+            async with self.session.delete(url, headers=headers) as resp:
+                if resp.status == 200:
+                    logger.info(f"✅ [Kalshi] 订单已取消: {order_id}")
+                    return True
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"❌ [Kalshi] 取消订单失败: {resp.status} - {error_text}")
+                    return False
+        except Exception as e:
+            logger.error(f"❌ [Kalshi] 取消订单异常: {e}")
+            return False
+    
     async def get_nba_events_and_markets(self) -> tuple[List[KalshiEvent], List[KalshiMarket]]:
         """获取 NBA 事件和市场"""
         try:
