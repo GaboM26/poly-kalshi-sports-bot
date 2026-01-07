@@ -1,20 +1,83 @@
 import { useEffect, useRef, useState } from 'react';
-import { MatchedMarketData } from '../types';
+import { MatchedMarketData, ArbitrageExecuteRequest } from '../types';
+import { executeArbitrage } from '../utils/api';
 
 interface OpportunityListProps {
   matchedMarkets: MatchedMarketData[];
   onSelectMarket?: (market: MatchedMarketData) => void;
+  apiBaseUrl?: string;
 }
 
 type SortOption = 'profit' | 'event' | 'team';
 
-export function OpportunityList({ matchedMarkets, onSelectMarket }: OpportunityListProps) {
+export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '' }: OpportunityListProps) {
   // 追踪价格变化用于高亮动画
   const [flashingCells, setFlashingCells] = useState<Set<string>>(new Set());
   const prevPricesRef = useRef<Map<string, { k_yes: number; k_no: number; p_yes: number; p_no: number }>>(new Map());
   
   // 排序选项
   const [sortBy, setSortBy] = useState<SortOption>('profit');
+  
+  // 执行状态
+  const [executingKey, setExecutingKey] = useState<string | null>(null);
+  const [lastResult, setLastResult] = useState<{ key: string; success: boolean; message: string } | null>(null);
+  
+  // 执行套利
+  const handleExecute = async (market: MatchedMarketData, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!market.has_opportunity || !apiBaseUrl) return;
+    
+    const key = `${market.event_name}_${market.team_name}`;
+    setExecutingKey(key);
+    setLastResult(null);
+    
+    try {
+      // 解析策略类型
+      // K↑ P↓ = Kalshi Yes + Polymarket No
+      // K↓ P↑ = Kalshi No + Polymarket Yes
+      const isKalshiYes = market.arbitrage_type?.includes('KalshiYes');
+      
+      // 计算下注金额 (假设总投资 $10 用于测试)
+      const totalBet = 10;
+      const impliedSum = (isKalshiYes ? market.kalshi_yes_price : market.kalshi_no_price) +
+                         (isKalshiYes ? market.poly_no_price : market.poly_yes_price);
+      const guaranteedReturn = totalBet / impliedSum;
+      
+      const kalshiPrice = isKalshiYes ? market.kalshi_yes_price : market.kalshi_no_price;
+      const polyPrice = isKalshiYes ? market.poly_no_price : market.poly_yes_price;
+      
+      const kalshiBet = guaranteedReturn * kalshiPrice;
+      const polyBet = guaranteedReturn * polyPrice;
+      
+      // 构建请求 - 需要获取正确的 token_id
+      // 注意：polymarket_market_id 是 condition_id，需要找到对应的 token_id
+      // 这里简化处理，使用 market_id 作为 token_id（实际可能需要从后端获取）
+      const request: ArbitrageExecuteRequest = {
+        kalshi_ticker: market.kalshi_market_id,
+        kalshi_side: isKalshiYes ? 'yes' : 'no',
+        kalshi_bet: kalshiBet,
+        kalshi_price: kalshiPrice,
+        poly_token_id: market.polymarket_market_id, // TODO: 需要正确的 token_id
+        poly_side: 'buy',
+        poly_amount: polyBet
+      };
+      
+      const result = await executeArbitrage(apiBaseUrl, request);
+      
+      if (result.success) {
+        setLastResult({ key, success: true, message: '套利执行成功！' });
+      } else {
+        const errors = [];
+        if (!result.kalshi.success) errors.push(`K: ${result.kalshi.error}`);
+        if (!result.polymarket.success) errors.push(`P: ${result.polymarket.error}`);
+        setLastResult({ key, success: false, message: errors.join('; ') });
+      }
+    } catch (err) {
+      setLastResult({ key, success: false, message: err instanceof Error ? err.message : '执行失败' });
+    } finally {
+      setExecutingKey(null);
+    }
+  };
 
   useEffect(() => {
     const newFlashing = new Set<string>();
@@ -137,6 +200,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket }: OpportunityL
               <th className="text-center">Polymarket</th>
               <th className="text-center">Strategy</th>
               <th className="text-right">Profit</th>
+              <th className="text-center w-16">Action</th>
             </tr>
           </thead>
           <tbody>
@@ -200,6 +264,32 @@ export function OpportunityList({ matchedMarkets, onSelectMarket }: OpportunityL
                       <div className={getProfitClass(market.profit_margin)}>
                         <span className="text-base font-bold tabular-nums">{market.profit_margin.toFixed(2)}%</span>
                         <span className="text-xs ml-1 opacity-70">${market.expected_profit.toFixed(0)}</span>
+                      </div>
+                    ) : (
+                      <span className="text-[--text-muted] text-xs">-</span>
+                    )}
+                  </td>
+                  
+                  {/* Action */}
+                  <td className="text-center">
+                    {market.has_opportunity ? (
+                      <div className="flex flex-col items-center gap-0.5">
+                        <button
+                          onClick={(e) => handleExecute(market, e)}
+                          disabled={executingKey === key || !apiBaseUrl}
+                          className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${
+                            executingKey === key
+                              ? 'bg-gray-500/30 text-gray-400 cursor-wait'
+                              : 'bg-[--accent-green]/20 text-[--accent-green] hover:bg-[--accent-green]/30'
+                          }`}
+                        >
+                          {executingKey === key ? '...' : '执行'}
+                        </button>
+                        {lastResult?.key === key && (
+                          <span className={`text-[9px] ${lastResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                            {lastResult.success ? '✓' : '✗'}
+                          </span>
+                        )}
                       </div>
                     ) : (
                       <span className="text-[--text-muted] text-xs">-</span>

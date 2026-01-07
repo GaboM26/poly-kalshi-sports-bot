@@ -4,6 +4,9 @@ import { OpportunityList } from './components/OpportunityList';
 import { LogPanel } from './components/LogPanel';
 import { TrackingPanel } from './components/TrackingPanel';
 import { ArbitrageHistory } from './components/ArbitrageHistory';
+import { HistoryExplorer } from './components/HistoryExplorer';
+import { OrderPanel } from './components/OrderPanel';
+import { OrderForm } from './components/OrderForm';
 import { useWebSocket } from './hooks/useWebSocket';
 import { MatchedMarketData } from './types';
 
@@ -31,6 +34,7 @@ function App() {
     .reduce((sum, m) => sum + m.expected_profit, 0);
   const [selectedMarket, setSelectedMarket] = useState<MatchedMarketData | null>(null);
   const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking' | 'history'>('detail');
+  const [showHistoryExplorer, setShowHistoryExplorer] = useState(false);
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
@@ -41,15 +45,24 @@ function App() {
         lastUpdateTime={lastUpdateTime}
         updateCount={updateCount}
         dataCoverage={dataCoverage}
+        apiBaseUrl={apiBaseUrl}
       />
       
       <main className="flex-1 flex overflow-hidden">
-        {/* 左侧套利列表 */}
-        <div className="flex-1 p-4 overflow-hidden">
-          <OpportunityList 
-            matchedMarkets={matchedMarkets}
-            onSelectMarket={setSelectedMarket}
-          />
+        {/* 左侧：市场列表 + 订单管理 */}
+        <div className="flex-1 flex flex-col p-4 overflow-hidden gap-4">
+          {/* 上部：市场列表 (70%) */}
+          <div className="flex-[7] overflow-hidden">
+            <OpportunityList 
+              matchedMarkets={matchedMarkets}
+              onSelectMarket={setSelectedMarket}
+              apiBaseUrl={apiBaseUrl}
+            />
+          </div>
+          {/* 下部：订单管理 (30%) */}
+          <div className="flex-[3] overflow-hidden">
+            <OrderPanel apiBaseUrl={apiBaseUrl} />
+          </div>
         </div>
         
         {/* 右侧面板：详细信息/追踪/历史 + 日志 */}
@@ -207,19 +220,30 @@ function App() {
                         </div>
                       </div>
                     )}
+
+                    {/* 下单区域 */}
+                    <div className="pt-2 border-t border-[--border-color]">
+                      <div className="pb-2">
+                        <h3 className="text-xs font-semibold text-[--text-muted] uppercase tracking-wider">交易下单</h3>
+                      </div>
+                      <OrderForm 
+                        market={selectedMarket} 
+                        apiBaseUrl={apiBaseUrl}
+                      />
+                    </div>
                   </div>
                 ) : (
                   <div className="flex flex-col items-center justify-center h-full py-12">
                     <div className="text-3xl mb-2">👆</div>
                     <div className="text-xs text-[--text-secondary]">选择一个市场</div>
-                    <div className="text-[10px] text-[--text-muted] mt-1">查看详细信息</div>
+                    <div className="text-[10px] text-[--text-muted] mt-1">查看详细信息和交易</div>
                   </div>
                 )}
               </div>
             ) : rightPanelTab === 'tracking' ? (
               <TrackingPanel apiBaseUrl={apiBaseUrl} />
             ) : (
-              <ArbitrageHistory apiBaseUrl={apiBaseUrl} />
+              <ArbitrageHistory apiBaseUrl={apiBaseUrl} onOpenExplorer={() => setShowHistoryExplorer(true)} />
             )}
           </div>
           
@@ -229,6 +253,14 @@ function App() {
           </div>
         </aside>
       </main>
+
+      {/* 历史探索弹窗 */}
+      {showHistoryExplorer && (
+        <HistoryExplorer 
+          apiBaseUrl={apiBaseUrl} 
+          onClose={() => setShowHistoryExplorer(false)} 
+        />
+      )}
     </div>
   );
 }

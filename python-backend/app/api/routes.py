@@ -414,6 +414,22 @@ async def cancel_polymarket_order(order_id: str):
         return {"success": False, "error": str(e)}
 
 
+@router.get("/api/positions/polymarket")
+async def get_polymarket_positions():
+    """获取 Polymarket 持仓列表"""
+    if not arbitrage_service:
+        return {"positions": [], "error": "服务未初始化"}
+    
+    try:
+        positions = await arbitrage_service.polymarket_client.get_positions()
+        if positions is not None:
+            return {"positions": positions}
+        else:
+            return {"positions": [], "error": "获取持仓失败"}
+    except Exception as e:
+        return {"positions": [], "error": str(e)}
+
+
 # ==================== 套利执行 API ====================
 
 @router.post("/api/arbitrage/execute")

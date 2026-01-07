@@ -122,3 +122,193 @@ export interface DataCoverage {
   kalshi_latency_ms?: number;
   polymarket_latency_ms?: number;
 }
+
+// 账户余额
+export interface PlatformBalance {
+  available: boolean;
+  balance?: number;
+  portfolio_value?: number;
+  error?: string;
+  pnl?: string;
+  trades?: number;
+  positions?: number;
+  updated_ts?: number;
+}
+
+export interface AccountBalance {
+  kalshi: PlatformBalance;
+  polymarket: PlatformBalance;
+}
+
+// ==================== 交易相关类型 ====================
+
+// Kalshi 订单
+export interface KalshiOrder {
+  order_id: string;
+  user_id?: string;
+  client_order_id?: string;
+  ticker: string;
+  side: 'yes' | 'no';
+  action: 'buy' | 'sell';
+  type: 'limit' | 'market';
+  status: 'resting' | 'canceled' | 'executed' | 'pending';
+  yes_price?: number;
+  no_price?: number;
+  fill_count: number;
+  remaining_count: number;
+  initial_count: number;
+  taker_fees?: number;
+  maker_fees?: number;
+  taker_fill_cost?: number;
+  maker_fill_cost?: number;
+  created_time: string;
+  last_update_time?: string;
+}
+
+// Kalshi 持仓
+export interface KalshiPosition {
+  ticker: string;
+  event_ticker?: string;
+  market_exposure: number;
+  position: number;
+  resting_orders_count: number;
+  fees_paid?: number;
+  total_traded?: number;
+  realized_pnl?: number;
+}
+
+// Kalshi 下单请求
+export interface KalshiOrderRequest {
+  ticker: string;
+  side: 'yes' | 'no';
+  action: 'buy' | 'sell';
+  count: number;
+}
+
+// 兼容旧代码
+export type OrderRequest = KalshiOrderRequest;
+
+// Polymarket 下单请求
+export interface PolymarketOrderRequest {
+  token_id: string;
+  side: 'buy' | 'sell';
+  amount: number;  // USDC 金额
+}
+
+// 下单响应
+export interface OrderResponse {
+  success: boolean;
+  order?: KalshiOrder;
+  elapsed_ms?: number;
+  error?: string;
+}
+
+// Polymarket 下单响应
+export interface PolymarketOrderResponse {
+  success: boolean;
+  order_id?: string;
+  status?: string;
+  taking_amount?: string;
+  making_amount?: string;
+  elapsed_ms?: number;
+  error?: string;
+}
+
+// Polymarket 订单
+export interface PolymarketOrder {
+  id: string;
+  status: string;
+  owner: string;
+  maker_address: string;
+  market: string;
+  asset_id: string;
+  side: string;
+  original_size: string;
+  size_matched: string;
+  price: string;
+  outcome: string;
+  created_at: number;
+  order_type: string;
+}
+
+// Polymarket 持仓
+export interface PolymarketPosition {
+  id?: string;
+  asset?: string;
+  conditionId?: string;
+  outcomeIndex?: number;
+  size?: string;
+  avgPrice?: string;
+  curPrice?: string;
+  value?: string;
+  pnl?: string;
+  pnlPercent?: string;
+  title?: string;
+  // 可能有其他字段，根据 API 响应动态处理
+  [key: string]: unknown;
+}
+
+// 统一持仓类型（用于合并展示）
+export interface UnifiedPosition {
+  id: string;
+  platform: 'kalshi' | 'polymarket';
+  ticker: string;        // Kalshi ticker 或 Poly conditionId
+  title?: string;        // 市场标题
+  size: number;          // 持仓数量
+  side?: 'yes' | 'no' | 'buy' | 'sell';
+  avgPrice?: number;     // 平均价格
+  curPrice?: number;     // 当前价格
+  value?: number;        // 持仓价值
+  pnl?: number;          // 盈亏
+  pnlPercent?: number;   // 盈亏百分比
+}
+
+// 订单列表响应
+export interface OrdersResponse {
+  orders: KalshiOrder[];
+  error?: string;
+}
+
+// Polymarket 订单列表响应
+export interface PolymarketOrdersResponse {
+  orders: PolymarketOrder[];
+  error?: string;
+}
+
+// 持仓列表响应
+export interface PositionsResponse {
+  positions: KalshiPosition[];
+  error?: string;
+}
+
+// 套利执行请求
+export interface ArbitrageExecuteRequest {
+  kalshi_ticker: string;
+  kalshi_side: 'yes' | 'no';
+  kalshi_bet: number;
+  kalshi_price: number;
+  poly_token_id: string;
+  poly_side: 'buy' | 'sell';
+  poly_amount: number;
+}
+
+// 套利执行响应
+export interface ArbitrageExecuteResponse {
+  success: boolean;
+  error?: string;
+  kalshi: {
+    success: boolean;
+    order?: Record<string, unknown>;
+    elapsed_ms?: number;
+    count?: number;
+    error?: string;
+  };
+  polymarket: {
+    success: boolean;
+    order_id?: string;
+    status?: string;
+    elapsed_ms?: number;
+    amount?: number;
+    error?: string;
+  };
+}

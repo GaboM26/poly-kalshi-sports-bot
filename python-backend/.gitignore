@@ -22,6 +22,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+standalone_poly_order/
 
 # IDE
 .vscode/

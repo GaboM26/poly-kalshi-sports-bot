@@ -533,6 +533,94 @@ class PolymarketClient:
             logger.error(f"❌ [Polymarket] 取消订单异常: {e}")
             return False
     
+    async def get_positions(self) -> Optional[List[Dict]]:
+        """通过交易历史聚合计算持仓
+        
+        Polymarket CLOB API 没有直接的持仓端点，
+        使用 get_trades() 获取交易历史并聚合计算净持仓
+        
+        Returns:
+            持仓列表，失败返回空数组
+        """
+        try:
+            # 确保有 API 凭据
+            if not await self._derive_api_credentials():
+                logger.debug("⚠️ [Polymarket] 无法获取 API 凭据，返回空持仓")
+                return []
+            
+            client = self._get_clob_client()
+            if not client:
+                logger.debug("⚠️ [Polymarket] 无法创建 CLOB 客户端，返回空持仓")
+                return []
+            
+            # 获取所有交易历史
+            trades = client.get_trades()
+            
+            if not trades:
+                logger.debug("✅ [Polymarket] 无交易历史，持仓为空")
+                return []
+            
+            # 聚合计算每个 token 的净持仓
+            positions = {}
+            for trade in trades:
+                asset_id = trade.get("asset_id")
+                if not asset_id:
+                    continue
+                    
+                side = trade.get("side", "").upper()
+                size = float(trade.get("size", 0))
+                price = float(trade.get("price", 0))
+                market = trade.get("market", "")
+                outcome = trade.get("outcome", "")
+                
+                if asset_id not in positions:
+                    positions[asset_id] = {
+                        "asset_id": asset_id,
+                        "market": market,
+                        "outcome": outcome,
+                        "size": 0,
+                        "total_cost": 0,
+                        "trade_count": 0
+                    }
+                
+                # BUY 增加持仓，SELL 减少持仓
+                if side == "BUY":
+                    positions[asset_id]["size"] += size
+                    positions[asset_id]["total_cost"] += size * price
+                else:  # SELL
+                    positions[asset_id]["size"] -= size
+                    positions[asset_id]["total_cost"] -= size * price
+                
+                positions[asset_id]["trade_count"] += 1
+            
+            # 转换为列表，过滤掉小额持仓
+            # 使用较大的阈值（0.5）过滤掉浮点精度问题和已平仓的持仓
+            MIN_POSITION_SIZE = 0.5  # 最小持仓阈值
+            
+            result = []
+            for pos in positions.values():
+                if abs(pos["size"]) >= MIN_POSITION_SIZE:
+                    avg_price = pos["total_cost"] / pos["size"] if pos["size"] != 0 else 0
+                    result.append({
+                        "asset": pos["asset_id"],
+                        "conditionId": pos["market"],
+                        "outcome": pos["outcome"],
+                        "size": str(pos["size"]),
+                        "avgPrice": str(max(0, min(1, avg_price))),  # 确保价格在 0-1 范围内
+                        "tradeCount": pos["trade_count"]
+                    })
+                else:
+                    logger.debug(f"⏭️ [Polymarket] 过滤小额持仓: {pos['asset_id'][:16]}... size={pos['size']:.4f}")
+            
+            logger.debug(f"✅ [Polymarket] 从 {len(trades)} 笔交易聚合出 {len(result)} 个持仓")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ [Polymarket] 获取持仓异常: {e}")
+            import traceback
+            traceback.print_exc()
+            return []  # 返回空数组而非 None，避免前端错误
+    
     async def get_nba_events_and_markets(self) -> tuple[List[PolymarketEvent], List[PolymarketMarket]]:
         """获取 NBA 事件和市场
         

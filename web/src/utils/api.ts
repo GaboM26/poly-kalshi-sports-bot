@@ -1,4 +1,17 @@
-import { Market, ScanResponse } from '../types';
+import { 
+  Market, 
+  ScanResponse, 
+  OrderRequest, 
+  OrderResponse, 
+  OrdersResponse, 
+  PositionsResponse,
+  PolymarketOrderRequest,
+  PolymarketOrderResponse,
+  PolymarketOrdersResponse,
+  PolymarketPosition,
+  ArbitrageExecuteRequest,
+  ArbitrageExecuteResponse
+} from '../types';
 
 const API_BASE = '/api';
 
@@ -41,5 +54,132 @@ export async function checkHealth(): Promise<{ status: string; version: string }
   if (!response.ok) {
     throw new Error('健康检查失败');
   }
+  return response.json();
+}
+
+// ==================== 交易相关 API ====================
+
+/**
+ * 创建 Kalshi 市价订单
+ */
+export async function createKalshiOrder(
+  baseUrl: string,
+  request: OrderRequest
+): Promise<OrderResponse> {
+  const response = await fetch(`${baseUrl}/api/order/kalshi`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+  return response.json();
+}
+
+/**
+ * 获取 Kalshi 订单列表
+ */
+export async function getKalshiOrders(
+  baseUrl: string,
+  status?: string
+): Promise<OrdersResponse> {
+  const url = status 
+    ? `${baseUrl}/api/orders/kalshi?status=${status}`
+    : `${baseUrl}/api/orders/kalshi`;
+  const response = await fetch(url);
+  return response.json();
+}
+
+/**
+ * 获取 Kalshi 持仓列表
+ */
+export async function getKalshiPositions(
+  baseUrl: string
+): Promise<PositionsResponse> {
+  const response = await fetch(`${baseUrl}/api/positions/kalshi`);
+  return response.json();
+}
+
+/**
+ * 取消 Kalshi 订单
+ */
+export async function cancelKalshiOrder(
+  baseUrl: string,
+  orderId: string
+): Promise<{ success: boolean; error?: string }> {
+  const response = await fetch(`${baseUrl}/api/orders/kalshi/${orderId}`, {
+    method: 'DELETE',
+  });
+  return response.json();
+}
+
+// ==================== Polymarket 交易 API ====================
+
+/**
+ * 创建 Polymarket 市价订单
+ */
+export async function createPolymarketOrder(
+  baseUrl: string,
+  request: PolymarketOrderRequest
+): Promise<PolymarketOrderResponse> {
+  const response = await fetch(`${baseUrl}/api/order/polymarket`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+  return response.json();
+}
+
+/**
+ * 获取 Polymarket 订单列表
+ */
+export async function getPolymarketOrders(
+  baseUrl: string
+): Promise<PolymarketOrdersResponse> {
+  const response = await fetch(`${baseUrl}/api/orders/polymarket`);
+  return response.json();
+}
+
+/**
+ * 取消 Polymarket 订单
+ */
+export async function cancelPolymarketOrder(
+  baseUrl: string,
+  orderId: string
+): Promise<{ success: boolean; error?: string }> {
+  const response = await fetch(`${baseUrl}/api/orders/polymarket/${orderId}`, {
+    method: 'DELETE',
+  });
+  return response.json();
+}
+
+/**
+ * 获取 Polymarket 持仓列表
+ */
+export async function getPolymarketPositions(
+  baseUrl: string
+): Promise<{ positions: PolymarketPosition[]; error?: string }> {
+  const response = await fetch(`${baseUrl}/api/positions/polymarket`);
+  return response.json();
+}
+
+// ==================== 套利执行 API ====================
+
+/**
+ * 执行套利交易（同时在两个平台下单）
+ */
+export async function executeArbitrage(
+  baseUrl: string,
+  request: ArbitrageExecuteRequest
+): Promise<ArbitrageExecuteResponse> {
+  const response = await fetch(`${baseUrl}/api/arbitrage/execute`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
   return response.json();
 }

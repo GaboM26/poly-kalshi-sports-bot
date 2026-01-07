@@ -27,9 +27,10 @@ interface ArbitrageHistoryData {
 
 interface ArbitrageHistoryProps {
   apiBaseUrl: string;
+  onOpenExplorer?: () => void;
 }
 
-export function ArbitrageHistory({ apiBaseUrl }: ArbitrageHistoryProps) {
+export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistoryProps) {
   const [data, setData] = useState<ArbitrageHistoryData>({ active: [], completed: [] });
   const [loading, setLoading] = useState(true);
   const [selectedRecord, setSelectedRecord] = useState<ArbitrageRecord | null>(null);
@@ -83,6 +84,17 @@ export function ArbitrageHistory({ apiBaseUrl }: ArbitrageHistoryProps) {
 
   return (
     <div className="p-4 space-y-4">
+      {/* 高级搜索按钮 */}
+      {onOpenExplorer && (
+        <button
+          onClick={onOpenExplorer}
+          className="w-full py-2 px-4 bg-gradient-to-r from-[--accent-purple]/20 to-[--accent-purple]/10 border border-[--accent-purple]/30 rounded-lg text-sm text-[--accent-purple] hover:from-[--accent-purple]/30 hover:to-[--accent-purple]/20 transition-all flex items-center justify-center gap-2"
+        >
+          <span>🔍</span>
+          <span>高级搜索与统计分析</span>
+        </button>
+      )}
+
       {/* 活跃套利 */}
       {data.active.length > 0 && (
         <div>

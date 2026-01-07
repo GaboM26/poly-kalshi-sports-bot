@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { DataCoverage } from '../types';
+import { DataCoverage, AccountBalance } from '../types';
 
 interface HeaderProps {
   isConnected: boolean;
@@ -13,10 +13,12 @@ interface HeaderProps {
   lastUpdateTime: Date | null;
   updateCount: number;
   dataCoverage: DataCoverage;
+  apiBaseUrl: string;
 }
 
-export function Header({ isConnected, stats, totalProfit, lastUpdateTime, updateCount, dataCoverage }: HeaderProps) {
+export function Header({ isConnected, stats, totalProfit, lastUpdateTime, updateCount, dataCoverage, apiBaseUrl }: HeaderProps) {
   const [isFlashing, setIsFlashing] = useState(false);
+  const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null);
   
   // 当收到新数据时闪烁动画
   useEffect(() => {
@@ -26,6 +28,27 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
       return () => clearTimeout(timer);
     }
   }, [updateCount]);
+
+  // 定期获取账户余额
+  useEffect(() => {
+    const fetchBalance = async () => {
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/account-balance`);
+        if (response.ok) {
+          const data = await response.json();
+          setAccountBalance(data);
+        }
+      } catch (error) {
+        // 静默失败
+      }
+    };
+
+    // 初始获取
+    fetchBalance();
+    // 每 10 秒更新一次
+    const interval = setInterval(fetchBalance, 10000);
+    return () => clearInterval(interval);
+  }, [apiBaseUrl]);
 
   const formatLastUpdate = () => {
     if (!lastUpdateTime) return '--';
@@ -66,6 +89,12 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
     return 'text-red-400';
   };
 
+  // 格式化余额显示
+  const formatBalance = (balance?: number) => {
+    if (balance === undefined || balance === null) return '--';
+    return balance >= 1000 ? `${(balance / 1000).toFixed(1)}k` : balance.toFixed(0);
+  };
+
   return (
     <header className="border-b border-[--border-color] bg-[--bg-secondary]">
       <div className="max-w-7xl mx-auto px-4 h-12 flex items-center justify-between">
@@ -77,6 +106,19 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
 
         {/* 统计信息 */}
         <div className="flex items-center gap-4 text-sm">
+          {/* 账户余额 */}
+          {accountBalance && (
+            <div className="flex items-center gap-2 px-3 py-1 rounded bg-[--bg-tertiary]" title={`账户余额\nKalshi: ${accountBalance.kalshi.available ? `$${formatBalance(accountBalance.kalshi.balance)}` : '未配置或获取失败'}\nPolymarket: ${accountBalance.polymarket.available ? `$${formatBalance(accountBalance.polymarket.balance)}` : '未配置或获取失败'}`}>
+              <span className="text-xs text-[--text-muted]">💰</span>
+              <span className={`font-mono text-xs ${accountBalance.kalshi.available ? 'text-blue-400' : 'text-gray-500'}`} title={accountBalance.kalshi.error || ''}>
+                K:${accountBalance.kalshi.available ? formatBalance(accountBalance.kalshi.balance) : '--'}
+              </span>
+              <span className={`font-mono text-xs ${accountBalance.polymarket.available ? 'text-purple-400' : 'text-gray-500'}`} title={accountBalance.polymarket.error || 'Polymarket 余额'}>
+                P:${accountBalance.polymarket.available ? formatBalance(accountBalance.polymarket.balance) : '--'}
+              </span>
+            </div>
+          )}
+
           {/* 数据覆盖率 */}
           <div className="flex items-center gap-2 px-3 py-1 rounded bg-[--bg-tertiary]" title="数据覆盖率：两个平台都有实时数据的市场对数量">
             <span className="text-xs text-[--text-muted]">📡 数据:</span>
