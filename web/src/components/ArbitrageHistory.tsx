@@ -61,9 +61,9 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
 
   if (loading) {
     return (
-      <div className="p-4 text-center text-[--text-muted]">
-        <div className="text-2xl mb-2">⏳</div>
-        Loading history...
+      <div className="p-4 text-center text-[--text-muted] h-full flex flex-col justify-center items-center">
+        <div className="text-xl mb-2">⏳</div>
+        <div className="text-xs">Loading...</div>
       </div>
     );
   }
@@ -86,123 +86,126 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
   };
 
   return (
-    <div className="p-4 space-y-4">
-      {/* 高级搜索按钮 */}
-      {onOpenExplorer && (
-        <button
-          onClick={onOpenExplorer}
-          className="w-full py-2 px-4 bg-gradient-to-r from-[--accent-purple]/20 to-[--accent-purple]/10 border border-[--accent-purple]/30 rounded-lg text-sm text-[--accent-purple] hover:from-[--accent-purple]/30 hover:to-[--accent-purple]/20 transition-all flex items-center justify-center gap-2"
-        >
-          <span>🔍</span>
-          <span>高级搜索与统计分析</span>
-        </button>
-      )}
+    <div className="h-full flex flex-col p-2 space-y-2 overflow-hidden">
+      {/* 标题/工具栏 */}
+      <div className="flex justify-between items-center flex-shrink-0 pb-1 border-b border-[--border-color]">
+        <h3 className="text-xs font-semibold text-[--text-muted] uppercase tracking-wider">套利记录</h3>
+        {onOpenExplorer && (
+          <button
+            onClick={onOpenExplorer}
+            className="text-[10px] px-2 py-0.5 bg-[--accent-purple]/10 text-[--accent-purple] rounded hover:bg-[--accent-purple]/20 transition-colors flex items-center gap-1"
+          >
+            <span>🔍</span> 高级搜索
+          </button>
+        )}
+      </div>
 
-      {/* 活跃套利 */}
-      {data?.active?.length > 0 && (
-        <div>
-          <h3 className="text-sm font-semibold text-[--accent-green] mb-2 flex items-center gap-2">
-            <span className="status-dot status-connected animate-pulse-dot"></span>
-            Active Arbitrage ({data.active.length})
-          </h3>
-          <div className="space-y-2">
-            {data.active.map((record, idx) => (
-              <div
-                key={`active-${idx}`}
-                className="bg-[rgba(16,185,129,0.1)] border border-[--accent-green] rounded p-3 cursor-pointer hover:bg-[rgba(16,185,129,0.15)] transition-colors"
-                onClick={() => setSelectedRecord(record)}
-              >
-                <div className="flex justify-between items-start mb-1">
-                  <div className="text-sm font-medium text-[--text-primary]">{record.event_name}</div>
-                  <div className="text-[--accent-green] font-bold tabular-nums">
-                    {record.max_profit_margin.toFixed(2)}%
+      <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+        {/* 活跃套利 */}
+        {data?.active?.length > 0 && (
+          <div>
+            <div className="text-[10px] font-medium text-[--accent-green] mb-1 flex items-center gap-1 sticky top-0 z-10 py-1">
+              <span className="status-dot status-connected animate-pulse-dot w-1.5 h-1.5"></span>
+              进行中 ({data.active.length})
+            </div>
+            <div className="space-y-1">
+              {data.active.map((record, idx) => (
+                <div
+                  key={`active-${idx}`}
+                  className="bg-[rgba(16,185,129,0.1)] border border-[--accent-green] rounded p-2 cursor-pointer hover:bg-[rgba(16,185,129,0.15)] transition-colors"
+                  onClick={() => setSelectedRecord(record)}
+                >
+                  <div className="flex justify-between items-start">
+                    <div className="text-xs font-medium text-[--text-primary] truncate">{record.event_name}</div>
+                    <div className="text-[--accent-green] font-bold text-xs tabular-nums">
+                      {record.max_profit_margin.toFixed(2)}%
+                    </div>
+                  </div>
+                  <div className="flex justify-between items-center text-[10px] text-[--text-muted] mt-0.5">
+                    <span className="text-[--accent-yellow] truncate max-w-[120px]">{record.team_name}</span>
+                    <span>{formatTime(record.start_time)}</span>
                   </div>
                 </div>
-                <div className="flex justify-between items-center text-xs text-[--text-muted]">
-                  <span className="text-[--accent-yellow]">{record.team_name}</span>
-                  <span>Started: {formatTime(record.start_time)}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 历史套利 */}
-      <div>
-        <h3 className="text-sm font-semibold text-[--text-secondary] mb-2 flex items-center gap-2">
-          📜 History ({data?.completed?.length || 0})
-        </h3>
-        {(!data?.completed || data.completed.length === 0) ? (
-          <div className="text-center text-[--text-muted] py-4">
-            <div className="text-2xl mb-1">📭</div>
-            <div className="text-xs">No historical records yet</div>
-          </div>
-        ) : (
-          <div className="space-y-2 max-h-96 overflow-y-auto">
-            {data.completed.map((record, idx) => (
-              <div
-                key={`completed-${idx}`}
-                className="bg-[--bg-tertiary] rounded p-3 cursor-pointer hover:bg-[--bg-secondary] transition-colors border border-transparent hover:border-[--border-color]"
-                onClick={() => setSelectedRecord(record)}
-              >
-                <div className="flex justify-between items-start mb-1">
-                  <div className="text-sm font-medium text-[--text-primary]">{record.event_name}</div>
-                  <div className="text-[--accent-yellow] font-bold tabular-nums">
-                    Max: {record.max_profit_margin.toFixed(2)}%
-                  </div>
-                </div>
-                <div className="flex justify-between items-center text-xs text-[--text-muted]">
-                  <span className="text-[--accent-yellow]">{record.team_name}</span>
-                  <span>
-                    {formatDate(record.start_time)} {formatTime(record.start_time)} • {formatDuration(record.duration_seconds)}
-                  </span>
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         )}
+
+        {/* 历史套利 */}
+        <div>
+          <div className="text-[10px] font-medium text-[--text-secondary] mb-1 sticky top-0 z-10 py-1 flex justify-between items-center">
+             <span>已完成 ({data?.completed?.length || 0})</span>
+          </div>
+          {(!data?.completed || data.completed.length === 0) ? (
+            <div className="text-center text-[--text-muted] py-4">
+              <div className="text-xs">暂无历史记录</div>
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {data.completed.map((record, idx) => (
+                <div
+                  key={`completed-${idx}`}
+                  className="bg-[--bg-tertiary] rounded p-2 cursor-pointer hover:bg-[--bg-secondary] transition-colors border border-transparent hover:border-[--border-color]"
+                  onClick={() => setSelectedRecord(record)}
+                >
+                  <div className="flex justify-between items-start">
+                    <div className="text-xs font-medium text-[--text-primary] truncate pr-2">{record.event_name}</div>
+                    <div className="text-[--accent-yellow] font-bold text-xs tabular-nums whitespace-nowrap">
+                      {record.max_profit_margin.toFixed(2)}%
+                    </div>
+                  </div>
+                  <div className="flex justify-between items-center text-[10px] text-[--text-muted] mt-0.5">
+                    <span className="text-[--accent-yellow] truncate max-w-[100px]">{record.team_name}</span>
+                    <span className="whitespace-nowrap">
+                      {formatTime(record.start_time)} • {formatDuration(record.duration_seconds)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 详情弹窗 */}
       {selectedRecord && (
         <div 
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 backdrop-blur-sm"
           onClick={() => setSelectedRecord(null)}
         >
           <div 
-            className="bg-[--bg-secondary] rounded-lg p-6 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto"
+            className="bg-[--bg-secondary] rounded-lg p-4 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto border border-[--border-color] shadow-xl"
             onClick={e => e.stopPropagation()}
           >
-            <div className="flex justify-between items-start mb-4">
+            <div className="flex justify-between items-start mb-4 pb-2 border-b border-[--border-color]">
               <div>
-                <h3 className="text-lg font-semibold text-[--text-primary]">{selectedRecord.event_name}</h3>
-                <span className="text-[--accent-yellow] text-sm">{selectedRecord.team_name}</span>
+                <h3 className="text-base font-semibold text-[--text-primary]">{selectedRecord.event_name}</h3>
+                <span className="text-[--accent-yellow] text-xs">{selectedRecord.team_name}</span>
               </div>
               <button 
-                className="text-[--text-muted] hover:text-[--text-primary]"
+                className="text-[--text-muted] hover:text-[--text-primary] text-lg"
                 onClick={() => setSelectedRecord(null)}
               >
                 ✕
               </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div className="bg-[--bg-tertiary] rounded p-3">
-                <div className="text-xs text-[--text-muted] mb-1">Max Profit</div>
-                <div className="text-xl font-bold text-[--accent-green] tabular-nums">
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div className="bg-[--bg-tertiary] rounded p-2.5">
+                <div className="text-[10px] text-[--text-muted] mb-1">Max Profit</div>
+                <div className="text-lg font-bold text-[--accent-green] tabular-nums">
                   {selectedRecord.max_profit_margin.toFixed(2)}%
                 </div>
               </div>
-              <div className="bg-[--bg-tertiary] rounded p-3">
-                <div className="text-xs text-[--text-muted] mb-1">Duration</div>
-                <div className="text-xl font-bold text-[--text-primary] tabular-nums">
+              <div className="bg-[--bg-tertiary] rounded p-2.5">
+                <div className="text-[10px] text-[--text-muted] mb-1">Duration</div>
+                <div className="text-lg font-bold text-[--text-primary] tabular-nums">
                   {formatDuration(selectedRecord.duration_seconds)}
                 </div>
               </div>
             </div>
 
-            <div className="space-y-2 text-sm">
+            <div className="space-y-1.5 text-xs">
               <div className="flex justify-between">
                 <span className="text-[--text-muted]">Start Time</span>
                 <span className="text-[--text-primary]">{formatDate(selectedRecord.start_time)} {formatTime(selectedRecord.start_time)}</span>
@@ -223,9 +226,9 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
 
             {/* 利润历史图表（简化版） */}
             {selectedRecord.profit_history && selectedRecord.profit_history.length > 0 && (
-              <div className="mt-4">
-                <div className="text-xs text-[--text-muted] mb-2">Profit History ({selectedRecord.profit_history.length} points)</div>
-                <div className="bg-[--bg-tertiary] rounded p-3 h-32 flex items-end gap-px">
+              <div className="mt-4 pt-3 border-t border-[--border-color]">
+                <div className="text-[10px] text-[--text-muted] mb-2">Profit History ({selectedRecord.profit_history.length} points)</div>
+                <div className="bg-[--bg-tertiary] rounded p-2 h-24 flex items-end gap-px">
                   {selectedRecord.profit_history.slice(-50).map((entry, i) => {
                     const maxProfit = Math.max(...selectedRecord.profit_history!.map(e => e.profit_margin));
                     const height = (entry.profit_margin / maxProfit) * 100;

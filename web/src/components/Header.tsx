@@ -100,65 +100,64 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
 
   return (
     <header className="border-b border-[--border-color] bg-[--bg-secondary]">
-      <div className="max-w-7xl mx-auto px-4 h-12 flex items-center justify-between">
-        {/* Logo */}
-        <div className="flex items-center gap-2">
-          <span className="text-lg">📊</span>
-          <span className="font-semibold text-[--text-primary]">Arbitrage Scanner</span>
+      <div className="px-2 h-10 flex items-center justify-between gap-2 overflow-x-auto">
+        {/* Logo - 紧凑版 */}
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <span className="text-sm">📊</span>
+          <span className="font-semibold text-[--text-primary] text-xs">Arbitrage Scanner</span>
         </div>
 
-        {/* 统计信息 */}
-        <div className="flex items-center gap-4 text-sm">
+        {/* 统计信息 - 紧凑版 */}
+        <div className="flex items-center gap-2 text-xs flex-shrink-0">
           {/* 账户余额 */}
           {accountBalance && (
-            <div className="flex items-center gap-2 px-3 py-1 rounded bg-[--bg-tertiary]" title={`账户余额\nKalshi: ${accountBalance.kalshi.available ? `$${formatBalance(accountBalance.kalshi.balance)}` : '未配置或获取失败'}\nPolymarket: ${accountBalance.polymarket.available ? `$${formatBalance(accountBalance.polymarket.balance)}` : '未配置或获取失败'}`}>
-              <span className="text-xs text-[--text-muted]">💰</span>
-              <span className={`font-mono text-xs ${accountBalance.kalshi.available ? 'text-blue-400' : 'text-gray-500'}`} title={accountBalance.kalshi.error || ''}>
+            <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-[--bg-tertiary]" title={`账户余额\nKalshi: ${accountBalance.kalshi.available ? `$${formatBalance(accountBalance.kalshi.balance)}` : '未配置或获取失败'}\nPolymarket: ${accountBalance.polymarket.available ? `$${formatBalance(accountBalance.polymarket.balance)}` : '未配置或获取失败'}`}>
+              <span className="text-[10px] text-[--text-muted]">💰</span>
+              <span className={`font-mono text-[10px] ${accountBalance.kalshi.available ? 'text-blue-400' : 'text-gray-500'}`} title={accountBalance.kalshi.error || ''}>
                 K:${accountBalance.kalshi.available ? formatBalance(accountBalance.kalshi.balance) : '--'}
               </span>
-              <span className={`font-mono text-xs ${accountBalance.polymarket.available ? 'text-purple-400' : 'text-gray-500'}`} title={accountBalance.polymarket.error || 'Polymarket 余额'}>
+              <span className={`font-mono text-[10px] ${accountBalance.polymarket.available ? 'text-purple-400' : 'text-gray-500'}`} title={accountBalance.polymarket.error || 'Polymarket 余额'}>
                 P:${accountBalance.polymarket.available ? formatBalance(accountBalance.polymarket.balance) : '--'}
               </span>
             </div>
           )}
 
           {/* 数据覆盖率 */}
-          <div className="flex items-center gap-2 px-3 py-1 rounded bg-[--bg-tertiary]" title="数据覆盖率：两个平台都有实时数据的市场对数量">
-            <span className="text-xs text-[--text-muted]">📡 数据:</span>
-            <span className={`font-mono text-xs ${dataCoverage.kalshi_connected ? 'text-blue-400' : 'text-gray-500'}`}>
-              K:{dataCoverage.kalshi_coverage}
+          <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-[--bg-tertiary]" title="数据覆盖率：两个平台都有实时数据的市场对数量">
+            <span className={`font-mono text-[10px] ${dataCoverage.kalshi_connected ? 'text-blue-400' : 'text-gray-500'}`}>
+              K:{dataCoverage.kalshi_coverage}/{dataCoverage.polymarket_coverage}
             </span>
-            <span className={`font-mono text-xs ${dataCoverage.polymarket_connected ? 'text-purple-400' : 'text-gray-500'}`}>
-              P:{dataCoverage.polymarket_coverage}
+            <span className={`font-mono text-[10px] ${dataCoverage.polymarket_connected ? 'text-purple-400' : 'text-gray-500'}`}>
+              P:{dataCoverage.polymarket_coverage}/{dataCoverage.total_markets}
             </span>
-            <span className={`font-mono text-xs font-semibold ${coveragePercent >= 80 ? 'text-green-400' : coveragePercent >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
-              ✓:{dataCoverage.full_coverage}
+            <span className={`font-mono text-[10px] font-semibold ${coveragePercent >= 80 ? 'text-green-400' : coveragePercent >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
+              ✓{dataCoverage.both_ready}/{dataCoverage.total_markets}
             </span>
           </div>
 
           {/* 平台延迟 */}
-          <div className="flex items-center gap-2 px-3 py-1 rounded bg-[--bg-tertiary]" title="平台数据延迟：从交易所接收到数据到现在的时间">
-            <span className="text-xs text-[--text-muted]">⚡ WS:</span>
-            <span className={`font-mono text-xs ${getLatencyColor(dataCoverage.kalshi_latency_ms)}`}>
+          <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-[--bg-tertiary]" title="平台数据延迟">
+            <span className="text-[10px] text-[--text-muted]">WS:</span>
+            <span className={`font-mono text-[10px] ${getLatencyColor(dataCoverage.kalshi_latency_ms)}`}>
               K:{formatLatency(dataCoverage.kalshi_latency_ms)}
             </span>
-            <span className={`font-mono text-xs ${getLatencyColor(dataCoverage.polymarket_latency_ms)}`}>
+            <span className={`font-mono text-[10px] ${getLatencyColor(dataCoverage.polymarket_latency_ms)}`}>
               P:{formatLatency(dataCoverage.polymarket_latency_ms)}
             </span>
           </div>
 
-          {/* API 延迟 (下单接口速度) */}
-          <div className="flex items-center gap-2 px-3 py-1 rounded bg-[--bg-tertiary]" title="API延迟：下单接口的响应时间（通过定期ping测试）">
-            <span className="text-xs text-[--text-muted]">🔗 API:</span>
-            <span className={`font-mono text-xs ${getLatencyColor(metrics?.api_latency.kalshi_ms)}`}>
+          {/* API 延迟 */}
+          <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-[--bg-tertiary]" title="API延迟">
+            <span className="text-[10px] text-[--text-muted]">API:</span>
+            <span className={`font-mono text-[10px] ${getLatencyColor(metrics?.api_latency.kalshi_ms)}`}>
               K:{formatLatency(metrics?.api_latency.kalshi_ms)}
             </span>
-            <span className={`font-mono text-xs ${getLatencyColor(metrics?.api_latency.polymarket_ms)}`}>
+            <span className={`font-mono text-[10px] ${getLatencyColor(metrics?.api_latency.polymarket_ms)}`}>
               P:{formatLatency(metrics?.api_latency.polymarket_ms)}
             </span>
           </div>
 
-          <div className="h-4 w-px bg-[--border-color]" />
+          <div className="h-3 w-px bg-[--border-color]" />
           
           <StatItem 
             label="Opps" 
@@ -168,32 +167,20 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
           />
           <StatItem label="Profit" value={`$${totalProfit.toFixed(0)}`} color="text-emerald-400" />
           
-          {/* 最后更新时间 */}
-          <div className="flex items-center gap-1.5 pl-3 border-l border-[--border-color]">
-            <span className={`text-xs transition-colors duration-300 ${isFlashing ? 'text-cyan-400' : 'text-[--text-muted]'}`}>
-              ⏱ {formatLastUpdate()}
-            </span>
-          </div>
+          <div className="h-3 w-px bg-[--border-color]" />
           
           {/* 连接状态 */}
-          <div className="flex items-center gap-1.5 pl-3 border-l border-[--border-color]">
+          <div className="flex items-center gap-1">
             <span className={`status-dot ${isConnected ? 'status-connected animate-pulse-dot' : 'status-disconnected'}`} />
-            <span className={`text-xs ${isConnected ? 'text-green-400' : 'text-red-400'}`}>
-              {isConnected ? 'Live' : 'Offline'}
+            <span className={`text-[10px] ${isConnected ? 'text-green-400' : 'text-red-400'}`}>
+              {isConnected ? '● Live' : 'Offline'}
             </span>
           </div>
 
-          {/* 用户信息和退出 */}
-          {username && onLogout && (
-            <div className="flex items-center gap-2 pl-3 border-l border-[--border-color]">
-              <span className="text-xs text-[--text-muted]">👤 {username}</span>
-              <button
-                onClick={onLogout}
-                className="px-2 py-1 text-xs text-[--text-muted] hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
-                title="退出登录"
-              >
-                退出
-              </button>
+          {/* 用户信息 */}
+          {username && (
+            <div className="flex items-center gap-1 pl-2 border-l border-[--border-color]">
+              <span className="text-[10px] text-[--text-muted]">Guest</span>
             </div>
           )}
         </div>
@@ -204,9 +191,9 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
 
 function StatItem({ label, value, color, highlight }: { label: string; value: string | number; color: string; highlight?: boolean }) {
   return (
-    <div className="flex items-center gap-1.5">
-      <span className="text-[--text-muted] text-xs">{label}</span>
-      <span className={`${color} font-semibold tabular-nums transition-all duration-300 ${highlight ? 'scale-110 brightness-125' : ''}`}>
+    <div className="flex items-center gap-1">
+      <span className="text-[--text-muted] text-[10px]">{label}</span>
+      <span className={`${color} font-semibold tabular-nums text-[10px] transition-all duration-300 ${highlight ? 'scale-110 brightness-125' : ''}`}>
         {value}
       </span>
     </div>

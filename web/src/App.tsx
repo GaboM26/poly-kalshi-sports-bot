@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Header } from './components/Header';
 import { OpportunityList } from './components/OpportunityList';
-import { LogPanel } from './components/LogPanel';
 import { TrackingPanel } from './components/TrackingPanel';
 import { ArbitrageHistory } from './components/ArbitrageHistory';
 import { HistoryExplorer } from './components/HistoryExplorer';
@@ -36,13 +35,14 @@ function App() {
       : `${window.location.protocol}//${window.location.host}`;
   }, []);
   
-  const { matchedMarkets, logs, isConnected, stats, lastUpdateTime, updateCount, dataCoverage, metrics } = useWebSocket(wsUrl);
+  const { matchedMarkets, isConnected, stats, lastUpdateTime, updateCount, dataCoverage, metrics } = useWebSocket(wsUrl);
   // 从匹配市场计算总利润（只计算有套利机会的市场）
   const totalProfit = matchedMarkets
     .filter(m => m.has_opportunity)
     .reduce((sum, m) => sum + m.expected_profit, 0);
   const [selectedMarket, setSelectedMarket] = useState<MatchedMarketData | null>(null);
-  const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking' | 'history' | 'metrics'>('detail');
+  const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking'>('detail');
+  const [leftBottomTab, setLeftBottomTab] = useState<'positions' | 'history'>('positions');
   const [showHistoryExplorer, setShowHistoryExplorer] = useState(false);
 
   // Rust 后端暂时不需要登录验证
@@ -62,261 +62,269 @@ function App() {
         username={currentUsername}
       />
       
-      <main className="flex-1 flex overflow-hidden">
-        {/* 左侧：市场列表 + 订单管理 */}
-        <div className="flex-1 flex flex-col p-4 overflow-hidden gap-4">
-          {/* 上部：市场列表 (70%) */}
-          <div className="flex-[7] overflow-hidden">
+      <main className="flex-1 flex overflow-hidden gap-1 p-1 bg-[--bg-primary]">
+        {/* 左侧：市场列表 + 持仓/历史记录 */}
+        <div className="flex-1 flex flex-col overflow-hidden gap-1">
+          {/* 上部：市场列表 (55%) */}
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col bg-[--bg-secondary] rounded border border-[--border-color] shadow-lg" style={{flexBasis: '55%'}}>
             <OpportunityList 
               matchedMarkets={matchedMarkets}
               onSelectMarket={setSelectedMarket}
               apiBaseUrl={apiBaseUrl}
             />
           </div>
-          {/* 下部：订单管理 (30%) */}
-          <div className="flex-[3] overflow-hidden">
-            <OrderPanel apiBaseUrl={apiBaseUrl} />
+          {/* 下部：持仓/历史记录标签页 (45%) */}
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col bg-[--bg-secondary] rounded border border-[--border-color] shadow-lg" style={{flexBasis: '45%'}}>
+            {/* 标签页切换 */}
+            <div className="flex border-b-2 border-[--border-color] flex-shrink-0 bg-[--bg-tertiary]">
+              <button
+                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors border-b-2 ${
+                  leftBottomTab === 'positions'
+                    ? 'text-[--accent-blue] border-[--accent-blue] bg-[--bg-secondary]'
+                    : 'text-[--text-muted] hover:text-[--text-secondary] border-transparent'
+                }`}
+                onClick={() => setLeftBottomTab('positions')}
+              >
+                💼 持仓
+              </button>
+              <button
+                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors border-b-2 ${
+                  leftBottomTab === 'history'
+                    ? 'text-[--accent-yellow] border-[--accent-yellow] bg-[--bg-secondary]'
+                    : 'text-[--text-muted] hover:text-[--text-secondary] border-transparent'
+                }`}
+                onClick={() => setLeftBottomTab('history')}
+              >
+                📜 套利记录
+              </button>
+            </div>
+            
+            {/* 标签页内容 */}
+            <div className="flex-1 overflow-hidden">
+              {leftBottomTab === 'positions' ? (
+                <OrderPanel apiBaseUrl={apiBaseUrl} />
+              ) : (
+                <ArbitrageHistory apiBaseUrl={apiBaseUrl} onOpenExplorer={() => setShowHistoryExplorer(true)} />
+              )}
+            </div>
           </div>
         </div>
         
-        {/* 右侧面板：详细信息/追踪/历史 + 日志 */}
-        <aside className="w-96 flex-shrink-0 border-l border-[--border-color] bg-[--bg-secondary] flex flex-col">
-          {/* 标签页切换 */}
-          <div className="flex border-b border-[--border-color]">
-            <button
-              className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
-                rightPanelTab === 'detail'
-                  ? 'text-[--accent-purple] border-b-2 border-[--accent-purple] bg-[--bg-tertiary]'
-                  : 'text-[--text-muted] hover:text-[--text-secondary]'
-              }`}
-              onClick={() => setRightPanelTab('detail')}
-            >
-              📋 详情
-            </button>
-            <button
-              className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
-                rightPanelTab === 'tracking'
-                  ? 'text-[--accent-green] border-b-2 border-[--accent-green] bg-[--bg-tertiary]'
-                  : 'text-[--text-muted] hover:text-[--text-secondary]'
-              }`}
-              onClick={() => setRightPanelTab('tracking')}
-            >
-              🎯 追踪
-            </button>
-            <button
-              className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
-                rightPanelTab === 'history'
-                  ? 'text-[--accent-yellow] border-b-2 border-[--accent-yellow] bg-[--bg-tertiary]'
-                  : 'text-[--text-muted] hover:text-[--text-secondary]'
-              }`}
-              onClick={() => setRightPanelTab('history')}
-            >
-              📜 历史
-            </button>
-            <button
-              className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
-                rightPanelTab === 'metrics'
-                  ? 'text-cyan-400 border-b-2 border-cyan-400 bg-[--bg-tertiary]'
-                  : 'text-[--text-muted] hover:text-[--text-secondary]'
-              }`}
-              onClick={() => setRightPanelTab('metrics')}
-            >
-              📊 性能
-            </button>
-          </div>
+        {/* 右侧面板：详细信息/追踪 + 性能 */}
+        <aside className="w-96 flex-shrink-0 flex flex-col gap-1">
+          {/* 上部：标签页区域 (70%) */}
+          <div className="flex-1 min-h-0 flex flex-col bg-[--bg-secondary] rounded border border-[--border-color] shadow-lg" style={{flexBasis: '70%'}}>
+            {/* 标签页切换 */}
+            <div className="flex border-b-2 border-[--border-color] flex-shrink-0 bg-[--bg-tertiary]">
+              <button
+                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors border-b-2 ${
+                  rightPanelTab === 'detail'
+                    ? 'text-[--accent-purple] border-[--accent-purple] bg-[--bg-secondary]'
+                    : 'text-[--text-muted] hover:text-[--text-secondary] border-transparent'
+                }`}
+                onClick={() => setRightPanelTab('detail')}
+              >
+                📋 详情
+              </button>
+              <button
+                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors border-b-2 ${
+                  rightPanelTab === 'tracking'
+                    ? 'text-[--accent-green] border-[--accent-green] bg-[--bg-secondary]'
+                    : 'text-[--text-muted] hover:text-[--text-secondary] border-transparent'
+                }`}
+                onClick={() => setRightPanelTab('tracking')}
+              >
+                🎯 追踪
+              </button>
+            </div>
 
-          {/* 上方：详细信息或追踪面板或历史 */}
-          <div className="flex-1 overflow-y-auto border-b border-[--border-color]">
-            {rightPanelTab === 'detail' ? (
-              <div className="p-3">
-                {selectedMarket ? (
-                  <div className="space-y-3">
-                    {/* 标题栏 */}
-                    <div className="pb-2 border-b border-[--border-color]">
-                      <h3 className="text-xs font-semibold text-[--text-muted] uppercase tracking-wider">市场详情</h3>
-                    </div>
-                    
-                    {/* 事件信息 - 紧凑卡片 */}
-                    <div className="bg-[--bg-tertiary] rounded p-2.5">
-                      <div className="text-[10px] text-[--text-muted] mb-1">事件</div>
-                      <div className="text-xs text-[--text-primary] font-medium leading-tight">
-                        {selectedMarket.event_name}
+            {/* 标签页内容 */}
+            <div className="flex-1 overflow-y-auto overflow-x-hidden">
+              {rightPanelTab === 'detail' ? (
+                selectedMarket ? (
+                  <div className="p-2 space-y-2">
+                      {/* 标题栏 */}
+                      <div className="pb-1.5 border-b border-[--border-color]">
+                        <h3 className="text-[10px] font-semibold text-[--text-muted] uppercase tracking-wider">市场详情</h3>
                       </div>
-                      {selectedMarket.team_name && (
-                        <div className="text-xs text-[--accent-yellow] mt-1 font-medium">
-                          {selectedMarket.team_name}
-                        </div>
-                      )}
-                      {selectedMarket.end_time && (
-                        <div className="text-[10px] text-[--text-muted] mt-1.5 flex items-center gap-1">
-                          <span>🕐</span>
-                          <span>{formatDateTime(selectedMarket.end_time)}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* 数据状态 + 利润信息 - 合并显示 */}
-                    <div className="grid grid-cols-2 gap-2">
-                      {/* 数据状态 */}
+                      
+                      {/* 事件信息 - 紧凑卡片 */}
                       <div className="bg-[--bg-tertiary] rounded p-2">
-                        <div className="text-[10px] text-[--text-muted] mb-1.5">数据状态</div>
-                        <div className="flex flex-col gap-1">
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] ${selectedMarket.kalshi_ready ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}`}>
-                            Kalshi {selectedMarket.kalshi_ready ? '✓' : '○'}
-                          </span>
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] ${selectedMarket.poly_ready ? 'bg-purple-500/20 text-purple-400' : 'bg-gray-500/20 text-gray-400'}`}>
-                            Poly {selectedMarket.poly_ready ? '✓' : '○'}
-                          </span>
+                        <div className="text-[10px] text-[--text-muted] mb-1">事件</div>
+                        <div className="text-xs text-[--text-primary] font-medium leading-tight">
+                          {selectedMarket.event_name}
                         </div>
+                        {selectedMarket.team_name && (
+                          <div className="text-xs text-[--accent-yellow] mt-1 font-medium">
+                            {selectedMarket.team_name}
+                          </div>
+                        )}
+                        {selectedMarket.end_time && (
+                          <div className="text-[10px] text-[--text-muted] mt-1.5 flex items-center gap-1">
+                            <span>🕐</span>
+                            <span>{formatDateTime(selectedMarket.end_time)}</span>
+                          </div>
+                        )}
                       </div>
 
-                      {/* 利润信息 */}
-                      {selectedMarket.has_opportunity ? (
-                        <div className="bg-gradient-to-br from-green-500/10 to-emerald-500/5 rounded p-2 border border-green-500/20">
-                          <div className="text-[10px] text-[--text-muted] mb-1">套利机会</div>
-                          <div className="text-base font-bold text-[--accent-green] leading-tight">
-                            {selectedMarket.profit_margin.toFixed(2)}%
-                          </div>
-                          <div className="text-[10px] text-green-400 mt-0.5">
-                            净利润: ${selectedMarket.expected_profit.toFixed(2)}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="bg-[--bg-tertiary] rounded p-2 border border-gray-500/20">
-                          <div className="text-[10px] text-[--text-muted] mb-1">套利结果</div>
-                          <div className="text-base font-bold text-gray-400 leading-tight">
-                            {selectedMarket.profit_margin.toFixed(2)}%
-                          </div>
-                          <div className="text-[10px] text-gray-400 mt-0.5">
-                            净利润: ${selectedMarket.expected_profit.toFixed(2)}
+                      {/* 数据状态 + 利润信息 - 合并显示 */}
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {/* 数据状态 */}
+                        <div className="bg-[--bg-tertiary] rounded p-1.5">
+                          <div className="text-[10px] text-[--text-muted] mb-1.5">数据状态</div>
+                          <div className="flex flex-col gap-1">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] ${selectedMarket.kalshi_ready ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}`}>
+                              Kalshi {selectedMarket.kalshi_ready ? '✓' : '○'}
+                            </span>
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] ${selectedMarket.poly_ready ? 'bg-purple-500/20 text-purple-400' : 'bg-gray-500/20 text-gray-400'}`}>
+                              Poly {selectedMarket.poly_ready ? '✓' : '○'}
+                            </span>
                           </div>
                         </div>
-                      )}
-                    </div>
 
-                    {/* 价格对比 - 紧凑布局 */}
-                    <div className="bg-[--bg-tertiary] rounded p-2.5">
-                      <div className="text-[10px] text-[--text-muted] mb-2">价格对比</div>
-                      
-                      {/* Kalshi */}
-                      <div className="mb-2 pb-2 border-b border-[--border-color]">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-[10px] text-blue-400 font-medium">Kalshi</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <div className="flex items-center gap-1">
-                            <span className="text-[9px] text-[--text-muted]">Yes</span>
-                            <span className="text-xs text-green-400 font-mono font-semibold">
-                              {(selectedMarket.kalshi_yes_price * 100).toFixed(0)}¢
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <span className="text-[9px] text-[--text-muted]">No</span>
-                            <span className="text-xs text-red-400 font-mono font-semibold">
-                              {(selectedMarket.kalshi_no_price * 100).toFixed(0)}¢
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Polymarket */}
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-[10px] text-purple-400 font-medium">Polymarket</span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <div className="flex items-center gap-1">
-                            <span className="text-[9px] text-[--text-muted]">Yes</span>
-                            <span className="text-xs text-green-400 font-mono font-semibold">
-                              {(selectedMarket.poly_yes_price * 100).toFixed(0)}¢
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <span className="text-[9px] text-[--text-muted]">No</span>
-                            <span className="text-xs text-red-400 font-mono font-semibold">
-                              {(selectedMarket.poly_no_price * 100).toFixed(0)}¢
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* 套利计算详情 - 始终显示 */}
-                    <div className="bg-[--bg-tertiary] rounded p-2.5 space-y-2">
-                      {selectedMarket.arbitrage_type && (
-                        <div>
-                          <div className="text-[10px] text-[--text-muted] mb-1">套利策略</div>
-                          <div className={`text-xs font-mono ${selectedMarket.has_opportunity ? 'text-[--text-primary]' : 'text-gray-400'}`}>
-                            {selectedMarket.arbitrage_type}
-                          </div>
-                        </div>
-                      )}
-                      
-                      {/* 费用明细 */}
-                      <div className={selectedMarket.arbitrage_type ? 'pt-2 border-t border-[--border-color]' : ''}>
-                        <div className="text-[10px] text-[--text-muted] mb-1.5">套利计算详情</div>
-                        <div className="space-y-1 text-[10px]">
-                          {selectedMarket.kalshi_contracts !== undefined && (
-                            <div className="flex justify-between">
-                              <span className="text-[--text-muted]">Kalshi 合约数</span>
-                              <span className="text-blue-400 font-mono">{Math.round(selectedMarket.kalshi_contracts)}</span>
+                        {/* 利润信息 */}
+                        {selectedMarket.has_opportunity ? (
+                          <div className="bg-gradient-to-br from-green-500/10 to-emerald-500/5 rounded p-1.5 border border-green-500/20">
+                            <div className="text-[10px] text-[--text-muted] mb-1">套利机会</div>
+                            <div className="text-base font-bold text-[--accent-green] leading-tight">
+                              {selectedMarket.profit_margin.toFixed(2)}%
                             </div>
-                          )}
-                          {selectedMarket.kalshi_fee !== undefined && (
-                            <div className="flex justify-between">
-                              <span className="text-[--text-muted]">Kalshi 手续费</span>
-                              <span className="text-orange-400 font-mono">-${selectedMarket.kalshi_fee.toFixed(2)}</span>
+                            <div className="text-[10px] text-green-400 mt-0.5">
+                              净利润: ${selectedMarket.expected_profit.toFixed(2)}
                             </div>
-                          )}
-                          {selectedMarket.gross_profit !== undefined && (
-                            <div className="flex justify-between">
-                              <span className="text-[--text-muted]">毛利润</span>
-                              <span className={`font-mono ${selectedMarket.gross_profit >= 0 ? 'text-[--text-secondary]' : 'text-red-400'}`}>
-                                ${selectedMarket.gross_profit.toFixed(2)}
+                          </div>
+                        ) : (
+                          <div className="bg-[--bg-tertiary] rounded p-1.5 border border-gray-500/20">
+                            <div className="text-[10px] text-[--text-muted] mb-1">套利结果</div>
+                            <div className="text-base font-bold text-gray-400 leading-tight">
+                              {selectedMarket.profit_margin.toFixed(2)}%
+                            </div>
+                            <div className="text-[10px] text-gray-400 mt-0.5">
+                              净利润: ${selectedMarket.expected_profit.toFixed(2)}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* 价格对比 - 紧凑布局 */}
+                      <div className="bg-[--bg-tertiary] rounded p-2">
+                        <div className="text-[10px] text-[--text-muted] mb-1.5">价格对比</div>
+                        
+                        {/* Kalshi */}
+                        <div className="mb-1.5 pb-1.5 border-b border-[--border-color]">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[10px] text-blue-400 font-medium">Kalshi</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <div className="flex items-center gap-1">
+                              <span className="text-[9px] text-[--text-muted]">Yes</span>
+                              <span className="text-xs text-green-400 font-mono font-semibold">
+                                {(selectedMarket.kalshi_yes_price * 100).toFixed(0)}¢
                               </span>
                             </div>
-                          )}
-                          <div className="flex justify-between pt-1 border-t border-[--border-color]">
-                            <span className="text-[--text-muted] font-medium">净利润</span>
-                            <span className={`font-mono font-medium ${selectedMarket.expected_profit >= 0 ? (selectedMarket.has_opportunity ? 'text-green-400' : 'text-gray-400') : 'text-red-400'}`}>
-                              ${selectedMarket.expected_profit.toFixed(2)}
-                            </span>
+                            <div className="flex items-center gap-1">
+                              <span className="text-[9px] text-[--text-muted]">No</span>
+                              <span className="text-xs text-red-400 font-mono font-semibold">
+                                {(selectedMarket.kalshi_no_price * 100).toFixed(0)}¢
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Polymarket */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-[10px] text-purple-400 font-medium">Polymarket</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <div className="flex items-center gap-1">
+                              <span className="text-[9px] text-[--text-muted]">Yes</span>
+                              <span className="text-xs text-green-400 font-mono font-semibold">
+                                {(selectedMarket.poly_yes_price * 100).toFixed(0)}¢
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <span className="text-[9px] text-[--text-muted]">No</span>
+                              <span className="text-xs text-red-400 font-mono font-semibold">
+                                {(selectedMarket.poly_no_price * 100).toFixed(0)}¢
+                              </span>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
 
-                    {/* 下单区域 */}
-                    <div className="pt-2 border-t border-[--border-color]">
-                      <div className="pb-2">
-                        <h3 className="text-xs font-semibold text-[--text-muted] uppercase tracking-wider">交易下单</h3>
+                      {/* 套利计算详情 - 始终显示 */}
+                      <div className="bg-[--bg-tertiary] rounded p-2 space-y-1.5">
+                        {selectedMarket.arbitrage_type && (
+                          <div>
+                            <div className="text-[10px] text-[--text-muted] mb-1">套利策略</div>
+                            <div className={`text-xs font-mono ${selectedMarket.has_opportunity ? 'text-[--text-primary]' : 'text-gray-400'}`}>
+                              {selectedMarket.arbitrage_type}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* 费用明细 */}
+                        <div className={selectedMarket.arbitrage_type ? 'pt-2 border-t border-[--border-color]' : ''}>
+                          <div className="text-[10px] text-[--text-muted] mb-1.5">套利计算详情</div>
+                          <div className="space-y-1 text-[10px]">
+                            {selectedMarket.kalshi_contracts !== undefined && (
+                              <div className="flex justify-between">
+                                <span className="text-[--text-muted]">Kalshi 合约数</span>
+                                <span className="text-blue-400 font-mono">{Math.round(selectedMarket.kalshi_contracts)}</span>
+                              </div>
+                            )}
+                            {selectedMarket.kalshi_fee !== undefined && (
+                              <div className="flex justify-between">
+                                <span className="text-[--text-muted]">Kalshi 手续费</span>
+                                <span className="text-orange-400 font-mono">-${selectedMarket.kalshi_fee.toFixed(2)}</span>
+                              </div>
+                            )}
+                            {selectedMarket.gross_profit !== undefined && (
+                              <div className="flex justify-between">
+                                <span className="text-[--text-muted]">毛利润</span>
+                                <span className={`font-mono ${selectedMarket.gross_profit >= 0 ? 'text-[--text-secondary]' : 'text-red-400'}`}>
+                                  ${selectedMarket.gross_profit.toFixed(2)}
+                                </span>
+                              </div>
+                            )}
+                            <div className="flex justify-between pt-1 border-t border-[--border-color]">
+                              <span className="text-[--text-muted] font-medium">净利润</span>
+                              <span className={`font-mono font-medium ${selectedMarket.expected_profit >= 0 ? (selectedMarket.has_opportunity ? 'text-green-400' : 'text-gray-400') : 'text-red-400'}`}>
+                                ${selectedMarket.expected_profit.toFixed(2)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
                       </div>
-                      <OrderForm 
-                        market={selectedMarket} 
-                        apiBaseUrl={apiBaseUrl}
-                      />
-                    </div>
+
+                      {/* 下单区域 */}
+                      <div className="pt-1.5 border-t border-[--border-color]">
+                        <div className="pb-1.5">
+                          <h3 className="text-[10px] font-semibold text-[--text-muted] uppercase tracking-wider">交易下单</h3>
+                        </div>
+                        <OrderForm 
+                          market={selectedMarket} 
+                          apiBaseUrl={apiBaseUrl}
+                        />
+                      </div>
                   </div>
                 ) : (
-                  <div className="flex flex-col items-center justify-center h-full py-12">
+                  <div className="flex flex-col items-center justify-center h-full">
                     <div className="text-3xl mb-2">👆</div>
                     <div className="text-xs text-[--text-secondary]">选择一个市场</div>
                     <div className="text-[10px] text-[--text-muted] mt-1">查看详细信息和交易</div>
                   </div>
-                )}
-              </div>
-            ) : rightPanelTab === 'tracking' ? (
-              <TrackingPanel apiBaseUrl={apiBaseUrl} />
-            ) : rightPanelTab === 'history' ? (
-              <ArbitrageHistory apiBaseUrl={apiBaseUrl} onOpenExplorer={() => setShowHistoryExplorer(true)} />
-            ) : (
-              <MetricsPanel metrics={metrics} />
-            )}
+                )
+              ) : (
+                <TrackingPanel apiBaseUrl={apiBaseUrl} />
+              )}
+            </div>
           </div>
           
-          {/* 下方：日志 */}
-          <div className="h-56 flex-shrink-0 px-3 pb-3">
-            <LogPanel logs={logs} />
+          {/* 下部：性能监控 (30%) */}
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col bg-[--bg-secondary] rounded border border-[--border-color] shadow-lg" style={{flexBasis: '30%'}}>
+            <MetricsPanel metrics={metrics} />
           </div>
         </aside>
       </main>

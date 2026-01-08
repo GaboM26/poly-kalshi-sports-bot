@@ -114,10 +114,10 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
 
   if (matchedMarkets.length === 0) {
     return (
-      <div className="card p-8 text-center">
-        <div className="text-4xl mb-3">⏳</div>
-        <div className="text-[--text-secondary]">Scanning markets...</div>
-        <div className="text-[--text-muted] text-xs mt-1">Real-time opportunities will appear here</div>
+      <div className="p-4 text-center h-full flex flex-col items-center justify-center">
+        <div className="text-2xl mb-2">⏳</div>
+        <div className="text-[--text-secondary] text-sm">Scanning markets...</div>
+        <div className="text-[--text-muted] text-[10px] mt-1">Real-time opportunities will appear here</div>
       </div>
     );
   }
@@ -151,24 +151,24 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
   });
 
   return (
-    <div className="card overflow-hidden flex flex-col h-full">
+    <div className="overflow-hidden flex flex-col h-full text-xs">
       {/* 排序选择器 */}
-      <div className="px-4 py-2 bg-[--bg-tertiary] border-b border-[--border-color] flex items-center justify-between">
-        <span className="text-xs text-[--text-muted]">排序方式:</span>
-        <div className="flex gap-2">
+      <div className="px-2 py-1 bg-[--bg-tertiary] border-b border-[--border-color] flex items-center justify-between flex-shrink-0">
+        <span className="text-[10px] text-[--text-muted]">排序:</span>
+        <div className="flex gap-1">
           <button
             onClick={() => setSortBy('profit')}
-            className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+            className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
               sortBy === 'profit'
                 ? 'bg-[--accent-green] text-white'
                 : 'bg-[--bg-secondary] text-[--text-secondary] hover:bg-[--bg-primary]'
             }`}
           >
-            💰 收益率
+            💰 收益
           </button>
           <button
             onClick={() => setSortBy('event')}
-            className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+            className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
               sortBy === 'event'
                 ? 'bg-[--accent-purple] text-white'
                 : 'bg-[--bg-secondary] text-[--text-secondary] hover:bg-[--bg-primary]'
@@ -178,7 +178,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
           </button>
           <button
             onClick={() => setSortBy('team')}
-            className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+            className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
               sortBy === 'team'
                 ? 'bg-[--accent-yellow] text-white'
                 : 'bg-[--bg-secondary] text-[--text-secondary] hover:bg-[--bg-primary]'
@@ -191,16 +191,16 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
 
       {/* 表格容器 - 可滚动 */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-        <table>
-          <thead className="sticky top-0 bg-[--bg-secondary] z-10">
+        <table className="w-full">
+          <thead className="sticky top-0 bg-[--bg-secondary] z-10 text-[10px]">
             <tr>
-              <th>Event</th>
-              <th className="text-center">Team</th>
-              <th className="text-center">Kalshi</th>
-              <th className="text-center">Polymarket</th>
-              <th className="text-center">Strategy</th>
-              <th className="text-right">Profit</th>
-              <th className="text-center w-16">Action</th>
+              <th className="py-1 px-2 font-medium text-[--text-secondary]">Event</th>
+              <th className="py-1 px-2 text-center font-medium text-[--text-secondary]">Team</th>
+              <th className="py-1 px-2 text-center font-medium text-[--text-secondary]">Kalshi</th>
+              <th className="py-1 px-2 text-center font-medium text-[--text-secondary]">Polymarket</th>
+              <th className="py-1 px-2 text-center font-medium text-[--text-secondary]">Str.</th>
+              <th className="py-1 px-2 text-right font-medium text-[--text-secondary]">Profit</th>
+              <th className="py-1 px-2 text-center w-12 font-medium text-[--text-secondary]">Act</th>
             </tr>
           </thead>
           <tbody>
@@ -213,71 +213,71 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                 <tr
                   key={key}
                   onClick={() => onSelectMarket?.(market)}
-                  className={`cursor-pointer ${market.has_opportunity ? 'bg-[rgba(16,185,129,0.05)]' : ''}`}
+                  className={`cursor-pointer border-b border-[--border-color] hover:bg-[--bg-secondary] transition-colors ${market.has_opportunity ? 'bg-[rgba(16,185,129,0.05)]' : ''}`}
                 >
                   {/* Event */}
-                  <td>
-                    <span className="text-[--text-primary] font-medium">
+                  <td className="py-1 px-2">
+                    <span className="text-[--text-primary] font-medium truncate max-w-[100px] block" title={market.event_name}>
                       {market.event_name}
                     </span>
                   </td>
 
                   {/* Team */}
-                  <td className="text-center">
-                    <span className="px-2 py-0.5 rounded bg-[--bg-tertiary] text-[--accent-yellow] text-xs font-medium">
+                  <td className="text-center py-1 px-2">
+                    <span className="px-1.5 py-0.5 rounded bg-[--bg-tertiary] text-[--accent-yellow] text-[10px] font-medium truncate max-w-[60px] inline-block" title={market.team_name}>
                       {market.team_name || '-'}
                     </span>
                   </td>
 
                   {/* Kalshi Prices */}
-                  <td className="text-center">
-                    <span className={`price-tag price-kalshi tabular-nums ${kalshiFlashing ? 'flash-update' : ''} ${!market.kalshi_ready ? 'opacity-50' : ''}`}>
+                  <td className="text-center py-1 px-2">
+                    <span className={`price-tag price-kalshi tabular-nums text-[10px] ${kalshiFlashing ? 'flash-update' : ''} ${!market.kalshi_ready ? 'opacity-50' : ''}`}>
                       <span className="text-green-400">{formatCents(market.kalshi_yes_price)}</span>
-                      <span className="text-[--text-muted] mx-1">/</span>
+                      <span className="text-[--text-muted] mx-0.5">/</span>
                       <span className="text-red-400">{formatCents(market.kalshi_no_price)}</span>
                     </span>
                   </td>
 
                   {/* Polymarket Prices */}
-                  <td className="text-center">
-                    <span className={`price-tag price-poly tabular-nums ${polyFlashing ? 'flash-update' : ''} ${!market.poly_ready ? 'opacity-50' : ''}`}>
+                  <td className="text-center py-1 px-2">
+                    <span className={`price-tag price-poly tabular-nums text-[10px] ${polyFlashing ? 'flash-update' : ''} ${!market.poly_ready ? 'opacity-50' : ''}`}>
                       <span className="text-green-400">{formatCents(market.poly_yes_price)}</span>
-                      <span className="text-[--text-muted] mx-1">/</span>
+                      <span className="text-[--text-muted] mx-0.5">/</span>
                       <span className="text-red-400">{formatCents(market.poly_no_price)}</span>
                     </span>
                   </td>
 
                   {/* Strategy */}
-                  <td className="text-center">
+                  <td className="text-center py-1 px-2">
                     {market.has_opportunity ? (
-                      <span className="text-[--text-secondary] text-xs">
+                      <span className="text-[--text-secondary] text-[10px]">
                         {getStrategyShort(market.arbitrage_type || '')}
                       </span>
                     ) : (
-                      <span className="text-[--text-muted] text-xs">-</span>
+                      <span className="text-[--text-muted] text-[10px]">-</span>
                     )}
                   </td>
 
                   {/* Profit (净利润) */}
-                  <td className="text-right">
+                  <td className="text-right py-1 px-2">
                     {market.has_opportunity ? (
                       <div className={getProfitClass(market.profit_margin)}>
-                        <span className="text-base font-bold tabular-nums">{market.profit_margin.toFixed(2)}%</span>
-                        <span className="text-xs ml-1 opacity-70" title="净利润（扣除Kalshi手续费）">${market.expected_profit.toFixed(2)}</span>
+                        <span className="text-sm font-bold tabular-nums">{market.profit_margin.toFixed(2)}%</span>
+                        <div className="text-[9px] opacity-70 leading-none" title="净利润">${market.expected_profit.toFixed(2)}</div>
                       </div>
                     ) : (
-                      <span className="text-[--text-muted] text-xs">-</span>
+                      <span className="text-[--text-muted] text-[10px]">-</span>
                     )}
                   </td>
                   
                   {/* Action */}
-                  <td className="text-center">
+                  <td className="text-center py-1 px-2">
                     {market.has_opportunity ? (
                       <div className="flex flex-col items-center gap-0.5">
                         <button
                           onClick={(e) => handleExecute(market, e)}
                           disabled={executingKey === key || !apiBaseUrl}
-                          className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${
+                          className={`px-1.5 py-0.5 text-[9px] font-medium rounded transition-colors ${
                             executingKey === key
                               ? 'bg-gray-500/30 text-gray-400 cursor-wait'
                               : 'bg-[--accent-green]/20 text-[--accent-green] hover:bg-[--accent-green]/30'
@@ -286,13 +286,13 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                           {executingKey === key ? '...' : '执行'}
                         </button>
                         {lastResult?.key === key && (
-                          <span className={`text-[9px] ${lastResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                          <span className={`text-[9px] leading-none ${lastResult.success ? 'text-green-400' : 'text-red-400'}`}>
                             {lastResult.success ? '✓' : '✗'}
                           </span>
                         )}
                       </div>
                     ) : (
-                      <span className="text-[--text-muted] text-xs">-</span>
+                      <span className="text-[--text-muted] text-[10px]">-</span>
                     )}
                   </td>
                 </tr>
@@ -303,10 +303,10 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
       </div>
       
       {/* 底部统计 */}
-      <div className="px-4 py-2 bg-[--bg-tertiary] border-t border-[--border-color] flex justify-between items-center text-xs text-[--text-muted] flex-shrink-0">
-        <span>Total: {matchedMarkets.length} matched markets</span>
+      <div className="px-2 py-1 bg-[--bg-tertiary] border-t border-[--border-color] flex justify-between items-center text-[10px] text-[--text-muted] flex-shrink-0">
+        <span>Total: {matchedMarkets.length}</span>
         <span className={oppCount > 0 ? 'text-[--accent-green]' : ''}>
-          {oppCount > 0 ? `🔥 ${oppCount} opportunities` : 'No opportunities'}
+          {oppCount > 0 ? `🔥 ${oppCount} Opps` : 'No Opps'}
         </span>
       </div>
     </div>
@@ -326,5 +326,6 @@ function getProfitClass(margin: number): string {
 function getStrategyShort(type: string): string {
   if (type.includes('KalshiYes') && type.includes('PolymarketNo')) return 'K↑ P↓';
   if (type.includes('KalshiNo') && type.includes('PolymarketYes')) return 'K↓ P↑';
-  return type;
+  // Try to shorten more if needed
+  return type.replace('Kalshi', 'K').replace('Polymarket', 'P').replace('Yes', '↑').replace('No', '↓');
 }
