@@ -86,7 +86,9 @@ impl KalshiClient {
     /// Make an authenticated GET request
     async fn get(&self, path: &str) -> Result<Value> {
         let timestamp = Self::get_timestamp_ms();
-        let signature = self.sign_request(timestamp, "GET", path);
+        // 签名需要完整 API 路径 (与 Python 版本一致)
+        let sign_path = format!("/trade-api/v2{}", path);
+        let signature = self.sign_request(timestamp, "GET", &sign_path);
 
         let url = format!("{}{}", self.config.base_url, path);
 
@@ -112,7 +114,9 @@ impl KalshiClient {
     /// Make an authenticated POST request
     async fn post(&self, path: &str, body: &Value) -> Result<Value> {
         let timestamp = Self::get_timestamp_ms();
-        let signature = self.sign_request(timestamp, "POST", path);
+        // 签名需要完整 API 路径 (与 Python 版本一致)
+        let sign_path = format!("/trade-api/v2{}", path);
+        let signature = self.sign_request(timestamp, "POST", &sign_path);
 
         let url = format!("{}{}", self.config.base_url, path);
 
@@ -181,11 +185,9 @@ impl KalshiClient {
             }
             let event_name = format!("{}-{}", team_a, team_b);
 
-            // Parse start time
-            let start_time = event_data["expected_expiration_time"]
-                .as_str()
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&Utc));
+            // Parse start time from event ticker (Python-compatible approach)
+            // Format: KXNBA-26JAN08-DAL-UTA -> 2026-01-08
+            let start_time = extract_game_date_from_ticker(&event_ticker);
 
             let mut event = KalshiEvent {
                 event_id: event_ticker.clone(),
@@ -271,6 +273,51 @@ impl KalshiClient {
         });
 
         self.post("/portfolio/orders", &body).await
+    }
+
+    /// Get orders with optional status filter
+    pub async fn get_orders(&self, status: Option<&str>) -> Result<Value> {
+        let path = if let Some(s) = status {
+            format!("/portfolio/orders?status={}", s)
+        } else {
+            "/portfolio/orders".to_string()
+        };
+        
+        self.get(&path).await
+    }
+
+    /// Get positions
+    pub async fn get_positions(&self) -> Result<Value> {
+        self.get("/portfolio/positions").await
+    }
+
+    /// Cancel an order
+    pub async fn cancel_order(&self, order_id: &str) -> Result<Value> {
+        let timestamp = Self::get_timestamp_ms();
+        let path = format!("/portfolio/orders/{}", order_id);
+        // 签名需要完整 API 路径 (与 Python 版本一致)
+        let sign_path = format!("/trade-api/v2{}", path);
+        let signature = self.sign_request(timestamp, "DELETE", &sign_path);
+
+        let url = format!("{}{}", self.config.base_url, path);
+
+        let response = self
+            .http
+            .delete(&url)
+            .header("KALSHI-ACCESS-KEY", &self.config.api_key)
+            .header("KALSHI-ACCESS-SIGNATURE", &signature)
+            .header("KALSHI-ACCESS-TIMESTAMP", timestamp.to_string())
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await?;
+
+        if !status.is_success() {
+            bail!("Kalshi API error {}: {}", status, body);
+        }
+
+        serde_json::from_str(&body).with_context(|| format!("Failed to parse response: {}", body))
     }
 
     /// Connect to WebSocket for real-time updates
@@ -515,4 +562,51 @@ fn extract_team_from_ticker(ticker: &str) -> Option<String> {
 
     // Last part is the team abbreviation
     Some(parts.last()?.to_uppercase())
+}
+
+/// Extract game date from event ticker (e.g., "KXNBA-26JAN08-DAL-UTA" -> 2026-01-08)
+/// 
+/// Format: The second part contains the date as "YYMMMDD" where:
+/// - YY: two-digit year (e.g., "26" for 2026)
+/// - MMM: three-letter month abbreviation (e.g., "JAN")
+/// - DD: two-digit day (e.g., "08")
+fn extract_game_date_from_ticker(event_ticker: &str) -> Option<DateTime<Utc>> {
+    let parts: Vec<&str> = event_ticker.split('-').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    
+    let date_part = parts[1];
+    if date_part.len() < 7 {
+        return None;
+    }
+    
+    // Parse year (first 2 characters)
+    let year_str = &date_part[..2];
+    let year: i32 = match year_str.parse::<i32>() {
+        Ok(y) => 2000 + y,
+        Err(_) => return None,
+    };
+    
+    // Parse month (characters 2-5, e.g., "JAN")
+    let month_str = &date_part[2..5];
+    let month: u32 = match month_str.to_uppercase().as_str() {
+        "JAN" => 1, "FEB" => 2, "MAR" => 3, "APR" => 4,
+        "MAY" => 5, "JUN" => 6, "JUL" => 7, "AUG" => 8,
+        "SEP" => 9, "OCT" => 10, "NOV" => 11, "DEC" => 12,
+        _ => return None,
+    };
+    
+    // Parse day (characters 5-7)
+    let day_str = &date_part[5..7];
+    let day: u32 = match day_str.parse() {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+    
+    use chrono::NaiveDate;
+    let naive_date = NaiveDate::from_ymd_opt(year, month, day)?;
+    let naive_datetime = naive_date.and_hms_opt(12, 0, 0)?;
+    
+    Some(DateTime::from_naive_utc_and_offset(naive_datetime, Utc))
 }

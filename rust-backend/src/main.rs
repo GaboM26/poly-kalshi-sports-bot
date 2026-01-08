@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 mod api;
 mod clients;
@@ -18,16 +18,37 @@ use crate::config::Config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
+    // 创建日志目录
+    std::fs::create_dir_all("logs")?;
+
+    // 文件日志 appender - 每天轮转
+    let file_appender = tracing_appender::rolling::daily("logs", "polytaoli.log");
+    let (non_blocking_file, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // 控制台日志层 - 只显示 info 和更高级别
+    let console_layer = fmt::layer()
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_filter(EnvFilter::new("polytaoli=info,tower_http=warn"));
+
+    // 文件日志层 - 记录所有 debug 及以上级别
+    let file_layer = fmt::layer()
+        .with_writer(non_blocking_file)
+        .with_ansi(false)
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_line_number(true)
+        .with_filter(EnvFilter::new("polytaoli=debug,tower_http=debug"));
+
+    // 组合日志层
     tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "polytaoli=info,tower_http=debug".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
+        .with(console_layer)
+        .with(file_layer)
         .init();
 
     info!("🚀 启动 Polytaoli - 预测市场套利扫描器");
+    info!("📝 日志文件: logs/polytaoli.log");
 
     // Load configuration
     let config = Config::from_file("config.toml")?;

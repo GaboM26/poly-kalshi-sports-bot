@@ -375,20 +375,66 @@ pub struct OrderResponse {
     pub average_price: Option<f64>,
 }
 
+/// Matched market data for frontend display
+/// Corresponds to frontend's MatchedMarketData type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchedMarketFrontend {
+    pub event_name: String,
+    pub team_name: String,
+    pub kalshi_market_id: String,
+    pub polymarket_market_id: String,
+    pub kalshi_yes_price: f64,
+    pub kalshi_no_price: f64,
+    pub poly_yes_price: f64,
+    pub poly_no_price: f64,
+    pub kalshi_ready: bool,
+    pub poly_ready: bool,
+    pub both_ready: bool,
+    pub confidence: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<String>,
+    // Arbitrage related fields
+    pub has_opportunity: bool,
+    pub profit_margin: f64,
+    pub expected_profit: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gross_profit: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kalshi_contracts: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kalshi_fee: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arbitrage_type: Option<String>,
+}
+
+/// Matched markets list message with metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchedMarketsListData {
+    pub markets: Vec<MatchedMarketFrontend>,
+    pub count: usize,
+    pub opportunities_count: usize,
+}
+
 /// WebSocket message types for frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data")]
+#[serde(tag = "type")]
 pub enum WsMessage {
     #[serde(rename = "opportunity")]
-    Opportunity(ArbitrageOpportunity),
+    Opportunity { data: ArbitrageOpportunity },
     #[serde(rename = "opportunities")]
-    Opportunities(Vec<ArbitrageOpportunity>),
+    Opportunities { data: Vec<ArbitrageOpportunity> },
     #[serde(rename = "stats")]
-    Stats(SystemStats),
+    Stats { data: SystemStats },
+    #[serde(rename = "matched_markets_list")]
+    MatchedMarketsList {
+        data: Vec<MatchedMarketFrontend>,
+        count: usize,
+        opportunities_count: usize,
+    },
     #[serde(rename = "log")]
     Log { level: String, message: String },
     #[serde(rename = "price_update")]
-    PriceUpdate(PriceUpdate),
+    PriceUpdate { data: PriceUpdate },
     #[serde(rename = "error")]
     Error { message: String },
 }

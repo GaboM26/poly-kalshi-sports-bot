@@ -209,7 +209,8 @@ pub struct OrderResponse {
 #[serde(rename_all = "camelCase")]
 pub struct BalanceAllowance {
     pub balance: String,
-    pub allowance: String,
+    #[serde(default)]
+    pub allowances: std::collections::HashMap<String, String>,
 }
 
 /// Trade parameters for RFQ
@@ -243,7 +244,7 @@ pub struct OpenOrder {
 
 /// Trade info
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct Trade {
     pub id: String,
     pub market: String,

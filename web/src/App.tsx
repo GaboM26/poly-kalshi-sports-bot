@@ -12,38 +12,20 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { MatchedMarketData } from './types';
 
 function App() {
-  // 登录状态管理
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [currentUsername, setCurrentUsername] = useState<string | null>(null);
+  // 登录状态管理 - Rust 后端暂时不需要认证
+  const [isAuthenticated] = useState(true); // 直接设置为 true
+  const [currentUsername] = useState<string | null>('Guest'); // 默认用户名
 
-  // 检查本地存储的 token
-  useEffect(() => {
-    const token = localStorage.getItem('auth_token');
-    const username = localStorage.getItem('username');
-    if (token && username) {
-      setCurrentUsername(username);
-      setIsAuthenticated(true);
-    }
-  }, []);
-
-  // 登录成功处理
-  const handleLoginSuccess = (_token: string, username: string) => {
-    setCurrentUsername(username);
-    setIsAuthenticated(true);
-  };
-
-  // 退出登录
+  // 退出登录（暂时禁用）
   const handleLogout = () => {
-    localStorage.removeItem('auth_token');
-    localStorage.removeItem('username');
-    setCurrentUsername(null);
-    setIsAuthenticated(false);
+    // Rust 后端暂时不支持认证
+    console.log('Logout disabled for Rust backend');
   };
   const wsUrl = useMemo(() => {
     const devPorts = ['5175', '5176', '5177', '5173'];
     const isDev = devPorts.includes(window.location.port);
     return isDev 
-      ? 'ws://localhost:3000/ws'
+      ? 'ws://localhost:8000/ws'
       : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
   }, []);
 
@@ -51,7 +33,7 @@ function App() {
     const devPorts = ['5175', '5176', '5177', '5173'];
     const isDev = devPorts.includes(window.location.port);
     return isDev 
-      ? 'http://localhost:3000'
+      ? 'http://localhost:8000'
       : `${window.location.protocol}//${window.location.host}`;
   }, []);
   
@@ -64,10 +46,7 @@ function App() {
   const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking' | 'history'>('detail');
   const [showHistoryExplorer, setShowHistoryExplorer] = useState(false);
 
-  // 如果未登录，显示登录页面
-  if (!isAuthenticated) {
-    return <Login onLoginSuccess={handleLoginSuccess} apiBaseUrl={apiBaseUrl} />;
-  }
+  // Rust 后端暂时不需要登录验证
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">

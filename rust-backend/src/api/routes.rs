@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -39,12 +39,8 @@ pub async fn get_stats(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 pub async fn get_data_coverage(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let service = state.service.read().await;
     let coverage = service.ws_manager.get_data_coverage();
-    Json(serde_json::json!({
-        "total_markets": coverage.total_markets,
-        "kalshi_coverage": coverage.kalshi_coverage,
-        "poly_coverage": coverage.poly_coverage,
-        "full_coverage": coverage.full_coverage
-    }))
+    // Return the DataCoverage struct directly (it implements Serialize)
+    Json(coverage)
 }
 
 /// Get current arbitrage opportunities
@@ -304,4 +300,279 @@ pub async fn execute_arbitrage(
             .unwrap_or_else(|e| serde_json::json!({"success": false, "error": e.to_string()}))
     }))
     .into_response()
+}
+
+/// Get unified account balance
+pub async fn get_account_balance(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let service = state.service.read().await;
+
+    // Get Kalshi balance (returns f64 in dollars)
+    let kalshi_data = match service.kalshi_client.get_balance().await {
+        Ok(balance) => {
+            serde_json::json!({
+                "available": true,
+                "balance": balance,
+                "portfolio_value": 0.0,  // TODO: Get from separate API if needed
+                "updated_ts": 0
+            })
+        },
+        Err(e) => serde_json::json!({
+            "available": false,
+            "error": e.to_string()
+        }),
+    };
+
+    // Get Polymarket balance (returns f64 in dollars)
+    let poly_data = match service.polymarket_client.get_balance().await {
+        Ok(balance) => {
+            serde_json::json!({
+                "available": true,
+                "balance": balance,
+                "pnl": "0",
+                "trades": 0,
+                "positions": 0
+            })
+        },
+        Err(e) => serde_json::json!({
+            "available": false,
+            "error": e.to_string()
+        }),
+    };
+
+    Json(serde_json::json!({
+        "kalshi": kalshi_data,
+        "polymarket": poly_data
+    }))
+}
+
+/// Query params for orders
+#[derive(Deserialize)]
+pub struct OrdersQuery {
+    status: Option<String>,
+}
+
+/// Get Kalshi orders
+pub async fn get_kalshi_orders(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<OrdersQuery>,
+) -> impl IntoResponse {
+    let service = state.service.read().await;
+
+    match service.kalshi_client.get_orders(query.status.as_deref()).await {
+        Ok(orders) => Json(serde_json::json!({
+            "orders": orders.get("orders").unwrap_or(&serde_json::json!([]))
+        }))
+        .into_response(),
+        Err(e) => {
+            error!("获取 Kalshi 订单失败: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "orders": [],
+                    "error": e.to_string()
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Get Polymarket orders
+pub async fn get_polymarket_orders(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let service = state.service.read().await;
+
+    match service.polymarket_client.get_open_orders().await {
+        Ok(orders) => Json(serde_json::json!({
+            "orders": orders
+        }))
+        .into_response(),
+        Err(e) => {
+            error!("获取 Polymarket 订单失败: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "orders": [],
+                    "error": e.to_string()
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Get Kalshi positions
+pub async fn get_kalshi_positions(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let service = state.service.read().await;
+
+    match service.kalshi_client.get_positions().await {
+        Ok(positions) => Json(serde_json::json!({
+            "positions": positions.get("market_positions").unwrap_or(&serde_json::json!([]))
+        }))
+        .into_response(),
+        Err(e) => {
+            error!("获取 Kalshi 持仓失败: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "positions": [],
+                    "error": e.to_string()
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Get Polymarket positions
+pub async fn get_polymarket_positions(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let service = state.service.read().await;
+
+    match service.polymarket_client.get_positions().await {
+        Ok(positions) => Json(serde_json::json!({
+            "positions": positions
+        }))
+        .into_response(),
+        Err(e) => {
+            error!("获取 Polymarket 持仓失败: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "positions": [],
+                    "error": e.to_string()
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Cancel Kalshi order
+pub async fn cancel_kalshi_order(
+    State(state): State<Arc<AppState>>,
+    Path(order_id): Path<String>,
+) -> impl IntoResponse {
+    let service = state.service.read().await;
+
+    match service.kalshi_client.cancel_order(&order_id).await {
+        Ok(_) => Json(serde_json::json!({
+            "success": true
+        }))
+        .into_response(),
+        Err(e) => {
+            error!("取消 Kalshi 订单失败: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Cancel Polymarket order
+pub async fn cancel_polymarket_order(
+    State(state): State<Arc<AppState>>,
+    Path(order_id): Path<String>,
+) -> impl IntoResponse {
+    let service = state.service.read().await;
+
+    match service.polymarket_client.cancel_order(&order_id).await {
+        Ok(_) => Json(serde_json::json!({
+            "success": true
+        }))
+        .into_response(),
+        Err(e) => {
+            error!("取消 Polymarket 订单失败: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Get tracking information (placeholder for now)
+pub async fn get_tracking(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let service = state.service.read().await;
+    let tracking = service.ws_manager.get_tracking_stats();
+    Json(tracking)
+}
+
+/// Search history query params
+#[derive(Deserialize)]
+pub struct SearchHistoryQuery {
+    min_profit: Option<f64>,
+    max_profit: Option<f64>,
+    min_duration: Option<f64>,
+    max_duration: Option<f64>,
+    event_name: Option<String>,
+    team_name: Option<String>,
+    sort_by: Option<String>,
+    sort_order: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    include_history: Option<bool>,
+}
+
+/// Search history records
+pub async fn search_history(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<SearchHistoryQuery>,
+) -> impl IntoResponse {
+    let service = state.service.read().await;
+
+    match service.search_history(
+        query.min_profit,
+        query.max_profit,
+        query.min_duration,
+        query.max_duration,
+        query.event_name,
+        query.team_name,
+        query.sort_by,
+        query.sort_order,
+        query.limit,
+        query.offset,
+        query.include_history,
+    ) {
+        Ok(result) => Json(result).into_response(),
+        Err(e) => {
+            error!("搜索历史记录失败: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "records": [],
+                    "total": 0,
+                    "error": e.to_string()
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Get history statistics
+pub async fn get_history_statistics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let service = state.service.read().await;
+
+    match service.get_history_statistics() {
+        Ok(stats) => Json(stats).into_response(),
+        Err(e) => {
+            error!("获取历史统计失败: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "total_records": 0,
+                    "error": e.to_string()
+                })),
+            )
+                .into_response()
+        }
+    }
 }

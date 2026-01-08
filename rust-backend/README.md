@@ -30,6 +30,20 @@ cargo run --release
 
 服务器将在 `http://0.0.0.0:8000` 启动。
 
+### 日志配置
+
+系统使用分层日志系统：
+
+- **控制台**: 只显示 `info` 和 `error` 级别的重要日志
+- **文件**: `logs/polytaoli.log` 记录所有 `debug` 及以上级别的详细日志
+
+查看实时日志：
+```bash
+tail -f logs/polytaoli.log
+```
+
+更多日志配置详情，请参考 [LOGGING.md](./LOGGING.md)。
+
 ## API 端点
 
 ### 健康检查

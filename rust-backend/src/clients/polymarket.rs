@@ -22,6 +22,16 @@ use crate::models::{Platform, PolymarketEvent, PolymarketMarket, PriceUpdate};
 
 const POLY_WS_URL: &str = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
 
+/// Position data for aggregation
+struct PositionData {
+    asset_id: String,
+    market: String,
+    outcome: String,
+    size: f64,
+    total_cost: f64,
+    trade_count: u32,
+}
+
 /// Polymarket API client
 #[derive(Clone)]
 pub struct PolymarketClient {
@@ -345,6 +355,110 @@ impl PolymarketClient {
         Ok(serde_json::to_value(response)?)
     }
 
+    /// Get open orders
+    pub async fn get_open_orders(&self) -> Result<Value> {
+        let clob = self
+            .clob
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
+
+        let orders = clob.as_ref().get_orders().await?;
+        Ok(serde_json::to_value(orders)?)
+    }
+
+    /// Get positions
+    pub async fn get_positions(&self) -> Result<Value> {
+        // If CLOB client is not initialized, return empty positions (graceful degradation)
+        let clob = match self.clob.as_ref() {
+            Some(c) => c,
+            None => {
+                info!("⚠️ [Polymarket] CLOB 客户端未初始化，返回空持仓");
+                return Ok(json!([]));
+            }
+        };
+
+        // Get all trades to calculate positions
+        let trades = match clob.as_ref().get_trades().await {
+            Ok(t) => t,
+            Err(e) => {
+                info!("⚠️ [Polymarket] 无法获取交易历史: {}", e);
+                return Ok(json!([]));
+            }
+        };
+
+        if trades.is_empty() {
+            info!("✅ [Polymarket] 无交易历史，持仓为空");
+            return Ok(json!([]));
+        }
+
+        // Aggregate positions from trades
+        use std::collections::HashMap;
+        let mut positions: HashMap<String, PositionData> = HashMap::new();
+
+        for trade in &trades {
+            let asset_id = &trade.asset_id;
+            let side_str = &trade.side;
+            let size: f64 = trade.size.parse().unwrap_or(0.0);
+            let price: f64 = trade.price.parse().unwrap_or(0.0);
+
+            let pos = positions.entry(asset_id.clone()).or_insert(PositionData {
+                asset_id: asset_id.clone(),
+                market: trade.market.clone(),
+                outcome: trade.outcome.as_ref().map(|s| s.clone()).unwrap_or_default(),
+                size: 0.0,
+                total_cost: 0.0,
+                trade_count: 0,
+            });
+
+            // BUY increases position, SELL decreases
+            if side_str.to_uppercase() == "BUY" {
+                pos.size += size;
+                pos.total_cost += size * price;
+            } else {
+                pos.size -= size;
+                pos.total_cost -= size * price;
+            }
+            pos.trade_count += 1;
+        }
+
+        // Filter and format positions
+        const MIN_POSITION_SIZE: f64 = 0.5;
+        let mut result = Vec::new();
+
+        for pos in positions.values() {
+            if pos.size.abs() >= MIN_POSITION_SIZE {
+                let avg_price = if pos.size != 0.0 {
+                    (pos.total_cost / pos.size).max(0.0).min(1.0)
+                } else {
+                    0.0
+                };
+
+                result.push(json!({
+                    "asset": pos.asset_id,
+                    "conditionId": pos.market,
+                    "outcome": pos.outcome,
+                    "size": pos.size.to_string(),
+                    "avgPrice": avg_price.to_string(),
+                    "tradeCount": pos.trade_count,
+                }));
+            }
+        }
+
+        info!("✅ [Polymarket] 从 {} 笔交易聚合出 {} 个持仓", trades.len(), result.len());
+        Ok(json!(result))
+    }
+
+    /// Cancel an order
+    pub async fn cancel_order(&self, order_id: &str) -> Result<Value> {
+        let clob = self
+            .clob
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
+
+        let response = clob.as_ref().cancel(order_id).await?;
+        Ok(serde_json::to_value(response).unwrap_or(serde_json::json!({"success": true})))
+    }
+
     /// Connect to WebSocket for real-time price updates
     pub async fn connect_websocket(
         &self,
@@ -375,10 +489,12 @@ impl PolymarketClient {
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
-                    if let Some(update) = Self::parse_ws_message(&text) {
+                    // Parse message - may return multiple updates (especially for price_change)
+                    let updates = Self::parse_ws_message(&text);
+                    for update in updates {
                         if price_tx.send(update).await.is_err() {
                             warn!("价格更新通道已关闭");
-                            break;
+                            return Ok(());
                         }
                     }
                 }
@@ -398,45 +514,156 @@ impl PolymarketClient {
     }
 
     /// Parse WebSocket message
-    fn parse_ws_message(text: &str) -> Option<PriceUpdate> {
-        let data: Value = serde_json::from_str(text).ok()?;
-
-        // Handle different message formats
-        let asset_id = data
-            .get("asset_id")
-            .or_else(|| data.get("market"))
-            .and_then(|v| v.as_str())?
-            .to_string();
-
-        // Get price from message
-        let price = data
-            .get("price")
-            .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or(v.as_f64()))
-            .or_else(|| {
-                // Try to get from bids/asks
-                let best_ask = data
-                    .get("asks")
-                    .and_then(|v| v.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|entry| {
-                        entry
-                            .get("price")
-                            .and_then(|p| p.as_str().and_then(|s| s.parse().ok()).or(p.as_f64()))
-                    });
-
-                best_ask
-            })?;
-
-        // For Polymarket, we only get the ask price for each token
-        Some(PriceUpdate {
+    /// 
+    /// Supports two message formats (matching Python implementation):
+    /// 1. `book` (initial orderbook snapshot): { "event_type": "book", "asset_id": "...", "bids": [...], "asks": [...] }
+    /// 2. `price_change` (real-time updates): { "event_type": "price_change", "price_changes": [{ "asset_id": "...", "best_bid": "...", "best_ask": "..." }, ...] }
+    /// 
+    /// Returns a Vec because price_change messages can contain multiple asset updates.
+    fn parse_ws_message(text: &str) -> Vec<PriceUpdate> {
+        let mut updates = Vec::new();
+        
+        // Parse JSON - handle both single object and array format
+        let raw_data: Value = match serde_json::from_str(text) {
+            Ok(v) => v,
+            Err(_) => return updates,
+        };
+        
+        // Handle array format (WebSocket may return [{...}] instead of {...})
+        let items: Vec<Value> = if raw_data.is_array() {
+            raw_data.as_array().unwrap().clone()
+        } else {
+            vec![raw_data]
+        };
+        
+        for data in items {
+            if let Some(parsed) = Self::parse_single_message(&data) {
+                updates.extend(parsed);
+            }
+        }
+        
+        updates
+    }
+    
+    /// Parse a single message object
+    fn parse_single_message(data: &Value) -> Option<Vec<PriceUpdate>> {
+        let event_type = data.get("event_type").and_then(|v| v.as_str())?;
+        
+        match event_type {
+            "book" => Self::parse_book_message(data),
+            "price_change" => Self::parse_price_change_message(data),
+            "connected" => None, // Ignore connection confirmation messages
+            _ => None,
+        }
+    }
+    
+    /// Parse book message (initial orderbook snapshot)
+    /// 
+    /// Format: { "event_type": "book", "asset_id": "...", "bids": [...], "asks": [...] }
+    /// - bids: sorted ascending by price, best bid (highest) is last
+    /// - asks: sorted descending by price, best ask (lowest) is last
+    fn parse_book_message(data: &Value) -> Option<Vec<PriceUpdate>> {
+        let asset_id = data.get("asset_id").and_then(|v| v.as_str())?.to_string();
+        let bids = data.get("bids").and_then(|v| v.as_array())?;
+        let asks = data.get("asks").and_then(|v| v.as_array())?;
+        
+        // Best bid = highest price (last element, bids sorted ascending)
+        let yes_bid = if !bids.is_empty() {
+            bids.last().and_then(|entry| Self::extract_price_from_entry(entry))
+        } else {
+            None
+        };
+        
+        // Best ask = lowest price (last element, asks sorted descending)
+        let yes_ask = if !asks.is_empty() {
+            asks.last().and_then(|entry| Self::extract_price_from_entry(entry))
+        } else {
+            None
+        };
+        
+        Some(vec![PriceUpdate {
             platform: Platform::Polymarket,
             market_id: asset_id,
-            yes_bid: None,
-            yes_ask: Some(price),
+            yes_bid,
+            yes_ask,
             no_bid: None,
             no_ask: None,
             timestamp: Utc::now(),
-        })
+        }])
+    }
+    
+    /// Parse price_change message (real-time price updates)
+    /// 
+    /// Format: { "event_type": "price_change", "market": "...", "price_changes": [{ "asset_id": "...", "best_bid": "...", "best_ask": "..." }, ...] }
+    fn parse_price_change_message(data: &Value) -> Option<Vec<PriceUpdate>> {
+        let price_changes = data.get("price_changes").and_then(|v| v.as_array())?;
+        let mut updates = Vec::new();
+        
+        for change in price_changes {
+            let asset_id = match change.get("asset_id").and_then(|v| v.as_str()) {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+            
+            // Parse best_bid - can be string, number, null, or empty string
+            let yes_bid = change.get("best_bid").and_then(|v| {
+                if v.is_null() {
+                    None
+                } else if let Some(s) = v.as_str() {
+                    if s.is_empty() { None } else { s.parse().ok() }
+                } else {
+                    v.as_f64()
+                }
+            });
+            
+            // Parse best_ask - can be string, number, null, or empty string
+            let yes_ask = change.get("best_ask").and_then(|v| {
+                if v.is_null() {
+                    None
+                } else if let Some(s) = v.as_str() {
+                    if s.is_empty() { None } else { s.parse().ok() }
+                } else {
+                    v.as_f64()
+                }
+            });
+            
+            updates.push(PriceUpdate {
+                platform: Platform::Polymarket,
+                market_id: asset_id,
+                yes_bid,
+                yes_ask,
+                no_bid: None,
+                no_ask: None,
+                timestamp: Utc::now(),
+            });
+        }
+        
+        if updates.is_empty() {
+            None
+        } else {
+            Some(updates)
+        }
+    }
+    
+    /// Extract price from an orderbook entry
+    /// 
+    /// Entry can be either:
+    /// - Object: { "price": "0.50", "size": "100" }
+    /// - Array: [0.50, 100] (price, size)
+    fn extract_price_from_entry(entry: &Value) -> Option<f64> {
+        if let Some(obj) = entry.as_object() {
+            // Object format: { "price": "0.50", ... }
+            obj.get("price").and_then(|p| {
+                p.as_str().and_then(|s| s.parse().ok()).or(p.as_f64())
+            })
+        } else if let Some(arr) = entry.as_array() {
+            // Array format: [price, size]
+            arr.first().and_then(|p| {
+                p.as_str().and_then(|s| s.parse().ok()).or(p.as_f64())
+            })
+        } else {
+            None
+        }
     }
 }
 

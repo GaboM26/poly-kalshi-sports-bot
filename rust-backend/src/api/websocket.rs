@@ -1,6 +1,7 @@
 //! WebSocket server for real-time updates to frontend
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     extract::{
@@ -10,11 +11,11 @@ use axum::{
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use super::AppState;
-use crate::models::{ArbitrageOpportunity, WsMessage};
+use crate::models::WsMessage;
 
 /// WebSocket handler
 pub async fn ws_handler(
@@ -30,49 +31,104 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
     info!("新的 WebSocket 客户端已连接");
 
+    // Create channel for outgoing messages
+    let (tx, mut rx) = mpsc::channel::<String>(100);
+
+    // Send initial data
+    {
+        let service = state.service.read().await;
+        
+        // Send matched markets list (key message for frontend)
+        let markets = service.ws_manager.get_matched_markets_for_frontend();
+        let opportunities_count = markets.iter().filter(|m| m.has_opportunity).count();
+        let msg = WsMessage::MatchedMarketsList {
+            data: markets.clone(),
+            count: markets.len(),
+            opportunities_count,
+        };
+        if let Ok(json) = serde_json::to_string(&msg) {
+            let _ = tx.send(json).await;
+        }
+
+        // Send stats
+        let stats = service.get_stats();
+        let msg = WsMessage::Stats { data: stats };
+        if let Ok(json) = serde_json::to_string(&msg) {
+            let _ = tx.send(json).await;
+        }
+
+        // Send current opportunities
+        let opportunities = service.get_opportunities();
+        if !opportunities.is_empty() {
+            let msg = WsMessage::Opportunities { data: opportunities };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = tx.send(json).await;
+            }
+        }
+    }
+
     // Subscribe to opportunity updates
     let service = state.service.read().await;
     let mut opportunity_rx = service.ws_manager.subscribe();
     drop(service);
 
-    // Send initial data
-    {
-        let service = state.service.read().await;
-        let opportunities = service.get_opportunities();
-        let stats = service.get_stats();
+    // Clone state and tx for periodic updates task
+    let state_clone = state.clone();
+    let tx_periodic = tx.clone();
 
-        // Send current opportunities
-        if !opportunities.is_empty() {
-            let msg = WsMessage::Opportunities(opportunities);
+    // Spawn task for periodic matched_markets_list updates (every 2 seconds)
+    let periodic_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(2));
+        loop {
+            interval.tick().await;
+            
+            let service = state_clone.service.read().await;
+            let markets = service.ws_manager.get_matched_markets_for_frontend();
+            let opportunities_count = markets.iter().filter(|m| m.has_opportunity).count();
+            
+            let msg = WsMessage::MatchedMarketsList {
+                data: markets.clone(),
+                count: markets.len(),
+                opportunities_count,
+            };
+            
             if let Ok(json) = serde_json::to_string(&msg) {
-                let _ = sender.send(Message::Text(json)).await;
-            }
-        }
-
-        // Send stats
-        let msg = WsMessage::Stats(stats);
-        if let Ok(json) = serde_json::to_string(&msg) {
-            let _ = sender.send(Message::Text(json)).await;
-        }
-    }
-
-    // Spawn task to send opportunity updates
-    let mut send_task = tokio::spawn(async move {
-        while let Ok(opportunity) = opportunity_rx.recv().await {
-            let msg = WsMessage::Opportunity(opportunity);
-            if let Ok(json) = serde_json::to_string(&msg) {
-                if sender.send(Message::Text(json)).await.is_err() {
+                if tx_periodic.send(json).await.is_err() {
                     break;
                 }
             }
         }
     });
 
+    // Clone tx for opportunity updates task
+    let tx_opp = tx.clone();
+
+    // Spawn task to forward opportunity updates
+    let opportunity_task = tokio::spawn(async move {
+        while let Ok(opportunity) = opportunity_rx.recv().await {
+            let msg = WsMessage::Opportunity { data: opportunity };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                if tx_opp.send(json).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    // Spawn task to send messages to WebSocket
+    let send_task = tokio::spawn(async move {
+        while let Some(json) = rx.recv().await {
+            if sender.send(Message::Text(json)).await.is_err() {
+                break;
+            }
+        }
+    });
+
     // Handle incoming messages (ping/pong, close)
-    let mut recv_task = tokio::spawn(async move {
+    let recv_task = tokio::spawn(async move {
         while let Some(result) = receiver.next().await {
             match result {
-                Ok(Message::Ping(data)) => {
+                Ok(Message::Ping(_data)) => {
                     // Pong is handled automatically by axum
                 }
                 Ok(Message::Close(_)) => {
@@ -87,15 +143,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     });
 
-    // Wait for either task to complete
-    tokio::select! {
-        _ = (&mut send_task) => {
-            recv_task.abort();
-        }
-        _ = (&mut recv_task) => {
-            send_task.abort();
-        }
-    }
+    // Wait for recv_task to complete (client disconnected)
+    let _ = recv_task.await;
+
+    // Cleanup: abort all other tasks
+    periodic_task.abort();
+    opportunity_task.abort();
+    send_task.abort();
 
     info!("WebSocket 客户端已断开连接");
 }

@@ -46,9 +46,52 @@ export function useWebSocket(url: string) {
     // 将 handleMessage 移到 useEffect 内部，解决闭包陷阱
     const handleMessage = (message: WsMessage) => {
       switch (message.type) {
+        case 'opportunity':
+          // Rust 后端发送单个套利机会
+          if (message.data) {
+            const opp = message.data as any;
+            addLog('success', `发现套利机会: ${opp.event_name} ${opp.team_name} - ${opp.profit_margin.toFixed(2)}%`);
+          }
+          break;
+
+        case 'opportunities':
+          // Rust 后端发送套利机会列表
+          if (message.data && Array.isArray(message.data)) {
+            setIsReceivingData(true);
+            const opportunities = message.data as any[];
+            
+            // 更新统计
+            setStats((prev) => ({
+              ...prev,
+              opportunitiesCount: opportunities.length,
+            }));
+            
+            setLastUpdateTime(new Date());
+            setUpdateCount((prev) => prev + 1);
+          }
+          break;
+
+        case 'stats':
+          // Rust 后端发送系统统计
+          if (message.data) {
+            const statsData = message.data as any;
+            setStats({
+              kalshiCount: statsData.total_kalshi_markets || 0,
+              polymarketCount: statsData.total_polymarket_markets || 0,
+              matchedCount: statsData.matched_markets || 0,
+              opportunitiesCount: statsData.arbitrage_opportunities || 0,
+            });
+          }
+          break;
+
+        case 'log':
+          if (message.level && message.message) {
+            addLog(message.level as any, message.message);
+          }
+          break;
+
         case 'matched_markets_list':
-          // 处理所有匹配市场的数据（包含实时价格和套利信息）
-          // 这是唯一的数据推送消息，每秒一次
+          // 兼容旧的 Python 后端消息格式（如果有）
           if (message.data && Array.isArray(message.data)) {
             setIsReceivingData(true);
             const marketsData = message.data as MatchedMarketData[];
@@ -88,36 +131,6 @@ export function useWebSocket(url: string) {
                 opportunitiesCount: message.opportunities_count || prev.opportunitiesCount,
               }));
             }
-          }
-          break;
-
-        case 'scan_started':
-          addLog('info', '开始市场扫描...');
-          break;
-
-        case 'scan_completed':
-          setStats({
-            kalshiCount: message.kalshi_count || 0,
-            polymarketCount: message.polymarket_count || 0,
-            matchedCount: message.matched_count || 0,
-            opportunitiesCount: message.opportunities_count || 0,
-          });
-          // 扫描完成后，等待实时数据
-          if (message.matched_count && message.matched_count > 0) {
-            addLog('info', `市场匹配完成: ${message.matched_count} 对，等待实时价格...`);
-          }
-          break;
-
-        case 'log':
-          if (message.level && message.message) {
-            addLog(message.level as any, message.message);
-          }
-          break;
-
-        case 'ping':
-          // 响应心跳
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({ type: 'pong' }));
           }
           break;
 

@@ -229,5 +229,40 @@ impl ArbitrageService {
     pub fn get_arbitrage_history(&self, limit: usize) -> Result<Vec<crate::models::ArbitrageTrackingRecord>> {
         self.storage.get_history(limit)
     }
+
+    /// Search history records with filters
+    pub fn search_history(
+        &self,
+        min_profit: Option<f64>,
+        max_profit: Option<f64>,
+        min_duration: Option<f64>,
+        max_duration: Option<f64>,
+        event_name: Option<String>,
+        team_name: Option<String>,
+        sort_by: Option<String>,
+        sort_order: Option<String>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        include_history: Option<bool>,
+    ) -> Result<serde_json::Value> {
+        self.storage.search_records(
+            min_profit,
+            max_profit,
+            min_duration,
+            max_duration,
+            event_name,
+            team_name,
+            sort_by,
+            sort_order,
+            limit,
+            offset,
+            include_history,
+        )
+    }
+
+    /// Get history statistics
+    pub fn get_history_statistics(&self) -> Result<serde_json::Value> {
+        self.storage.get_statistics()
+    }
 }
 

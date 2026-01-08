@@ -71,10 +71,24 @@ pub async fn create_app(config: Config) -> Result<Router> {
         // Account info
         .route("/api/balance/kalshi", get(routes::get_kalshi_balance))
         .route("/api/balance/polymarket", get(routes::get_polymarket_balance))
+        .route("/api/account-balance", get(routes::get_account_balance))
         // Orders
         .route("/api/order/kalshi", post(routes::place_kalshi_order))
         .route("/api/order/polymarket", post(routes::place_polymarket_order))
         .route("/api/arbitrage/execute", post(routes::execute_arbitrage))
+        // Order management
+        .route("/api/orders/kalshi", get(routes::get_kalshi_orders))
+        .route("/api/orders/polymarket", get(routes::get_polymarket_orders))
+        .route("/api/orders/kalshi/:order_id", delete(routes::cancel_kalshi_order))
+        .route("/api/orders/polymarket/:order_id", delete(routes::cancel_polymarket_order))
+        // Position management
+        .route("/api/positions/kalshi", get(routes::get_kalshi_positions))
+        .route("/api/positions/polymarket", get(routes::get_polymarket_positions))
+        // Tracking
+        .route("/api/tracking", get(routes::get_tracking))
+        // History search
+        .route("/api/history/search", get(routes::search_history))
+        .route("/api/history/statistics", get(routes::get_history_statistics))
         // WebSocket
         .route("/ws", get(websocket::ws_handler))
         // Add state

@@ -46,6 +46,8 @@ pub struct ClobClient {
     creds: Option<ApiCreds>,
     /// Order builder
     builder: Option<OrderBuilder>,
+    /// Signature type (for balance API)
+    sig_type: SignatureType,
     /// Current authentication level
     auth_level: AuthLevel,
     /// Cached tick sizes
@@ -65,6 +67,7 @@ impl ClobClient {
             signer: None,
             creds: None,
             builder: None,
+            sig_type: SignatureType::Eoa,
             auth_level: AuthLevel::L0,
             tick_sizes: Arc::new(RwLock::new(HashMap::new())),
             neg_risk: Arc::new(RwLock::new(HashMap::new())),
@@ -88,7 +91,8 @@ impl ClobClient {
             None
         };
 
-        let builder = OrderBuilder::new(signer.clone(), signature_type, funder_addr);
+        let sig_type = signature_type.unwrap_or(SignatureType::Eoa);
+        let builder = OrderBuilder::new(signer.clone(), Some(sig_type), funder_addr);
 
         Ok(Self {
             http: Client::new(),
@@ -97,6 +101,7 @@ impl ClobClient {
             signer: Some(signer),
             creds: None,
             builder: Some(builder),
+            sig_type,
             auth_level: AuthLevel::L1,
             tick_sizes: Arc::new(RwLock::new(HashMap::new())),
             neg_risk: Arc::new(RwLock::new(HashMap::new())),
@@ -460,7 +465,17 @@ impl ClobClient {
         let request_args = RequestArgs::new("GET", endpoints::GET_BALANCE_ALLOWANCE);
         let headers = create_level_2_headers(signer, creds, &request_args);
 
-        let url = format!("{}{}", self.host, endpoints::GET_BALANCE_ALLOWANCE);
+        // Add query parameters (required by Polymarket API, matching Python implementation)
+        let sig_type_num: u8 = match self.sig_type {
+            SignatureType::Eoa => 0,
+            SignatureType::PolyProxy => 1,
+            SignatureType::PolyGnosisSafe => 2,
+        };
+        let url = format!(
+            "{}{}?asset_type=COLLATERAL&signature_type={}",
+            self.host, endpoints::GET_BALANCE_ALLOWANCE, sig_type_num
+        );
+        
         let response: Value = self.get_with_headers(&url, &headers).await?;
 
         Ok(serde_json::from_value(response)?)

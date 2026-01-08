@@ -42,7 +42,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-appender = "0.2"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "1"
 anyhow = "1"
