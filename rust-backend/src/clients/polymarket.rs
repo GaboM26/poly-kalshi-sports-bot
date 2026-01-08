@@ -70,14 +70,14 @@ impl PolymarketClient {
 
         // Try to derive or create API credentials
         if self.config.api_key.is_empty() {
-            info!("Deriving Polymarket API credentials...");
+            info!("正在派生 Polymarket API 凭证...");
             match clob.create_or_derive_api_creds(Some(0)).await {
                 Ok(creds) => {
-                    info!("Successfully derived API credentials");
+                    info!("成功派生 API 凭证");
                     clob.set_api_creds(creds);
                 }
                 Err(e) => {
-                    warn!("Failed to derive API credentials: {}. Order placement disabled.", e);
+                    warn!("派生 API 凭证失败: {}. 订单下单功能已禁用.", e);
                 }
             }
         } else {
@@ -112,156 +112,196 @@ impl PolymarketClient {
         let mut events = Vec::new();
         let mut markets = Vec::new();
 
-        // Query Gamma API for NBA markets
-        let url = format!(
-            "{}/markets?tag=nba&closed=false&limit=100",
-            self.config.base_url
+        // Step 1: Get sports leagues
+        let sports_url = format!("{}/sports", self.config.base_url);
+
+        let sports_response = self.http.get(&sports_url).send().await?;
+        if !sports_response.status().is_success() {
+            anyhow::bail!("Failed to get sports leagues: {}", sports_response.status());
+        }
+        let sports: Vec<Value> = sports_response.json().await?;
+
+        // Step 2: Find NBA league
+        let nba_league = sports
+            .iter()
+            .find(|s| {
+                let sport = s["sport"].as_str().unwrap_or("");
+                sport.to_uppercase().contains("NBA") && !sport.to_uppercase().contains("WNBA")
+            })
+            .ok_or_else(|| anyhow::anyhow!("NBA league not found"))?;
+
+        let series_id = nba_league["series"]
+            .as_str()
+            .or_else(|| nba_league["series"].as_i64().map(|_| ""))
+            .ok_or_else(|| anyhow::anyhow!("NBA series_id not found"))?;
+
+        // Step 3: Get NBA events
+        let events_url = format!(
+            "{}/events?series_id={}&tag_id=100639&active=true&closed=false&limit=100",
+            self.config.base_url, series_id
         );
 
-        let response = self.http.get(&url).send().await?;
-        let status = response.status();
-        let body = response.text().await?;
-
-        if !status.is_success() {
-            anyhow::bail!("Gamma API error {}: {}", status, body);
+        let events_response = self.http.get(&events_url).send().await?;
+        if !events_response.status().is_success() {
+            anyhow::bail!("Failed to get NBA events: {}", events_response.status());
         }
+        let api_events: Vec<Value> = events_response.json().await?;
 
-        let data: Value = serde_json::from_str(&body)?;
-        let market_array = data
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("Invalid markets response"))?;
+        info!("📥 已获取 {} 个 Polymarket NBA 事件", api_events.len());
 
-        for market_data in market_array {
-            // Parse market data
-            let condition_id = market_data["conditionId"]
-                .as_str()
-                .or_else(|| market_data["condition_id"].as_str())
-                .unwrap_or("")
-                .to_string();
+        // Step 4: Process each event
+        for api_event in &api_events {
+            let event_title = api_event["title"].as_str().unwrap_or("");
+            let event_slug = api_event["slug"].as_str().unwrap_or("");
+            let event_markets = api_event["markets"].as_array();
 
-            if condition_id.is_empty() {
-                continue;
-            }
+            // Extract date from slug
+            let event_date = extract_date_from_slug(event_slug);
 
-            let question = market_data["question"].as_str().unwrap_or("");
-
-            // Parse team names
-            let team_names = parse_team_names_poly(question);
-            if team_names.is_none() {
-                continue;
-            }
-            let (team_a, team_b) = team_names.unwrap();
-
-            // Standardize event name (alphabetical order)
-            let event_name = if team_a < team_b {
-                format!("{}-{}", team_a, team_b)
-            } else {
-                format!("{}-{}", team_b, team_a)
-            };
-
-            // Parse outcomes and tokens
-            let outcomes = market_data["outcomes"]
-                .as_array()
-                .or_else(|| market_data["tokens"].as_array());
-
-            let mut token_id_a = None;
-            let mut token_id_b = None;
-            let mut price_a = 0.5;
-            let mut price_b = 0.5;
-
-            if let Some(outcomes_arr) = outcomes {
-                for (idx, outcome) in outcomes_arr.iter().enumerate() {
-                    let outcome_name = outcome["outcome"]
+            if let Some(market_array) = event_markets {
+                for market_data in market_array {
+                    // Parse market data
+                    let market_id = market_data["id"].as_str().unwrap_or("");
+                    let condition_id = market_data["conditionId"]
                         .as_str()
-                        .or_else(|| outcome["name"].as_str())
-                        .unwrap_or("");
-                    let token_id = outcome["token_id"]
+                        .or_else(|| market_data["condition_id"].as_str())
+                        .unwrap_or(market_id)
+                        .to_string();
+
+                    if condition_id.is_empty() {
+                        continue;
+                    }
+
+                    let question = market_data["question"]
                         .as_str()
-                        .or_else(|| outcome["tokenId"].as_str())
-                        .map(|s| s.to_string());
-                    let price = outcome["price"]
+                        .unwrap_or(event_title);
+
+                    // Get outcomes and prices
+                    let outcomes_str = market_data["outcomes"].as_str();
+                    let prices_str = market_data["outcomePrices"].as_str();
+
+                    if outcomes_str.is_none() || prices_str.is_none() {
+                        continue;
+                    }
+
+                    let outcomes: Vec<String> = match serde_json::from_str(outcomes_str.unwrap()) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let prices: Vec<String> = match serde_json::from_str(prices_str.unwrap()) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+
+                    // Must be binary market
+                    if outcomes.len() != 2 || prices.len() != 2 {
+                        continue;
+                    }
+
+                    let price1: f64 = match prices[0].parse() {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let price2: f64 = match prices[1].parse() {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+
+                    // Validate prices
+                    if price1 < 0.0 || price1 > 1.0 || price2 < 0.0 || price2 > 1.0 {
+                        continue;
+                    }
+
+                    // Filter invalid prices
+                    if (price1 == 0.0 && price2 == 1.0) || (price1 == 1.0 && price2 == 0.0) {
+                        continue;
+                    }
+
+                    // Filter extreme prices
+                    if price1 < 0.01 || price2 < 0.01 || price1 > 0.99 || price2 > 0.99 {
+                        continue;
+                    }
+
+                    // Filter Yes/No markets
+                    if outcomes.iter().any(|o| o.to_lowercase() == "yes")
+                        && outcomes.iter().any(|o| o.to_lowercase() == "no")
+                    {
+                        continue;
+                    }
+
+                    // Only keep full game winner markets
+                    if question != event_title {
+                        continue;
+                    }
+
+                    // Filter Over/Under markets
+                    if outcomes[0].to_lowercase() == "over" || outcomes[0].to_lowercase() == "under" {
+                        continue;
+                    }
+
+                    // Normalize team names
+                    let team1_abbr = normalize_team_name(&outcomes[0]);
+                    let team2_abbr = normalize_team_name(&outcomes[1]);
+
+                    // Sort teams alphabetically (consistent with Kalshi)
+                    let (team_a, team_b, price_a, price_b, token_index_a, token_index_b) =
+                        if team1_abbr > team2_abbr {
+                            (team2_abbr, team1_abbr, price2, price1, 1, 0)
+                        } else {
+                            (team1_abbr, team2_abbr, price1, price2, 0, 1)
+                        };
+
+                    // Build standardized event name
+                    let event_name = format!("{}-{}", team_a, team_b);
+
+                    // Get volume
+                    let volume = market_data["volume"]
                         .as_str()
                         .and_then(|s| s.parse::<f64>().ok())
-                        .or_else(|| outcome["price"].as_f64())
-                        .unwrap_or(0.5);
+                        .or_else(|| market_data["volume"].as_f64());
 
-                    // Match outcome to team
-                    if outcome_name.to_uppercase().contains(&team_a.to_uppercase()) {
-                        token_id_a = token_id;
-                        price_a = price;
-                    } else if outcome_name.to_uppercase().contains(&team_b.to_uppercase()) {
-                        token_id_b = token_id;
-                        price_b = price;
-                    } else if idx == 0 {
-                        // Default: first outcome is team_a (alphabetically first)
-                        if team_a < team_b {
-                            token_id_a = token_id;
-                            price_a = price;
-                        } else {
-                            token_id_b = token_id;
-                            price_b = price;
-                        }
-                    } else {
-                        if team_a < team_b {
-                            token_id_b = token_id;
-                            price_b = price;
-                        } else {
-                            token_id_a = token_id;
-                            price_a = price;
-                        }
-                    }
+                    // Get token IDs (for WebSocket subscription)
+                    let tokens_str = market_data["clobTokenIds"].as_str();
+                    let token_ids: Vec<String> = tokens_str
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or_default();
+
+                    let token_id_a = token_ids.get(token_index_a).cloned();
+                    let token_id_b = token_ids.get(token_index_b).cloned();
+
+                    // Create market
+                    let market = PolymarketMarket {
+                        market_id: condition_id.clone(),
+                        event_name: event_name.clone(),
+                        team_a: team_a.clone(),
+                        team_b: team_b.clone(),
+                        price_a,
+                        price_b,
+                        start_time: event_date,
+                        volume,
+                        token_id_a,
+                        token_id_b,
+                    };
+
+                    // Create event
+                    let event = PolymarketEvent {
+                        event_id: condition_id.clone(),
+                        name: event_name.clone(),
+                        team_a: team_a.clone(),
+                        team_b: team_b.clone(),
+                        start_time: event_date,
+                        category: "NBA".to_string(),
+                        market: Some(market.clone()),
+                    };
+
+                    events.push(event);
+                    markets.push(market);
                 }
             }
-
-            // Parse start time
-            let start_time = market_data["end_date_iso"]
-                .as_str()
-                .or_else(|| market_data["endDateIso"].as_str())
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&Utc));
-
-            let volume = market_data["volume"]
-                .as_str()
-                .and_then(|s| s.parse().ok())
-                .or_else(|| market_data["volume"].as_f64());
-
-            let market = PolymarketMarket {
-                market_id: condition_id.clone(),
-                event_name: event_name.clone(),
-                team_a: if team_a < team_b {
-                    team_a.clone()
-                } else {
-                    team_b.clone()
-                },
-                team_b: if team_a < team_b {
-                    team_b.clone()
-                } else {
-                    team_a.clone()
-                },
-                price_a,
-                price_b,
-                start_time,
-                volume,
-                token_id_a,
-                token_id_b,
-            };
-
-            let event = PolymarketEvent {
-                event_id: condition_id.clone(),
-                name: event_name.clone(),
-                team_a: market.team_a.clone(),
-                team_b: market.team_b.clone(),
-                start_time,
-                category: "NBA".to_string(),
-                market: Some(market.clone()),
-            };
-
-            events.push(event);
-            markets.push(market);
         }
 
         info!(
-            "Loaded {} Polymarket events with {} markets",
+            "✅ Polymarket: {} 个事件, {} 个市场",
             events.len(),
             markets.len()
         );
@@ -311,27 +351,25 @@ impl PolymarketClient {
         token_ids: Vec<String>,
         price_tx: mpsc::Sender<PriceUpdate>,
     ) -> Result<()> {
-        info!("Connecting to Polymarket WebSocket...");
+        info!("正在连接 Polymarket WebSocket...");
 
         let (ws_stream, _) = connect_async(POLY_WS_URL)
             .await
-            .with_context(|| "Failed to connect to Polymarket WebSocket")?;
+            .with_context(|| "连接 Polymarket WebSocket 失败")?;
 
         let (mut write, mut read) = ws_stream.split();
 
-        // Subscribe to markets
+        // Subscribe to markets - 使用正确的格式（与 Python 版本一致）
         let subscribe_msg = json!({
-            "auth": {},
-            "type": "subscribe",
-            "markets": token_ids,
-            "assets_ids": token_ids
+            "assets_ids": token_ids,
+            "type": "market"
         });
 
         write
             .send(Message::Text(subscribe_msg.to_string()))
             .await?;
 
-        info!("Subscribed to {} Polymarket tokens", token_ids.len());
+        info!("已订阅 {} 个 Polymarket 代币", token_ids.len());
 
         // Process messages
         while let Some(msg) = read.next().await {
@@ -339,17 +377,17 @@ impl PolymarketClient {
                 Ok(Message::Text(text)) => {
                     if let Some(update) = Self::parse_ws_message(&text) {
                         if price_tx.send(update).await.is_err() {
-                            warn!("Price update channel closed");
+                            warn!("价格更新通道已关闭");
                             break;
                         }
                     }
                 }
                 Ok(Message::Close(_)) => {
-                    info!("Polymarket WebSocket closed");
+                    info!("Polymarket WebSocket 已关闭");
                     break;
                 }
                 Err(e) => {
-                    error!("Polymarket WebSocket error: {}", e);
+                    error!("Polymarket WebSocket 错误: {}", e);
                     break;
                 }
                 _ => {}
@@ -402,58 +440,147 @@ impl PolymarketClient {
     }
 }
 
-/// Parse team names from Polymarket question
-fn parse_team_names_poly(question: &str) -> Option<(String, String)> {
-    // Common patterns:
-    // "Will MEM beat LAL?"
-    // "MEM vs LAL"
-    // "Who will win: MEM or LAL?"
+/// Extract date from slug (e.g., "lakers-vs-grizzlies-2026-01-07" -> 2026-01-07)
+fn extract_date_from_slug(slug: &str) -> Option<DateTime<Utc>> {
+    let parts: Vec<&str> = slug.split('-').collect();
+    if parts.len() >= 3 {
+        let year_str = parts[parts.len() - 3];
+        let month_str = parts[parts.len() - 2];
+        let day_str = parts[parts.len() - 1];
 
-    let separators = [
-        " beat ",
-        " vs ",
-        " vs. ",
-        " or ",
-        " @ ",
-        " at ",
-        " - ",
-    ];
-
-    let question_lower = question.to_lowercase();
-
-    for sep in separators {
-        if let Some(pos) = question_lower.find(sep) {
-            // Extract text before and after separator
-            let before = &question[..pos];
-            let after = &question[pos + sep.len()..];
-
-            // Extract team abbreviations
-            let team_a = extract_team_abbr_poly(before)?;
-            let team_b = extract_team_abbr_poly(after)?;
-
-            return Some((team_a.to_uppercase(), team_b.to_uppercase()));
+        if let (Ok(year), Ok(month), Ok(day)) = (
+            year_str.parse::<i32>(),
+            month_str.parse::<u32>(),
+            day_str.parse::<u32>(),
+        ) {
+            use chrono::NaiveDate;
+            if let Some(naive_date) = NaiveDate::from_ymd_opt(year, month, day) {
+                let naive_datetime = naive_date.and_hms_opt(12, 0, 0)?;
+                return Some(DateTime::from_naive_utc_and_offset(naive_datetime, Utc));
+            }
         }
     }
-
     None
 }
 
-/// Extract team abbreviation from text
-fn extract_team_abbr_poly(text: &str) -> Option<String> {
-    // Look for 3-letter uppercase abbreviation
-    let words: Vec<&str> = text.split_whitespace().collect();
-
-    // Try to find 3-letter abbreviation
-    for word in &words {
-        let clean = word.trim_matches(|c: char| !c.is_alphanumeric());
-        if clean.len() == 3 && clean.chars().all(|c| c.is_alphabetic()) {
-            return Some(clean.to_uppercase());
-        }
-    }
-
-    // Fall back to last word
-    words.last().map(|w| {
-        let clean = w.trim_matches(|c: char| !c.is_alphanumeric());
-        clean.to_uppercase()
-    })
+/// Normalize team name to standard abbreviation
+fn normalize_team_name(name: &str) -> String {
+    use std::collections::HashMap;
+    
+    // NBA team mappings (full name/alias -> standard abbreviation)
+    let mut mappings = HashMap::new();
+    
+    // Eastern Conference
+    mappings.insert("ATLANTA HAWKS", "ATL");
+    mappings.insert("HAWKS", "ATL");
+    mappings.insert("ATL", "ATL");
+    mappings.insert("BOSTON CELTICS", "BOS");
+    mappings.insert("CELTICS", "BOS");
+    mappings.insert("BOS", "BOS");
+    mappings.insert("BROOKLYN NETS", "BKN");
+    mappings.insert("NETS", "BKN");
+    mappings.insert("BKN", "BKN");
+    mappings.insert("BRK", "BKN");
+    mappings.insert("CHARLOTTE HORNETS", "CHA");
+    mappings.insert("HORNETS", "CHA");
+    mappings.insert("CHA", "CHA");
+    mappings.insert("CHO", "CHA");
+    mappings.insert("CHICAGO BULLS", "CHI");
+    mappings.insert("BULLS", "CHI");
+    mappings.insert("CHI", "CHI");
+    mappings.insert("CLEVELAND CAVALIERS", "CLE");
+    mappings.insert("CAVALIERS", "CLE");
+    mappings.insert("CAVS", "CLE");
+    mappings.insert("CLE", "CLE");
+    mappings.insert("DETROIT PISTONS", "DET");
+    mappings.insert("PISTONS", "DET");
+    mappings.insert("DET", "DET");
+    mappings.insert("INDIANA PACERS", "IND");
+    mappings.insert("PACERS", "IND");
+    mappings.insert("IND", "IND");
+    mappings.insert("MIAMI HEAT", "MIA");
+    mappings.insert("HEAT", "MIA");
+    mappings.insert("MIA", "MIA");
+    mappings.insert("MILWAUKEE BUCKS", "MIL");
+    mappings.insert("BUCKS", "MIL");
+    mappings.insert("MIL", "MIL");
+    mappings.insert("NEW YORK KNICKS", "NYK");
+    mappings.insert("KNICKS", "NYK");
+    mappings.insert("NYK", "NYK");
+    mappings.insert("NY", "NYK");
+    mappings.insert("ORLANDO MAGIC", "ORL");
+    mappings.insert("MAGIC", "ORL");
+    mappings.insert("ORL", "ORL");
+    mappings.insert("PHILADELPHIA 76ERS", "PHI");
+    mappings.insert("76ERS", "PHI");
+    mappings.insert("SIXERS", "PHI");
+    mappings.insert("PHI", "PHI");
+    mappings.insert("TORONTO RAPTORS", "TOR");
+    mappings.insert("RAPTORS", "TOR");
+    mappings.insert("TOR", "TOR");
+    mappings.insert("WASHINGTON WIZARDS", "WAS");
+    mappings.insert("WIZARDS", "WAS");
+    mappings.insert("WAS", "WAS");
+    mappings.insert("WSH", "WAS");
+    
+    // Western Conference
+    mappings.insert("DALLAS MAVERICKS", "DAL");
+    mappings.insert("MAVERICKS", "DAL");
+    mappings.insert("MAVS", "DAL");
+    mappings.insert("DAL", "DAL");
+    mappings.insert("DENVER NUGGETS", "DEN");
+    mappings.insert("NUGGETS", "DEN");
+    mappings.insert("DEN", "DEN");
+    mappings.insert("GOLDEN STATE WARRIORS", "GSW");
+    mappings.insert("WARRIORS", "GSW");
+    mappings.insert("GSW", "GSW");
+    mappings.insert("GS", "GSW");
+    mappings.insert("HOUSTON ROCKETS", "HOU");
+    mappings.insert("ROCKETS", "HOU");
+    mappings.insert("HOU", "HOU");
+    mappings.insert("LOS ANGELES CLIPPERS", "LAC");
+    mappings.insert("CLIPPERS", "LAC");
+    mappings.insert("LAC", "LAC");
+    mappings.insert("LA CLIPPERS", "LAC");
+    mappings.insert("LOS ANGELES LAKERS", "LAL");
+    mappings.insert("LAKERS", "LAL");
+    mappings.insert("LAL", "LAL");
+    mappings.insert("LA LAKERS", "LAL");
+    mappings.insert("MEMPHIS GRIZZLIES", "MEM");
+    mappings.insert("GRIZZLIES", "MEM");
+    mappings.insert("MEM", "MEM");
+    mappings.insert("MINNESOTA TIMBERWOLVES", "MIN");
+    mappings.insert("TIMBERWOLVES", "MIN");
+    mappings.insert("WOLVES", "MIN");
+    mappings.insert("MIN", "MIN");
+    mappings.insert("NEW ORLEANS PELICANS", "NOP");
+    mappings.insert("PELICANS", "NOP");
+    mappings.insert("NOP", "NOP");
+    mappings.insert("NO", "NOP");
+    mappings.insert("OKLAHOMA CITY THUNDER", "OKC");
+    mappings.insert("THUNDER", "OKC");
+    mappings.insert("OKC", "OKC");
+    mappings.insert("PHOENIX SUNS", "PHX");
+    mappings.insert("SUNS", "PHX");
+    mappings.insert("PHX", "PHX");
+    mappings.insert("PHO", "PHX");
+    mappings.insert("PORTLAND TRAIL BLAZERS", "POR");
+    mappings.insert("TRAIL BLAZERS", "POR");
+    mappings.insert("BLAZERS", "POR");
+    mappings.insert("POR", "POR");
+    mappings.insert("SACRAMENTO KINGS", "SAC");
+    mappings.insert("KINGS", "SAC");
+    mappings.insert("SAC", "SAC");
+    mappings.insert("SAN ANTONIO SPURS", "SAS");
+    mappings.insert("SPURS", "SAS");
+    mappings.insert("SAS", "SAS");
+    mappings.insert("UTAH JAZZ", "UTA");
+    mappings.insert("JAZZ", "UTA");
+    mappings.insert("UTA", "UTA");
+    
+    let name_upper = name.trim().to_uppercase();
+    mappings
+        .get(name_upper.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or(name_upper)
 }

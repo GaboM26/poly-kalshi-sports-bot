@@ -38,7 +38,7 @@ impl ArbitrageService {
 
         // Initialize Polymarket CLOB for order placement
         if let Err(e) = polymarket_client.init_clob().await {
-            info!("Polymarket CLOB initialization skipped: {}", e);
+            info!("Polymarket CLOB 初始化跳过: {}", e);
         }
 
         // Create matcher and calculator
@@ -69,7 +69,7 @@ impl ArbitrageService {
 
     /// Initialize the service by fetching and matching markets
     pub async fn initialize(&mut self) -> Result<()> {
-        info!("🔍 Fetching market data from both platforms...");
+        info!("🔍 正在从两个平台获取市场数据...");
 
         // Fetch data from both platforms
         let (kalshi_events, kalshi_markets) = self
@@ -83,7 +83,7 @@ impl ArbitrageService {
             .await?;
 
         info!(
-            "📊 Loaded: Kalshi {} events/{} markets, Polymarket {} events/{} markets",
+            "📊 已加载: Kalshi {} 个事件/{} 个市场, Polymarket {} 个事件/{} 个市场",
             kalshi_events.len(),
             kalshi_markets.len(),
             polymarket_events.len(),
@@ -105,7 +105,7 @@ impl ArbitrageService {
         self.ws_manager.set_matched_markets(matched_markets);
 
         info!(
-            "✅ Initialization complete: {} matched markets",
+            "✅ 初始化完成: {} 个匹配的市场",
             self.matched_markets.len()
         );
 
@@ -117,7 +117,7 @@ impl ArbitrageService {
         let (kalshi_tickers, poly_tokens) = self.ws_manager.get_subscription_ids();
 
         info!(
-            "📡 Starting WebSocket connections: {} Kalshi, {} Polymarket",
+            "📡 启动 WebSocket 连接: {} 个 Kalshi 市场, {} 个 Polymarket 代币",
             kalshi_tickers.len(),
             poly_tokens.len()
         );
@@ -136,7 +136,7 @@ impl ArbitrageService {
                     .connect_websocket(kalshi_tickers_clone.clone(), price_tx_kalshi.clone())
                     .await
                 {
-                    error!("Kalshi WebSocket error: {}. Reconnecting in 5s...", e);
+                    error!("Kalshi WebSocket 错误: {}. 5秒后重连...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             }
@@ -150,7 +150,7 @@ impl ArbitrageService {
                     .connect_websocket(poly_tokens_clone.clone(), price_tx_poly.clone())
                     .await
                 {
-                    error!("Polymarket WebSocket error: {}. Reconnecting in 5s...", e);
+                    error!("Polymarket WebSocket 错误: {}. 5秒后重连...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             }
@@ -172,7 +172,7 @@ impl ArbitrageService {
 
                 if !opportunities.is_empty() {
                     info!(
-                        "📊 Periodic scan: {} opportunities found, best: {:.2}%",
+                        "📊 定期扫描: 发现 {} 个套利机会, 最佳: {:.2}%",
                         opportunities.len(),
                         opportunities.first().map(|o| o.profit_margin).unwrap_or(0.0)
                     );

@@ -71,7 +71,7 @@ impl ArbitrageStorage {
             while let Some(cmd) = command_rx.recv().await {
                 let conn = conn_clone.lock();
                 if let Err(e) = Self::execute_command(&conn, cmd) {
-                    error!("Storage error: {}", e);
+                    error!("存储错误: {}", e);
                 }
             }
         });

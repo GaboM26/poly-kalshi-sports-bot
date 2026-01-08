@@ -28,7 +28,7 @@ pub async fn ws_handler(
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let (mut sender, mut receiver) = socket.split();
 
-    info!("New WebSocket client connected");
+    info!("新的 WebSocket 客户端已连接");
 
     // Subscribe to opportunity updates
     let service = state.service.read().await;
@@ -79,7 +79,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                     break;
                 }
                 Err(e) => {
-                    error!("WebSocket error: {}", e);
+                    error!("WebSocket 错误: {}", e);
                     break;
                 }
                 _ => {}
@@ -97,5 +97,5 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     }
 
-    info!("WebSocket client disconnected");
+    info!("WebSocket 客户端已断开连接");
 }

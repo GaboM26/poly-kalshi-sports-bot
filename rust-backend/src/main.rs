@@ -27,18 +27,18 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    info!("🚀 Starting Polytaoli - Prediction Market Arbitrage Scanner");
+    info!("🚀 启动 Polytaoli - 预测市场套利扫描器");
 
     // Load configuration
     let config = Config::from_file("config.toml")?;
-    info!("✅ Configuration loaded");
+    info!("✅ 配置文件加载完成");
 
     // Initialize and run the application
     let app = api::create_app(config).await?;
 
     // Start the server
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await?;
-    info!("🌐 Server listening on http://0.0.0.0:8000");
+    info!("🌐 服务器监听地址: http://0.0.0.0:8000");
 
     axum::serve(listener, app).await?;
 

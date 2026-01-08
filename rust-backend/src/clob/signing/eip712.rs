@@ -16,7 +16,7 @@ pub const MSG_TO_SIGN: &str = "This message attests that I control the given wal
 /// EIP-712 type hash for ClobAuth struct
 /// keccak256("ClobAuth(address address,string timestamp,uint256 nonce,string message)")
 const CLOB_AUTH_TYPE_HASH: &str =
-    "5a46616a523f1aa5902f3a3b5deb3b79daf8963d8c46a6d0ced1c84408e51b96";
+    "52578c5c725a28a84fedc8c22aa47947822942f35b4dc350db028e45320e035c";
 
 /// EIP-712 Domain separator struct
 #[derive(Debug, Clone)]
@@ -131,7 +131,20 @@ pub async fn sign_clob_auth_message<S: Signer>(
     let address = signer.address();
     let clob_auth = ClobAuth::new(address, timestamp, nonce);
     let domain = ClobAuthDomain::new(chain_id);
+
+    // #region agent log
+    let domain_sep = domain.domain_separator();
+    let struct_hash = clob_auth.struct_hash();
+    let log_data = serde_json::json!({"hypothesisId":"B","location":"eip712.rs:sign_clob_auth_message","message":"EIP712 hashes","data":{"address":format!("{:?}",address),"address_checksum":address.to_checksum(None),"timestamp":timestamp,"nonce":nonce,"chain_id":chain_id,"domain_separator":format!("0x{}",hex::encode(domain_sep)),"struct_hash":format!("0x{}",hex::encode(struct_hash)),"type_hash":CLOB_AUTH_TYPE_HASH},"timestamp":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),"sessionId":"debug-session"});
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") { use std::io::Write; let _ = writeln!(f, "{}", log_data); }
+    // #endregion
+
     let hash = clob_auth.signable_hash(&domain);
+
+    // #region agent log
+    let log_data2 = serde_json::json!({"hypothesisId":"C","location":"eip712.rs:sign_clob_auth_message","message":"Signable hash","data":{"signable_hash":format!("0x{}",hex::encode(hash))},"timestamp":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),"sessionId":"debug-session"});
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") { use std::io::Write; let _ = writeln!(f, "{}", log_data2); }
+    // #endregion
 
     // Sign the hash
     let signature = signer.sign_hash(&hash).await?;

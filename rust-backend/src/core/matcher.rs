@@ -50,13 +50,13 @@ impl EventMatcher {
         _polymarket_markets: &[PolymarketMarket],
     ) -> (Vec<MatchedEvent>, Vec<MatchedMarket>) {
         info!("============================================================");
-        info!("🔍 Starting two-stage matching (non-split version)");
+        info!("🔍 开始两阶段匹配 (非拆分版本)");
         info!(
-            "   Kalshi: {} events",
+            "   Kalshi: {} 个事件",
             kalshi_events.len()
         );
         info!(
-            "   Polymarket: {} events",
+            "   Polymarket: {} 个事件",
             polymarket_events.len()
         );
         info!("============================================================");
@@ -64,14 +64,14 @@ impl EventMatcher {
         // Stage 1: Event matching
         let matched_events = self.match_events(kalshi_events, polymarket_events);
         info!(
-            "📊 Stage 1 complete: matched {} events",
+            "📊 阶段 1 完成: 匹配了 {} 个事件",
             matched_events.len()
         );
 
         // Stage 2: Market matching (2:1)
         let matched_markets = self.match_markets(&matched_events);
         info!(
-            "📊 Stage 2 complete: matched {} market pairs",
+            "📊 阶段 2 完成: 匹配了 {} 个市场对",
             matched_markets.len()
         );
 
@@ -85,7 +85,7 @@ impl EventMatcher {
         polymarket_events: &[PolymarketEvent],
     ) -> Vec<MatchedEvent> {
         info!("----------------------------------------");
-        info!("🎯 Stage 1: Event matching");
+        info!("🎯 阶段 1: 事件匹配");
         info!("----------------------------------------");
 
         let mut matched_events = Vec::new();
@@ -138,7 +138,7 @@ impl EventMatcher {
                         (Some(kd), Some(pd)) => {
                             if kd != pd {
                                 debug!(
-                                    "   ❌ Date mismatch: {} ({}) vs {} ({})",
+                                    "   ❌ 日期不匹配: {} ({}) vs {} ({})",
                                     k_event.name, kd, p_event.name, pd
                                 );
                                 continue;
@@ -151,7 +151,7 @@ impl EventMatcher {
                         }
                         _ => {
                             warn!(
-                                "   ⚠️ Missing date: {} ({:?}) vs {} ({:?})",
+                                "   ⚠️ 缺少日期: {} ({:?}) vs {} ({:?})",
                                 k_event.name, k_date, p_event.name, p_date
                             );
                             if is_reversed {
@@ -181,12 +181,12 @@ impl EventMatcher {
                     used_poly_ids.insert(p_event.event_id.clone());
 
                     info!(
-                        "   ✅ Match: {} <-> {} (confidence: {:.2})",
+                        "   ✅ 匹配: {} <-> {} (置信度: {:.2})",
                         k_event.name, p_event.name, best_confidence
                     );
                 }
             } else {
-                warn!("   ❌ No match found: {}", k_event.name);
+                warn!("   ❌ 未找到匹配: {}", k_event.name);
             }
         }
 
@@ -201,7 +201,7 @@ impl EventMatcher {
     /// - Create 2 MatchedMarkets, each corresponding to one Kalshi market
     fn match_markets(&self, matched_events: &[MatchedEvent]) -> Vec<MatchedMarket> {
         info!("----------------------------------------");
-        info!("🎯 Stage 2: Market matching (2:1)");
+        info!("🎯 阶段 2: 市场匹配 (2:1)");
         info!("----------------------------------------");
 
         let mut matched_markets = Vec::new();
@@ -242,7 +242,7 @@ impl EventMatcher {
                 matched_markets.push(matched);
 
                 info!(
-                    "   ✅ Market match: {} - {}",
+                    "   ✅ 市场匹配: {} - {}",
                     matched_event.event_name, team_name
                 );
                 debug!(
@@ -314,7 +314,7 @@ impl EventMatcher {
         }
 
         info!(
-            "📡 Subscription info: Kalshi {} tickers, Polymarket {} tokens",
+            "📡 订阅信息: Kalshi {} 个代码, Polymarket {} 个代币",
             kalshi_tickers.len(),
             polymarket_token_ids.len()
         );

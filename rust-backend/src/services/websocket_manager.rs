@@ -99,7 +99,7 @@ impl WebSocketManager {
         *self.market_lookup.write() = sub_info.market_lookup;
 
         info!(
-            "WebSocket manager configured with {} matched markets",
+            "WebSocket 管理器已配置 {} 个匹配的市场",
             self.matched_markets.read().len()
         );
     }
@@ -128,7 +128,7 @@ impl WebSocketManager {
         // Mark connected
         if !*self.kalshi_connected.read() {
             *self.kalshi_connected.write() = true;
-            info!("✅ [Kalshi] Started receiving real-time price data");
+            info!("✅ [Kalshi] 开始接收实时价格数据");
         }
 
         // Update price cache
@@ -160,7 +160,7 @@ impl WebSocketManager {
         // Mark connected
         if !*self.polymarket_connected.read() {
             *self.polymarket_connected.write() = true;
-            info!("✅ [Polymarket] Started receiving real-time price data");
+            info!("✅ [Polymarket] 开始接收实时价格数据");
         }
 
         // Update token price cache (using Ask price for buying)
@@ -332,7 +332,7 @@ impl WebSocketManager {
             };
 
             info!(
-                "📈 Tracking started: {} {} - {:.2}%",
+                "📈 开始跟踪: {} {} - {:.2}%",
                 opp.event_name, opp.team_name, opp.profit_margin
             );
 
@@ -347,7 +347,7 @@ impl WebSocketManager {
 
         if let Some(record) = tracking.remove(key) {
             info!(
-                "📉 Tracking ended: {} {} - max {:.2}%",
+                "📉 跟踪结束: {} {} - 最高 {:.2}%",
                 record.event_name, record.team_name, record.max_profit_margin
             );
             self.storage.track_end(key);

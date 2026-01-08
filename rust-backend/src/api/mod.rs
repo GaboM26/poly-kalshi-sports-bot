@@ -88,7 +88,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
         )
         .layer(TraceLayer::new_for_http());
 
-    info!("✅ API routes configured");
+    info!("✅ API 路由配置完成");
 
     Ok(app)
 }

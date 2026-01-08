@@ -167,21 +167,19 @@ impl KalshiClient {
                 .as_str()
                 .unwrap_or("")
                 .to_string();
-            let title = event_data["title"].as_str().unwrap_or("");
 
-            // Parse team names from title (e.g., "MEM vs LAL")
-            let team_names = parse_team_names(title);
+            // Extract team names from event_ticker (e.g., "KXNBAGAME-26JAN07CLELAL" -> "CLE", "LAL")
+            let team_names = extract_teams_from_ticker(&event_ticker);
             if team_names.is_none() {
                 continue;
             }
-            let (team_a, team_b) = team_names.unwrap();
+            let (mut team_a, mut team_b) = team_names.unwrap();
 
             // Standardize event name (alphabetical order)
-            let event_name = if team_a < team_b {
-                format!("{}-{}", team_a, team_b)
-            } else {
-                format!("{}-{}", team_b, team_a)
-            };
+            if team_a > team_b {
+                std::mem::swap(&mut team_a, &mut team_b);
+            }
+            let event_name = format!("{}-{}", team_a, team_b);
 
             // Parse start time
             let start_time = event_data["expected_expiration_time"]
@@ -203,23 +201,14 @@ impl KalshiClient {
             if let Some(market_array) = event_data["markets"].as_array() {
                 for market_data in market_array {
                     let ticker = market_data["ticker"].as_str().unwrap_or("").to_string();
-                    let subtitle = market_data["subtitle"].as_str().unwrap_or("");
 
-                    // Determine which team this market is for
-                    let team_name = if subtitle.contains(&team_a) {
-                        team_a.clone()
-                    } else if subtitle.contains(&team_b) {
-                        team_b.clone()
-                    } else {
-                        // Try to extract from ticker
-                        ticker
-                            .split('-')
-                            .last()
-                            .map(|s| s.to_string())
-                            .unwrap_or_default()
+                    // Extract team from ticker (e.g., "KXNBAGAME-26JAN07CLELAL-CLE" -> "CLE")
+                    let team_name = match extract_team_from_ticker(&ticker) {
+                        Some(t) => t,
+                        None => continue,
                     };
 
-                    let opponent_name = if team_name == team_a {
+                    let opponent_name = if team_name.to_uppercase() == team_a.to_uppercase() {
                         team_b.clone()
                     } else {
                         team_a.clone()
@@ -254,7 +243,7 @@ impl KalshiClient {
         }
 
         info!(
-            "Loaded {} Kalshi events with {} markets",
+            "已加载 {} 个 Kalshi 事件和 {} 个市场",
             events.len(),
             markets.len()
         );
@@ -293,34 +282,47 @@ impl KalshiClient {
         let timestamp = Self::get_timestamp_ms();
         let signature = self.sign_request(timestamp, "GET", "/trade-api/ws/v2");
 
-        let ws_url = format!(
-            "{}?api_key={}&timestamp={}&signature={}",
-            KALSHI_WS_URL, self.config.api_key, timestamp, signature
+        // 使用 HTTP headers 传递认证信息（与 Python 版本一致）
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = KALSHI_WS_URL.into_client_request()?;
+        request.headers_mut().insert(
+            "KALSHI-ACCESS-KEY",
+            self.config.api_key.parse().unwrap(),
+        );
+        request.headers_mut().insert(
+            "KALSHI-ACCESS-SIGNATURE",
+            signature.parse().unwrap(),
+        );
+        request.headers_mut().insert(
+            "KALSHI-ACCESS-TIMESTAMP",
+            timestamp.to_string().parse().unwrap(),
         );
 
-        info!("Connecting to Kalshi WebSocket...");
+        info!("正在连接 Kalshi WebSocket...");
 
-        let (ws_stream, _) = connect_async(&ws_url)
+        let (ws_stream, _) = connect_async(request)
             .await
-            .with_context(|| "Failed to connect to Kalshi WebSocket")?;
+            .with_context(|| "连接 Kalshi WebSocket 失败")?;
 
         let (mut write, mut read) = ws_stream.split();
 
-        // Subscribe to order books
-        let subscribe_msg = json!({
-            "id": 1,
-            "cmd": "subscribe",
-            "params": {
-                "channels": ["orderbook_delta"],
-                "market_tickers": tickers
-            }
-        });
+        // Subscribe to order books - 逐个订阅（与 Python 版本一致）
+        for (idx, ticker) in tickers.iter().enumerate() {
+            let subscribe_msg = json!({
+                "id": idx + 1,
+                "cmd": "subscribe",
+                "params": {
+                    "channels": ["orderbook_delta"],
+                    "market_ticker": ticker  // 单个 ticker，不是数组
+                }
+            });
 
-        write
-            .send(Message::Text(subscribe_msg.to_string()))
-            .await?;
+            write
+                .send(Message::Text(subscribe_msg.to_string()))
+                .await?;
+        }
 
-        info!("Subscribed to {} Kalshi markets", tickers.len());
+        info!("已订阅 {} 个 Kalshi 市场", tickers.len());
 
         let orderbook_cache = self.orderbook_cache.clone();
 
@@ -332,17 +334,17 @@ impl KalshiClient {
                         Self::parse_ws_message(&text, &orderbook_cache)
                     {
                         if price_tx.send(update).await.is_err() {
-                            warn!("Price update channel closed");
+                            warn!("价格更新通道已关闭");
                             break;
                         }
                     }
                 }
                 Ok(Message::Close(_)) => {
-                    info!("Kalshi WebSocket closed");
+                    info!("Kalshi WebSocket 已关闭");
                     break;
                 }
                 Err(e) => {
-                    error!("Kalshi WebSocket error: {}", e);
+                    error!("Kalshi WebSocket 错误: {}", e);
                     break;
                 }
                 _ => {}
@@ -467,38 +469,50 @@ impl KalshiClient {
 }
 
 /// Parse team names from event title
-fn parse_team_names(title: &str) -> Option<(String, String)> {
-    // Common patterns: "MEM vs LAL", "MEM @ LAL", "MEM at LAL"
-    let separators = ["vs", "@", "at", "vs.", " - "];
+/// Extract team names from event_ticker
+/// Example: "KXNBAGAME-26JAN07CLELAL" -> ("CLE", "LAL")
+fn extract_teams_from_ticker(event_ticker: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = event_ticker.split('-').collect();
+    if parts.len() < 2 {
+        return None;
+    }
 
-    for sep in separators {
-        if let Some(pos) = title.to_lowercase().find(sep) {
-            let left = title[..pos].trim();
-            let right = title[pos + sep.len()..].trim();
+    let last_part = parts.last()?;
+    if last_part.len() <= 7 {
+        return None;
+    }
 
-            // Extract abbreviations (last word or 3-letter code)
-            let team_a = extract_team_abbr(left)?;
-            let team_b = extract_team_abbr(right)?;
+    // Skip the date part (first 7 chars like "26JAN07")
+    let teams_str = &last_part[7..];
 
-            return Some((team_a.to_uppercase(), team_b.to_uppercase()));
-        }
+    // Most common: 6 characters (3 + 3)
+    if teams_str.len() == 6 {
+        return Some((
+            teams_str[..3].to_uppercase(),
+            teams_str[3..].to_uppercase(),
+        ));
+    }
+
+    // Handle 7+ characters by splitting in the middle
+    if teams_str.len() >= 4 {
+        let mid = teams_str.len() / 2;
+        return Some((
+            teams_str[..mid].to_uppercase(),
+            teams_str[mid..].to_uppercase(),
+        ));
     }
 
     None
 }
 
-/// Extract team abbreviation from text
-fn extract_team_abbr(text: &str) -> Option<String> {
-    // Try to find 3-letter abbreviation
-    let words: Vec<&str> = text.split_whitespace().collect();
-
-    for word in words.iter().rev() {
-        let clean = word.trim_matches(|c: char| !c.is_alphanumeric());
-        if clean.len() == 3 && clean.chars().all(|c| c.is_alphabetic()) {
-            return Some(clean.to_uppercase());
-        }
+/// Extract team from market ticker
+/// Example: "KXNBAGAME-26JAN07CLELAL-CLE" -> "CLE"
+fn extract_team_from_ticker(ticker: &str) -> Option<String> {
+    let parts: Vec<&str> = ticker.split('-').collect();
+    if parts.len() < 3 {
+        return None;
     }
 
-    // Fall back to last word
-    words.last().map(|w| w.to_uppercase())
+    // Last part is the team abbreviation
+    Some(parts.last()?.to_uppercase())
 }

@@ -82,7 +82,7 @@ pub async fn get_arbitrage_history(
         }))
         .into_response(),
         Err(e) => {
-            error!("Failed to get history: {}", e);
+            error!("获取历史记录失败: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -106,7 +106,7 @@ pub async fn get_kalshi_balance(State(state): State<Arc<AppState>>) -> impl Into
         }))
         .into_response(),
         Err(e) => {
-            error!("Failed to get Kalshi balance: {}", e);
+            error!("获取 Kalshi 余额失败: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -130,7 +130,7 @@ pub async fn get_polymarket_balance(State(state): State<Arc<AppState>>) -> impl 
         }))
         .into_response(),
         Err(e) => {
-            error!("Failed to get Polymarket balance: {}", e);
+            error!("获取 Polymarket 余额失败: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -170,7 +170,7 @@ pub async fn place_kalshi_order(
         }))
         .into_response(),
         Err(e) => {
-            error!("Failed to place Kalshi order: {}", e);
+            error!("下 Kalshi 订单失败: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -208,7 +208,7 @@ pub async fn place_polymarket_order(
         }))
         .into_response(),
         Err(e) => {
-            error!("Failed to place Polymarket order: {}", e);
+            error!("下 Polymarket 订单失败: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({

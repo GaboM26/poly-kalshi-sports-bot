@@ -46,14 +46,32 @@ pub async fn create_level_1_headers(
     let timestamp = get_timestamp();
     let n = nonce.unwrap_or(0);
 
+    // #region agent log
+    let addr_debug = format!("{:?}", signer.address());
+    let addr_checksum = signer.address().to_checksum(None);
+    let log_data = serde_json::json!({"hypothesisId":"A","location":"headers.rs:create_level_1_headers","message":"Address formats","data":{"debug_format":addr_debug,"checksum_format":&addr_checksum,"timestamp":timestamp,"nonce":n},"timestamp":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),"sessionId":"debug-session"});
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") { use std::io::Write; let _ = writeln!(f, "{}", log_data); }
+    // #endregion
+
     let signature =
         sign_clob_auth_message(signer.inner(), timestamp, n, signer.chain_id()).await?;
 
+    // #region agent log
+    let log_data2 = serde_json::json!({"hypothesisId":"B","location":"headers.rs:create_level_1_headers","message":"Signature generated","data":{"signature":&signature,"timestamp":timestamp,"nonce":n,"chain_id":signer.chain_id()},"timestamp":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),"sessionId":"debug-session"});
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") { use std::io::Write; let _ = writeln!(f, "{}", log_data2); }
+    // #endregion
+
     let mut headers = HashMap::new();
-    headers.insert(POLY_ADDRESS.to_string(), format!("{:?}", signer.address()));
+    // FIX: Use checksum format instead of debug format for address
+    headers.insert(POLY_ADDRESS.to_string(), signer.address().to_checksum(None));
     headers.insert(POLY_SIGNATURE.to_string(), signature);
     headers.insert(POLY_TIMESTAMP.to_string(), timestamp.to_string());
     headers.insert(POLY_NONCE.to_string(), n.to_string());
+
+    // #region agent log
+    let log_data3 = serde_json::json!({"hypothesisId":"A","location":"headers.rs:create_level_1_headers","message":"Headers created","data":{"POLY_ADDRESS":headers.get(POLY_ADDRESS),"POLY_TIMESTAMP":headers.get(POLY_TIMESTAMP),"POLY_NONCE":headers.get(POLY_NONCE),"runId":"post-fix"},"timestamp":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),"sessionId":"debug-session"});
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") { use std::io::Write; let _ = writeln!(f, "{}", log_data3); }
+    // #endregion
 
     Ok(headers)
 }
@@ -110,7 +128,8 @@ pub fn create_level_2_headers(
     );
 
     let mut headers = HashMap::new();
-    headers.insert(POLY_ADDRESS.to_string(), format!("{:?}", signer.address()));
+    // FIX: Use checksum format instead of debug format for address
+    headers.insert(POLY_ADDRESS.to_string(), signer.address().to_checksum(None));
     headers.insert(POLY_SIGNATURE.to_string(), hmac_sig);
     headers.insert(POLY_TIMESTAMP.to_string(), timestamp.to_string());
     headers.insert(POLY_API_KEY.to_string(), creds.api_key.clone());
