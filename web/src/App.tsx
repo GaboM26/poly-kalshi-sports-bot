@@ -172,8 +172,14 @@ function App() {
                           </div>
                         </div>
                       ) : (
-                        <div className="bg-[--bg-tertiary] rounded p-2 flex items-center justify-center">
-                          <span className="text-[10px] text-[--text-muted]">无套利机会</span>
+                        <div className="bg-[--bg-tertiary] rounded p-2 border border-gray-500/20">
+                          <div className="text-[10px] text-[--text-muted] mb-1">套利结果</div>
+                          <div className="text-base font-bold text-gray-400 leading-tight">
+                            {selectedMarket.profit_margin.toFixed(2)}%
+                          </div>
+                          <div className="text-[10px] text-gray-400 mt-0.5">
+                            净利润: ${selectedMarket.expected_profit.toFixed(2)}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -225,48 +231,50 @@ function App() {
                       </div>
                     </div>
 
-                    {/* 策略和费用 */}
-                    {selectedMarket.has_opportunity && (
-                      <div className="bg-[--bg-tertiary] rounded p-2.5 space-y-2">
-                        {selectedMarket.arbitrage_type && (
-                          <div>
-                            <div className="text-[10px] text-[--text-muted] mb-1">套利策略</div>
-                            <div className="text-xs text-[--text-primary] font-mono">
-                              {selectedMarket.arbitrage_type}
-                            </div>
+                    {/* 套利计算详情 - 始终显示 */}
+                    <div className="bg-[--bg-tertiary] rounded p-2.5 space-y-2">
+                      {selectedMarket.arbitrage_type && (
+                        <div>
+                          <div className="text-[10px] text-[--text-muted] mb-1">套利策略</div>
+                          <div className={`text-xs font-mono ${selectedMarket.has_opportunity ? 'text-[--text-primary]' : 'text-gray-400'}`}>
+                            {selectedMarket.arbitrage_type}
                           </div>
-                        )}
-                        
-                        {/* 费用明细 */}
-                        <div className="pt-2 border-t border-[--border-color]">
-                          <div className="text-[10px] text-[--text-muted] mb-1.5">费用明细</div>
-                          <div className="space-y-1 text-[10px]">
-                            {selectedMarket.kalshi_contracts !== undefined && (
-                              <div className="flex justify-between">
-                                <span className="text-[--text-muted]">Kalshi 合约数</span>
-                                <span className="text-blue-400 font-mono">{Math.round(selectedMarket.kalshi_contracts)}</span>
-                              </div>
-                            )}
-                            {selectedMarket.kalshi_fee !== undefined && (
-                              <div className="flex justify-between">
-                                <span className="text-[--text-muted]">Kalshi 手续费</span>
-                                <span className="text-orange-400 font-mono">-${selectedMarket.kalshi_fee.toFixed(2)}</span>
-                              </div>
-                            )}
-                            {selectedMarket.gross_profit !== undefined && (
-                              <div className="flex justify-between">
-                                <span className="text-[--text-muted]">毛利润</span>
-                                <span className="text-[--text-secondary] font-mono">${selectedMarket.gross_profit.toFixed(2)}</span>
-                              </div>
-                            )}
-                            <div className="flex justify-between pt-1 border-t border-[--border-color]">
-                              <span className="text-[--text-muted] font-medium">净利润</span>
-                              <span className="text-green-400 font-mono font-medium">${selectedMarket.expected_profit.toFixed(2)}</span>
+                        </div>
+                      )}
+                      
+                      {/* 费用明细 */}
+                      <div className={selectedMarket.arbitrage_type ? 'pt-2 border-t border-[--border-color]' : ''}>
+                        <div className="text-[10px] text-[--text-muted] mb-1.5">套利计算详情</div>
+                        <div className="space-y-1 text-[10px]">
+                          {selectedMarket.kalshi_contracts !== undefined && (
+                            <div className="flex justify-between">
+                              <span className="text-[--text-muted]">Kalshi 合约数</span>
+                              <span className="text-blue-400 font-mono">{Math.round(selectedMarket.kalshi_contracts)}</span>
                             </div>
+                          )}
+                          {selectedMarket.kalshi_fee !== undefined && (
+                            <div className="flex justify-between">
+                              <span className="text-[--text-muted]">Kalshi 手续费</span>
+                              <span className="text-orange-400 font-mono">-${selectedMarket.kalshi_fee.toFixed(2)}</span>
+                            </div>
+                          )}
+                          {selectedMarket.gross_profit !== undefined && (
+                            <div className="flex justify-between">
+                              <span className="text-[--text-muted]">毛利润</span>
+                              <span className={`font-mono ${selectedMarket.gross_profit >= 0 ? 'text-[--text-secondary]' : 'text-red-400'}`}>
+                                ${selectedMarket.gross_profit.toFixed(2)}
+                              </span>
+                            </div>
+                          )}
+                          <div className="flex justify-between pt-1 border-t border-[--border-color]">
+                            <span className="text-[--text-muted] font-medium">净利润</span>
+                            <span className={`font-mono font-medium ${selectedMarket.expected_profit >= 0 ? (selectedMarket.has_opportunity ? 'text-green-400' : 'text-gray-400') : 'text-red-400'}`}>
+                              ${selectedMarket.expected_profit.toFixed(2)}
+                            </span>
                           </div>
                         </div>
                       </div>
-                    )}
+                    </div>
 
                     {/* 下单区域 */}
                     <div className="pt-2 border-t border-[--border-color]">
