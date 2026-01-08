@@ -11,6 +11,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::services::metrics::MetricsReport;
+
 /// Platform enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -431,6 +433,8 @@ pub enum WsMessage {
         count: usize,
         opportunities_count: usize,
     },
+    #[serde(rename = "metrics")]
+    Metrics { data: MetricsReport },
     #[serde(rename = "log")]
     Log { level: String, message: String },
     #[serde(rename = "price_update")]

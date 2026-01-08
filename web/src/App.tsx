@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState } from 'react';
 import { Header } from './components/Header';
 import { OpportunityList } from './components/OpportunityList';
 import { LogPanel } from './components/LogPanel';
@@ -7,13 +7,12 @@ import { ArbitrageHistory } from './components/ArbitrageHistory';
 import { HistoryExplorer } from './components/HistoryExplorer';
 import { OrderPanel } from './components/OrderPanel';
 import { OrderForm } from './components/OrderForm';
-import { Login } from './components/Login';
+import { MetricsPanel } from './components/MetricsPanel';
 import { useWebSocket } from './hooks/useWebSocket';
 import { MatchedMarketData } from './types';
 
 function App() {
   // 登录状态管理 - Rust 后端暂时不需要认证
-  const [isAuthenticated] = useState(true); // 直接设置为 true
   const [currentUsername] = useState<string | null>('Guest'); // 默认用户名
 
   // 退出登录（暂时禁用）
@@ -37,13 +36,13 @@ function App() {
       : `${window.location.protocol}//${window.location.host}`;
   }, []);
   
-  const { matchedMarkets, logs, isConnected, stats, lastUpdateTime, updateCount, dataCoverage } = useWebSocket(wsUrl);
+  const { matchedMarkets, logs, isConnected, stats, lastUpdateTime, updateCount, dataCoverage, metrics } = useWebSocket(wsUrl);
   // 从匹配市场计算总利润（只计算有套利机会的市场）
   const totalProfit = matchedMarkets
     .filter(m => m.has_opportunity)
     .reduce((sum, m) => sum + m.expected_profit, 0);
   const [selectedMarket, setSelectedMarket] = useState<MatchedMarketData | null>(null);
-  const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking' | 'history'>('detail');
+  const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking' | 'history' | 'metrics'>('detail');
   const [showHistoryExplorer, setShowHistoryExplorer] = useState(false);
 
   // Rust 后端暂时不需要登录验证
@@ -57,6 +56,7 @@ function App() {
         lastUpdateTime={lastUpdateTime}
         updateCount={updateCount}
         dataCoverage={dataCoverage}
+        metrics={metrics}
         apiBaseUrl={apiBaseUrl}
         onLogout={handleLogout}
         username={currentUsername}
@@ -112,6 +112,16 @@ function App() {
               onClick={() => setRightPanelTab('history')}
             >
               📜 历史
+            </button>
+            <button
+              className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
+                rightPanelTab === 'metrics'
+                  ? 'text-cyan-400 border-b-2 border-cyan-400 bg-[--bg-tertiary]'
+                  : 'text-[--text-muted] hover:text-[--text-secondary]'
+              }`}
+              onClick={() => setRightPanelTab('metrics')}
+            >
+              📊 性能
             </button>
           </div>
 
@@ -297,8 +307,10 @@ function App() {
               </div>
             ) : rightPanelTab === 'tracking' ? (
               <TrackingPanel apiBaseUrl={apiBaseUrl} />
-            ) : (
+            ) : rightPanelTab === 'history' ? (
               <ArbitrageHistory apiBaseUrl={apiBaseUrl} onOpenExplorer={() => setShowHistoryExplorer(true)} />
+            ) : (
+              <MetricsPanel metrics={metrics} />
             )}
           </div>
           

@@ -67,11 +67,11 @@ export function TrackingPanel({ apiBaseUrl }: TrackingPanelProps) {
       <div className="flex-1 overflow-y-auto p-3">
         {activeTab === 'active' ? (
           <ActiveTrackingList 
-            items={trackingStats.active} 
+            items={trackingStats.active || []} 
           />
         ) : (
           <CompletedTrackingList 
-            items={trackingStats.recent_completed}
+            items={trackingStats.recent_completed || []}
             onSelect={setSelectedRecord}
             selectedId={selectedRecord ? `${selectedRecord.event_name}_${selectedRecord.team_name}_${selectedRecord.start_time}` : null}
           />
@@ -91,7 +91,7 @@ export function TrackingPanel({ apiBaseUrl }: TrackingPanelProps) {
 
 // 追踪中列表
 function ActiveTrackingList({ items }: { items: ActiveTracking[] }) {
-  if (items.length === 0) {
+  if (!items || items.length === 0) {
     return (
       <div className="text-center py-8">
         <div className="text-3xl mb-2">😴</div>
@@ -142,7 +142,7 @@ function CompletedTrackingList({
   onSelect: (record: TrackingRecord) => void;
   selectedId: string | null;
 }) {
-  if (items.length === 0) {
+  if (!items || items.length === 0) {
     return (
       <div className="text-center py-8">
         <div className="text-3xl mb-2">📭</div>
@@ -226,7 +226,7 @@ function RecordDetail({ record, onClose }: { record: TrackingRecord; onClose: ()
       </div>
 
       {/* 利润历史图表（简化版） */}
-      {record.profit_history.length > 0 && (
+      {record.profit_history && record.profit_history.length > 0 && (
         <div>
           <div className="text-xs text-[--text-muted] mb-2">利润变化 ({record.profit_history.length} 条记录)</div>
           <div className="bg-[--bg-tertiary] rounded p-2 h-20 flex items-end gap-px">

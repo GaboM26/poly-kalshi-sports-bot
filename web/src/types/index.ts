@@ -32,8 +32,8 @@ export interface ScanResponse {
 }
 
 export interface WsMessage {
-  type: 'opportunity' | 'opportunities_list' | 'matched_markets_list' | 'scan_started' | 'scan_completed' | 'log' | 'ping' | 'pong' | 'connected';
-  data?: ArbitrageOpportunity | ArbitrageOpportunity[] | MatchedMarketData[];
+  type: 'opportunity' | 'opportunities' | 'opportunities_list' | 'matched_markets_list' | 'scan_started' | 'scan_completed' | 'log' | 'ping' | 'pong' | 'connected' | 'stats' | 'metrics';
+  data?: ArbitrageOpportunity | ArbitrageOpportunity[] | MatchedMarketData[] | MetricsReport;
   kalshi_count?: number;
   polymarket_count?: number;
   matched_count?: number;
@@ -42,6 +42,25 @@ export interface WsMessage {
   level?: string;
   message?: string;
   timestamp?: string;
+}
+
+// 性能监控相关类型
+export interface OperationStats {
+  name: string;
+  count: number;
+  avg_ms: number;
+  max_ms: number;
+  total_ms: number;
+}
+
+export interface ApiLatency {
+  kalshi_ms?: number;
+  polymarket_ms?: number;
+}
+
+export interface MetricsReport {
+  operations: OperationStats[];
+  api_latency: ApiLatency;
 }
 
 // 匹配市场数据（包含实时价格）

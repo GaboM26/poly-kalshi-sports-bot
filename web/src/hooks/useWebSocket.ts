@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { WsMessage, LogEntry, DataCoverage, MatchedMarketData } from '../types';
+import { WsMessage, LogEntry, DataCoverage, MatchedMarketData, MetricsReport } from '../types';
 
 export function useWebSocket(url: string) {
   const [matchedMarkets, setMatchedMarkets] = useState<MatchedMarketData[]>([]); // 所有匹配市场（包含套利信息）
@@ -25,6 +25,7 @@ export function useWebSocket(url: string) {
     kalshi_connected: false,
     polymarket_connected: false,
   });
+  const [metrics, setMetrics] = useState<MetricsReport | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   // 跟踪价格变化用于高亮动画
   const prevPricesRef = useRef<Map<string, { k_yes: number; k_no: number; p_yes: number; p_no: number }>>(new Map());
@@ -134,6 +135,13 @@ export function useWebSocket(url: string) {
           }
           break;
 
+        case 'metrics':
+          // 处理性能指标消息
+          if (message.data && typeof message.data === 'object' && 'api_latency' in message.data) {
+            setMetrics(message.data as MetricsReport);
+          }
+          break;
+
         default:
           break;
       }
@@ -217,5 +225,6 @@ export function useWebSocket(url: string) {
     updateCount,
     stats,
     dataCoverage,
+    metrics,
   };
 }

@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
@@ -24,6 +25,7 @@ use crate::models::{
     Platform, PriceUpdate, SystemStats,
 };
 use crate::services::storage::ArbitrageStorage;
+use crate::services::metrics::{PerformanceMetrics, Operation};
 
 /// Tracking threshold for high-profit opportunities
 const TRACKING_THRESHOLD: f64 = 3.0;
@@ -58,6 +60,8 @@ pub struct WebSocketManager {
     /// Last update timestamps (for latency calculation)
     kalshi_last_update_time: Arc<RwLock<Option<DateTime<Utc>>>>,
     polymarket_last_update_time: Arc<RwLock<Option<DateTime<Utc>>>>,
+    /// Performance metrics
+    metrics: Arc<PerformanceMetrics>,
 }
 
 impl WebSocketManager {
@@ -66,6 +70,7 @@ impl WebSocketManager {
         min_profit_margin: f64,
         default_bet_amount: f64,
         storage: Arc<ArbitrageStorage>,
+        metrics: Arc<PerformanceMetrics>,
     ) -> Self {
         let (opportunity_tx, _) = broadcast::channel(100);
 
@@ -86,7 +91,13 @@ impl WebSocketManager {
             calculation_count: Arc::new(RwLock::new(0)),
             kalshi_last_update_time: Arc::new(RwLock::new(None)),
             polymarket_last_update_time: Arc::new(RwLock::new(None)),
+            metrics,
         }
+    }
+    
+    /// Get a reference to the performance metrics
+    pub fn get_metrics(&self) -> Arc<PerformanceMetrics> {
+        self.metrics.clone()
     }
 
     /// Subscribe to opportunity updates
@@ -127,6 +138,8 @@ impl WebSocketManager {
 
     /// Handle Kalshi price update
     fn on_kalshi_price_update(&self, update: PriceUpdate) {
+        let start = Instant::now();
+        
         *self.kalshi_update_count.write() += 1;
         
         // Update last update time for latency calculation
@@ -160,6 +173,9 @@ impl WebSocketManager {
                 }
             }
         }
+        
+        // Record timing
+        self.metrics.record(Operation::KalshiWsProcess, start.elapsed());
     }
 
     /// Handle Polymarket price update
@@ -168,6 +184,8 @@ impl WebSocketManager {
     /// - Own token: Ask price = poly_yes_price (buy this team wins)
     /// - Opponent token: Ask price = poly_no_price (buy opponent wins = this team loses)
     fn on_polymarket_price_update(&self, update: PriceUpdate) {
+        let start = Instant::now();
+        
         *self.polymarket_update_count.write() += 1;
         
         // Update last update time for latency calculation
@@ -233,6 +251,9 @@ impl WebSocketManager {
                 }
             }
         }
+        
+        // Record timing
+        self.metrics.record(Operation::PolyWsProcess, start.elapsed());
     }
 
     /// Check if a matched market has complete data
@@ -265,6 +286,7 @@ impl WebSocketManager {
             return;
         }
 
+        let start = Instant::now();
         *self.calculation_count.write() += 1;
 
         let markets = self.matched_markets.read();
@@ -326,6 +348,9 @@ impl WebSocketManager {
                 self.maybe_end_tracking(&key);
             }
         }
+        
+        // Record timing
+        self.metrics.record(Operation::ArbitrageCalc, start.elapsed());
     }
 
     /// Track a high-profit opportunity
@@ -413,6 +438,7 @@ impl WebSocketManager {
 
     /// Calculate all opportunities (for periodic scanning)
     pub fn calculate_all(&self) -> Vec<ArbitrageOpportunity> {
+        let start = Instant::now();
         let mut opportunities = Vec::new();
         let len = self.matched_markets.read().len();
 
@@ -455,6 +481,10 @@ impl WebSocketManager {
         });
 
         *self.opportunities.write() = opportunities.clone();
+        
+        // Record timing
+        self.metrics.record(Operation::FullScan, start.elapsed());
+        
         opportunities
     }
 

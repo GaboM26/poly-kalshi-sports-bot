@@ -41,7 +41,10 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
         const response = await fetch(`${apiBaseUrl}/api/arbitrage-history`);
         if (response.ok) {
           const result = await response.json();
-          setData(result);
+          setData({
+            active: result?.active || [],
+            completed: result?.completed || []
+          });
         }
       } catch (error) {
         console.error('Failed to fetch arbitrage history:', error);
@@ -96,7 +99,7 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
       )}
 
       {/* 活跃套利 */}
-      {data.active.length > 0 && (
+      {data?.active?.length > 0 && (
         <div>
           <h3 className="text-sm font-semibold text-[--accent-green] mb-2 flex items-center gap-2">
             <span className="status-dot status-connected animate-pulse-dot"></span>
@@ -128,9 +131,9 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
       {/* 历史套利 */}
       <div>
         <h3 className="text-sm font-semibold text-[--text-secondary] mb-2 flex items-center gap-2">
-          📜 History ({data.completed.length})
+          📜 History ({data?.completed?.length || 0})
         </h3>
-        {data.completed.length === 0 ? (
+        {(!data?.completed || data.completed.length === 0) ? (
           <div className="text-center text-[--text-muted] py-4">
             <div className="text-2xl mb-1">📭</div>
             <div className="text-xs">No historical records yet</div>

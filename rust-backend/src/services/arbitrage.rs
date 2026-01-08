@@ -3,6 +3,7 @@
 //! Orchestrates market data fetching, matching, and arbitrage scanning.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -12,7 +13,7 @@ use crate::clients::{KalshiClient, PolymarketClient};
 use crate::config::Config;
 use crate::core::{ArbitrageCalculator, EventMatcher};
 use crate::models::{ArbitrageOpportunity, MatchedEvent, MatchedMarket, PriceUpdate, SystemStats};
-use crate::services::{ArbitrageStorage, WebSocketManager};
+use crate::services::{ArbitrageStorage, WebSocketManager, PerformanceMetrics, Operation};
 
 /// Arbitrage service
 pub struct ArbitrageService {
@@ -24,6 +25,8 @@ pub struct ArbitrageService {
     pub storage: Arc<ArbitrageStorage>,
     pub matched_events: Vec<MatchedEvent>,
     pub matched_markets: Vec<MatchedMarket>,
+    /// Performance metrics
+    pub metrics: Arc<PerformanceMetrics>,
 }
 
 impl ArbitrageService {
@@ -31,6 +34,9 @@ impl ArbitrageService {
     pub async fn new(config: &Config) -> Result<Self> {
         // Initialize storage
         let storage = Arc::new(ArbitrageStorage::new("arbitrage_history.db")?);
+
+        // Initialize performance metrics
+        let metrics = Arc::new(PerformanceMetrics::new());
 
         // Initialize clients
         let kalshi_client = KalshiClient::new(config.kalshi.clone())?;
@@ -48,11 +54,12 @@ impl ArbitrageService {
             config.settings.default_bet_amount,
         );
 
-        // Create WebSocket manager
+        // Create WebSocket manager with metrics
         let ws_manager = Arc::new(WebSocketManager::new(
             config.settings.min_profit_margin,
             config.settings.default_bet_amount,
             storage.clone(),
+            metrics.clone(),
         ));
 
         Ok(Self {
@@ -64,6 +71,7 @@ impl ArbitrageService {
             storage,
             matched_events: Vec::new(),
             matched_markets: Vec::new(),
+            metrics,
         })
     }
 
@@ -90,13 +98,15 @@ impl ArbitrageService {
             polymarket_markets.len()
         );
 
-        // Match events and markets
+        // Match events and markets (with timing)
+        let match_start = Instant::now();
         let (matched_events, matched_markets) = self.matcher.match_events_and_markets(
             &kalshi_events,
             &kalshi_markets,
             &polymarket_events,
             &polymarket_markets,
         );
+        self.metrics.record(Operation::MarketMatch, match_start.elapsed());
 
         self.matched_events = matched_events;
         self.matched_markets = matched_markets.clone();

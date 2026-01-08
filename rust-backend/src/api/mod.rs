@@ -6,6 +6,7 @@ pub mod routes;
 pub mod websocket;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use axum::{
@@ -15,11 +16,11 @@ use axum::{
 use tokio::sync::{mpsc, RwLock};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::models::PriceUpdate;
-use crate::services::ArbitrageService;
+use crate::services::{ArbitrageService, PerformanceMetrics};
 
 /// Application state shared across handlers
 pub struct AppState {
@@ -32,6 +33,9 @@ pub async fn create_app(config: Config) -> Result<Router> {
     // Initialize the arbitrage service
     let mut service = ArbitrageService::new(&config).await?;
     service.initialize().await?;
+
+    // Get metrics reference before moving service
+    let metrics = service.metrics.clone();
 
     // Create price update channel
     let (price_tx, mut price_rx) = mpsc::channel::<PriceUpdate>(10000);
@@ -54,6 +58,23 @@ pub async fn create_app(config: Config) -> Result<Router> {
         while let Some(update) = price_rx.recv().await {
             let service = state_clone.service.read().await;
             service.ws_manager.on_price_update(update);
+        }
+    });
+
+    // Spawn metrics reporter and API ping tester (every 10 seconds)
+    let state_for_metrics = state.clone();
+    let metrics_clone = metrics.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
+        
+        loop {
+            interval.tick().await;
+            
+            // Perform API ping tests
+            ping_apis(&state_for_metrics, &metrics_clone).await;
+            
+            // Reset metrics for next period (metrics are sent via WebSocket in websocket.rs)
+            metrics_clone.reset();
         }
     });
 
@@ -105,4 +126,33 @@ pub async fn create_app(config: Config) -> Result<Router> {
     info!("✅ API 路由配置完成");
 
     Ok(app)
+}
+
+/// Ping both APIs to measure latency
+async fn ping_apis(state: &Arc<AppState>, metrics: &Arc<PerformanceMetrics>) {
+    // Test Kalshi API latency
+    let kalshi_start = Instant::now();
+    let service = state.service.read().await;
+    
+    match service.kalshi_client.get_balance().await {
+        Ok(_) => {
+            let latency_ms = kalshi_start.elapsed().as_millis() as u64;
+            metrics.set_kalshi_latency(latency_ms);
+        }
+        Err(e) => {
+            warn!("Kalshi API ping 失败: {}", e);
+        }
+    }
+    
+    // Test Polymarket API latency
+    let poly_start = Instant::now();
+    match service.polymarket_client.get_balance().await {
+        Ok(_) => {
+            let latency_ms = poly_start.elapsed().as_millis() as u64;
+            metrics.set_polymarket_latency(latency_ms);
+        }
+        Err(e) => {
+            warn!("Polymarket API ping 失败: {}", e);
+        }
+    }
 }

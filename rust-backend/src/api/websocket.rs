@@ -115,6 +115,29 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     });
 
+    // Clone state and tx for metrics updates task
+    let state_metrics = state.clone();
+    let tx_metrics = tx.clone();
+
+    // Spawn task for periodic metrics updates (every 10 seconds)
+    let metrics_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+            
+            let service = state_metrics.service.read().await;
+            let report = service.metrics.report();
+            
+            let msg = WsMessage::Metrics { data: report };
+            
+            if let Ok(json) = serde_json::to_string(&msg) {
+                if tx_metrics.send(json).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
     // Spawn task to send messages to WebSocket
     let send_task = tokio::spawn(async move {
         while let Some(json) = rx.recv().await {
@@ -149,6 +172,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     // Cleanup: abort all other tasks
     periodic_task.abort();
     opportunity_task.abort();
+    metrics_task.abort();
     send_task.abort();
 
     info!("WebSocket 客户端已断开连接");

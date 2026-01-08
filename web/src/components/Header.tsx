@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { DataCoverage, AccountBalance } from '../types';
+import { DataCoverage, AccountBalance, MetricsReport } from '../types';
 
 interface HeaderProps {
   isConnected: boolean;
@@ -13,12 +13,13 @@ interface HeaderProps {
   lastUpdateTime: Date | null;
   updateCount: number;
   dataCoverage: DataCoverage;
+  metrics: MetricsReport | null;
   apiBaseUrl: string;
   onLogout?: () => void;
   username?: string | null;
 }
 
-export function Header({ isConnected, stats, totalProfit, lastUpdateTime, updateCount, dataCoverage, apiBaseUrl, onLogout, username }: HeaderProps) {
+export function Header({ isConnected, stats, totalProfit, lastUpdateTime, updateCount, dataCoverage, metrics, apiBaseUrl, onLogout, username }: HeaderProps) {
   const [isFlashing, setIsFlashing] = useState(false);
   const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null);
   
@@ -137,12 +138,23 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
 
           {/* 平台延迟 */}
           <div className="flex items-center gap-2 px-3 py-1 rounded bg-[--bg-tertiary]" title="平台数据延迟：从交易所接收到数据到现在的时间">
-            <span className="text-xs text-[--text-muted]">⚡ 延迟:</span>
+            <span className="text-xs text-[--text-muted]">⚡ WS:</span>
             <span className={`font-mono text-xs ${getLatencyColor(dataCoverage.kalshi_latency_ms)}`}>
               K:{formatLatency(dataCoverage.kalshi_latency_ms)}
             </span>
             <span className={`font-mono text-xs ${getLatencyColor(dataCoverage.polymarket_latency_ms)}`}>
               P:{formatLatency(dataCoverage.polymarket_latency_ms)}
+            </span>
+          </div>
+
+          {/* API 延迟 (下单接口速度) */}
+          <div className="flex items-center gap-2 px-3 py-1 rounded bg-[--bg-tertiary]" title="API延迟：下单接口的响应时间（通过定期ping测试）">
+            <span className="text-xs text-[--text-muted]">🔗 API:</span>
+            <span className={`font-mono text-xs ${getLatencyColor(metrics?.api_latency.kalshi_ms)}`}>
+              K:{formatLatency(metrics?.api_latency.kalshi_ms)}
+            </span>
+            <span className={`font-mono text-xs ${getLatencyColor(metrics?.api_latency.polymarket_ms)}`}>
+              P:{formatLatency(metrics?.api_latency.polymarket_ms)}
             </span>
           </div>
 
