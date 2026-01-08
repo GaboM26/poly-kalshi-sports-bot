@@ -263,13 +263,15 @@ impl KalshiClient {
         price: i32, // in cents
     ) -> Result<Value> {
         let action = if side == "buy" { "buy" } else { "sell" };
+        let yes_price = if outcome == "yes" { price } else { 100 - price };
+        
         let body = json!({
             "ticker": ticker,
             "action": action,
             "side": outcome,
             "count": count,
             "type": "limit",
-            "yes_price": if outcome == "yes" { price } else { 100 - price },
+            "yes_price": yes_price,
         });
 
         self.post("/portfolio/orders", &body).await

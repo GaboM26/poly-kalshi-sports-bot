@@ -607,23 +607,39 @@ fn parse_orderbook_summary(raw: &Value) -> Result<OrderBookSummary> {
 }
 
 /// Convert signed order to JSON for API submission
-fn order_to_json(order: &SignedOrder, _owner: &str, order_type: OrderType) -> Value {
+fn order_to_json(order: &SignedOrder, owner: &str, order_type: OrderType) -> Value {
+    // Convert side from "0"/"1" to "BUY"/"SELL" (matching Python py-clob-client behavior)
+    let side_str = if order.side == "0" { "BUY" } else { "SELL" };
+    
+    // Parse salt as number (Python py-clob-client sends salt as number, not string)
+    let salt_num: u64 = order.salt.parse().unwrap_or(0);
+    
+    // Build the JSON with correct types (matching Python py-clob-client):
+    // - salt: number (NOT string)
+    // - maker, signer, taker: string (addresses)
+    // - tokenId, makerAmount, takerAmount, expiration, nonce, feeRateBps: string
+    // - side: "BUY" or "SELL"
+    // - signatureType: number (NOT string)
+    // - signature: string
+    let signature_type_num: u8 = order.signature_type.parse().unwrap_or(0);
+    
     json!({
         "order": {
-            "salt": order.salt,
-            "maker": order.maker,
-            "signer": order.signer,
-            "taker": order.taker,
-            "tokenId": order.token_id,
-            "makerAmount": order.maker_amount,
-            "takerAmount": order.taker_amount,
-            "expiration": order.expiration,
-            "nonce": order.nonce,
-            "feeRateBps": order.fee_rate_bps,
-            "side": order.side,
-            "signatureType": order.signature_type,
-            "signature": order.signature
+            "salt": salt_num,  // NUMBER, not string
+            "maker": &order.maker,
+            "signer": &order.signer,
+            "taker": &order.taker,
+            "tokenId": &order.token_id,
+            "makerAmount": &order.maker_amount,
+            "takerAmount": &order.taker_amount,
+            "expiration": &order.expiration,
+            "nonce": &order.nonce,
+            "feeRateBps": &order.fee_rate_bps,
+            "side": side_str,
+            "signatureType": signature_type_num,  // NUMBER, not string
+            "signature": &order.signature
         },
+        "owner": owner,
         "orderType": order_type.to_string()
     })
 }
