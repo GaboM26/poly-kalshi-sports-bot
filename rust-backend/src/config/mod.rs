@@ -151,6 +151,66 @@ impl Default for AuthConfig {
     }
 }
 
+/// Auto-trade configuration (initial defaults, actual state stored in database)
+#[derive(Debug, Clone, Deserialize)]
+pub struct AutoTradeConfig {
+    /// Whether auto-trade is enabled by default
+    #[serde(default = "default_auto_trade_enabled")]
+    pub enabled: bool,
+    /// Maximum amount per trade in USD
+    #[serde(default = "default_auto_trade_max_amount")]
+    pub max_amount: f64,
+    /// Minimum profit margin to trigger auto-trade (percentage)
+    #[serde(default = "default_auto_trade_min_profit")]
+    pub min_profit_margin: f64,
+    /// Cooldown between trades in seconds
+    #[serde(default = "default_auto_trade_cooldown")]
+    pub cooldown_seconds: u64,
+    /// Maximum trade count (testing phase limit)
+    #[serde(default = "default_auto_trade_max_count")]
+    pub max_trade_count: i32,
+    /// Minimum duration for opportunity (milliseconds)
+    #[serde(default = "default_auto_trade_min_duration")]
+    pub min_duration_ms: i64,
+}
+
+fn default_auto_trade_enabled() -> bool {
+    false
+}
+
+fn default_auto_trade_max_amount() -> f64 {
+    10.0
+}
+
+fn default_auto_trade_min_profit() -> f64 {
+    2.0
+}
+
+fn default_auto_trade_cooldown() -> u64 {
+    60
+}
+
+fn default_auto_trade_max_count() -> i32 {
+    2  // Testing phase: max 2 trades
+}
+
+fn default_auto_trade_min_duration() -> i64 {
+    500  // 500ms minimum duration
+}
+
+impl Default for AutoTradeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_auto_trade_enabled(),
+            max_amount: default_auto_trade_max_amount(),
+            min_profit_margin: default_auto_trade_min_profit(),
+            cooldown_seconds: default_auto_trade_cooldown(),
+            max_trade_count: default_auto_trade_max_count(),
+            min_duration_ms: default_auto_trade_min_duration(),
+        }
+    }
+}
+
 /// Main configuration struct
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -160,6 +220,8 @@ pub struct Config {
     pub settings: SettingsConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub auto_trade: AutoTradeConfig,
 }
 
 impl Config {

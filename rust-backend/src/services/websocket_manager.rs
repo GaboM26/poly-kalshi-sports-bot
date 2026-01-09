@@ -25,7 +25,7 @@ use crate::models::{
     ArbitrageOpportunity, ArbitrageTrackingRecord, MatchedMarket, MatchedMarketFrontend,
     Platform, PriceUpdate, ScanStats, SystemStats,
 };
-use crate::services::storage::ArbitrageStorage;
+use crate::services::storage::{ArbitrageStorage, AutoTradeState};
 use crate::services::metrics::{PerformanceMetrics, Operation};
 
 /// WebSocket manager for real-time price updates
@@ -68,6 +68,8 @@ pub struct WebSocketManager {
     polymarket_client: Option<PolymarketClient>,
     /// Tracking threshold for high-profit opportunities (percentage)
     tracking_threshold: f64,
+    /// Set of opportunity IDs that have been auto-traded (to prevent duplicates)
+    auto_traded_opportunities: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
 impl WebSocketManager {
@@ -104,6 +106,7 @@ impl WebSocketManager {
             kalshi_client: None,
             polymarket_client: None,
             tracking_threshold,
+            auto_traded_opportunities: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
     }
 
@@ -714,6 +717,113 @@ impl WebSocketManager {
     /// Get connection status
     pub fn is_polymarket_connected(&self) -> bool {
         *self.polymarket_connected.read()
+    }
+
+    // ==================== Auto-Trade Methods ====================
+
+    /// Get current auto-trade state
+    pub fn get_auto_trade_state(&self) -> AutoTradeState {
+        self.storage.get_auto_trade_state().unwrap_or_default()
+    }
+
+    /// Enable auto-trade
+    pub fn enable_auto_trade(&self) -> anyhow::Result<()> {
+        self.storage.set_auto_trade_enabled(true)?;
+        info!("🤖 自动下单已开启");
+        Ok(())
+    }
+
+    /// Disable auto-trade
+    pub fn disable_auto_trade(&self) -> anyhow::Result<()> {
+        self.storage.set_auto_trade_enabled(false)?;
+        info!("🛑 自动下单已关闭");
+        Ok(())
+    }
+
+    /// Reset trade count
+    pub fn reset_trade_count(&self) -> anyhow::Result<()> {
+        self.storage.reset_trade_count()?;
+        // Clear auto-traded set
+        self.auto_traded_opportunities.write().clear();
+        info!("🔄 下单次数已重置");
+        Ok(())
+    }
+
+    /// Update auto-trade settings
+    pub fn update_auto_trade_settings(
+        &self,
+        max_amount: Option<f64>,
+        min_duration_ms: Option<i64>,
+        max_trade_count: Option<i32>,
+    ) -> anyhow::Result<()> {
+        self.storage.update_auto_trade_settings(max_amount, min_duration_ms, max_trade_count)?;
+        Ok(())
+    }
+
+    /// Check if an opportunity is eligible for auto-trade
+    /// Returns (eligible, reason)
+    pub fn check_auto_trade_eligibility(&self, key: &str, duration_ms: i64) -> (bool, String) {
+        let state = self.get_auto_trade_state();
+
+        // Check if auto-trade is enabled
+        if !state.enabled {
+            return (false, "自动下单未开启".to_string());
+        }
+
+        // Check trade count limit
+        if state.trade_count >= state.max_trade_count {
+            return (false, format!("已达到最大下单次数 ({}/{})", state.trade_count, state.max_trade_count));
+        }
+
+        // Check duration threshold
+        if duration_ms < state.min_duration_ms {
+            return (false, format!("持续时间不足 ({}ms < {}ms)", duration_ms, state.min_duration_ms));
+        }
+
+        // Check if already auto-traded
+        if self.auto_traded_opportunities.read().contains(key) {
+            return (false, "该机会已自动下单".to_string());
+        }
+
+        (true, format!("可以下单 ({}/{})", state.trade_count + 1, state.max_trade_count))
+    }
+
+    /// Mark an opportunity as auto-traded
+    pub fn mark_as_auto_traded(&self, key: &str) {
+        self.auto_traded_opportunities.write().insert(key.to_string());
+    }
+
+    /// Increment trade count after successful auto-trade
+    pub fn increment_trade_count(&self) -> anyhow::Result<i32> {
+        self.storage.increment_trade_count()
+    }
+
+    /// Get active tracking records for auto-trade checking
+    pub fn get_active_tracking_for_auto_trade(&self) -> Vec<(String, ArbitrageTrackingRecord, i64)> {
+        let now = Utc::now();
+        let tracking = self.active_tracking.read();
+        
+        tracking
+            .iter()
+            .map(|(key, record)| {
+                // Calculate current duration
+                let duration_ms = now.signed_duration_since(record.start_time).num_milliseconds();
+                (key.clone(), record.clone(), duration_ms)
+            })
+            .collect()
+    }
+
+    /// Get current opportunity by key
+    pub fn get_opportunity_by_key(&self, key: &str) -> Option<ArbitrageOpportunity> {
+        let opps = self.opportunities.read();
+        opps.iter()
+            .find(|o| format!("{}_{}", o.event_name, o.team_name) == key)
+            .cloned()
+    }
+
+    /// Get a reference to storage
+    pub fn get_storage(&self) -> Arc<ArbitrageStorage> {
+        self.storage.clone()
     }
 
     /// Get matched markets formatted for frontend

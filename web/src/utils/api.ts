@@ -193,3 +193,86 @@ export async function executeArbitrage(
   });
   return response.json();
 }
+
+// ==================== 自动下单 API ====================
+
+/**
+ * 自动下单状态响应类型
+ */
+export interface AutoTradeStatus {
+  enabled: boolean;
+  trade_count: number;
+  max_trade_count: number;
+  remaining: number;
+  max_amount: number;
+  min_duration_ms: number;
+  last_trade_time: string | null;
+}
+
+/**
+ * 获取自动下单状态
+ */
+export async function getAutoTradeStatus(
+  baseUrl: string
+): Promise<AutoTradeStatus> {
+  const response = await fetch(`${baseUrl}/api/auto-trade/status`);
+  return response.json();
+}
+
+/**
+ * 开启自动下单
+ */
+export async function enableAutoTrade(
+  baseUrl: string
+): Promise<{ success: boolean; message?: string; error?: string }> {
+  const response = await fetch(`${baseUrl}/api/auto-trade/enable`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  });
+  return response.json();
+}
+
+/**
+ * 关闭自动下单
+ */
+export async function disableAutoTrade(
+  baseUrl: string
+): Promise<{ success: boolean; message?: string; error?: string }> {
+  const response = await fetch(`${baseUrl}/api/auto-trade/disable`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  });
+  return response.json();
+}
+
+/**
+ * 重置自动下单次数
+ */
+export async function resetAutoTradeCount(
+  baseUrl: string
+): Promise<{ success: boolean; message?: string; error?: string }> {
+  const response = await fetch(`${baseUrl}/api/auto-trade/reset`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  });
+  return response.json();
+}
+
+/**
+ * 更新自动下单设置
+ */
+export async function updateAutoTradeSettings(
+  baseUrl: string,
+  settings: {
+    max_amount?: number;
+    min_duration_ms?: number;
+    max_trade_count?: number;
+  }
+): Promise<{ success: boolean; message?: string; error?: string }> {
+  const response = await fetch(`${baseUrl}/api/auto-trade/settings`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(settings),
+  });
+  return response.json();
+}

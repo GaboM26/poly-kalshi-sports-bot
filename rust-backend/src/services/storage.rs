@@ -1,4 +1,4 @@
-//! SQLite storage for arbitrage tracking
+//! SQLite storage for arbitrage tracking and auto-trade state
 //!
 //! Provides async queue-based writing for non-blocking persistence.
 
@@ -9,10 +9,37 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use crate::models::ArbitrageTrackingRecord;
+
+/// Auto-trade state stored in database
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoTradeState {
+    pub enabled: bool,
+    pub trade_count: i32,
+    pub max_trade_count: i32,
+    pub max_amount: f64,
+    pub min_duration_ms: i64,
+    pub last_trade_time: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+impl Default for AutoTradeState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            trade_count: 0,
+            max_trade_count: 2,
+            max_amount: 10.0,
+            min_duration_ms: 500,
+            last_trade_time: None,
+            updated_at: None,
+        }
+    }
+}
 
 /// Storage command for async queue
 pub enum StorageCommand {
@@ -86,6 +113,36 @@ impl ArbitrageStorage {
             "ALTER TABLE arbitrage_tracking ADD COLUMN polymarket_ask_price REAL DEFAULT 0",
             [],
         );
+
+        // Create auto_trade_state table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS auto_trade_state (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                enabled INTEGER DEFAULT 0,
+                trade_count INTEGER DEFAULT 0,
+                max_trade_count INTEGER DEFAULT 2,
+                max_amount REAL DEFAULT 10.0,
+                min_duration_ms INTEGER DEFAULT 500,
+                last_trade_time TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // Migrate auto_trade_state: add new columns if they don't exist
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_state ADD COLUMN min_duration_ms INTEGER DEFAULT 500",
+            [],
+        );
+
+        // Initialize auto_trade_state with default row if not exists
+        conn.execute(
+            "INSERT OR IGNORE INTO auto_trade_state (id, enabled, trade_count, max_trade_count, max_amount, min_duration_ms) 
+             VALUES (1, 0, 0, 2, 10.0, 500)",
+            [],
+        )?;
+
+        info!("📦 数据库初始化完成，包含 auto_trade_state 表");
 
         let conn = Arc::new(Mutex::new(conn));
 
@@ -508,4 +565,132 @@ impl ArbitrageStorage {
 pub struct StorageStats {
     pub total_records: usize,
     pub active_records: usize,
+}
+
+// ==================== Auto-Trade State Methods ====================
+
+impl ArbitrageStorage {
+    /// Get current auto-trade state
+    pub fn get_auto_trade_state(&self) -> Result<AutoTradeState> {
+        let conn = self.conn.lock();
+        
+        let result = conn.query_row(
+            "SELECT enabled, trade_count, max_trade_count, max_amount, min_duration_ms, last_trade_time, updated_at
+             FROM auto_trade_state WHERE id = 1",
+            [],
+            |row| {
+                Ok(AutoTradeState {
+                    enabled: row.get::<_, i32>(0)? != 0,
+                    trade_count: row.get(1)?,
+                    max_trade_count: row.get(2)?,
+                    max_amount: row.get(3)?,
+                    min_duration_ms: row.get(4)?,
+                    last_trade_time: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(state) => Ok(state),
+            Err(_) => Ok(AutoTradeState::default()),
+        }
+    }
+
+    /// Set auto-trade enabled state
+    pub fn set_auto_trade_enabled(&self, enabled: bool) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE auto_trade_state SET enabled = ?, updated_at = ? WHERE id = 1",
+            params![enabled as i32, Utc::now().to_rfc3339()],
+        )?;
+        info!("🔄 自动下单状态已更新: enabled = {}", enabled);
+        Ok(())
+    }
+
+    /// Increment trade count after successful execution
+    pub fn increment_trade_count(&self) -> Result<i32> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE auto_trade_state SET trade_count = trade_count + 1, last_trade_time = ?, updated_at = ? WHERE id = 1",
+            params![Utc::now().to_rfc3339(), Utc::now().to_rfc3339()],
+        )?;
+        
+        let new_count: i32 = conn.query_row(
+            "SELECT trade_count FROM auto_trade_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        
+        info!("📈 自动下单次数已递增: {}", new_count);
+        Ok(new_count)
+    }
+
+    /// Reset trade count (for testing)
+    pub fn reset_trade_count(&self) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE auto_trade_state SET trade_count = 0, updated_at = ? WHERE id = 1",
+            params![Utc::now().to_rfc3339()],
+        )?;
+        info!("🔄 自动下单次数已重置为 0");
+        Ok(())
+    }
+
+    /// Update auto-trade settings
+    pub fn update_auto_trade_settings(
+        &self,
+        max_amount: Option<f64>,
+        min_duration_ms: Option<i64>,
+        max_trade_count: Option<i32>,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        
+        if let Some(amount) = max_amount {
+            conn.execute(
+                "UPDATE auto_trade_state SET max_amount = ?, updated_at = ? WHERE id = 1",
+                params![amount, Utc::now().to_rfc3339()],
+            )?;
+            info!("🔄 max_amount 已更新: {}", amount);
+        }
+        
+        if let Some(duration) = min_duration_ms {
+            conn.execute(
+                "UPDATE auto_trade_state SET min_duration_ms = ?, updated_at = ? WHERE id = 1",
+                params![duration, Utc::now().to_rfc3339()],
+            )?;
+            info!("🔄 min_duration_ms 已更新: {}", duration);
+        }
+        
+        if let Some(max_count) = max_trade_count {
+            conn.execute(
+                "UPDATE auto_trade_state SET max_trade_count = ?, updated_at = ? WHERE id = 1",
+                params![max_count, Utc::now().to_rfc3339()],
+            )?;
+            info!("🔄 max_trade_count 已更新: {}", max_count);
+        }
+        
+        Ok(())
+    }
+
+    /// Check if auto-trade can execute (enabled and within limits)
+    pub fn can_auto_trade(&self) -> Result<(bool, String)> {
+        let state = self.get_auto_trade_state()?;
+        
+        if !state.enabled {
+            return Ok((false, "自动下单未开启".to_string()));
+        }
+        
+        if state.trade_count >= state.max_trade_count {
+            return Ok((false, format!(
+                "已达到最大下单次数限制 ({}/{})", 
+                state.trade_count, state.max_trade_count
+            )));
+        }
+        
+        Ok((true, format!(
+            "可以下单 ({}/{})",
+            state.trade_count, state.max_trade_count
+        )))
+    }
 }

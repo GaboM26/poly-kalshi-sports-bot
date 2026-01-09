@@ -1,5 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { DataCoverage, AccountBalance, MetricsReport } from '../types';
+import { 
+  getAutoTradeStatus, 
+  enableAutoTrade, 
+  disableAutoTrade, 
+  resetAutoTradeCount, 
+  updateAutoTradeSettings,
+  AutoTradeStatus 
+} from '../utils/api';
 
 interface HeaderProps {
   isConnected: boolean;
@@ -22,6 +30,91 @@ interface HeaderProps {
 export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastUpdateTime, updateCount, dataCoverage, metrics, apiBaseUrl, onLogout, username }: HeaderProps) {
   const [isFlashing, setIsFlashing] = useState(false);
   const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null);
+  
+  // 自动下单状态
+  const [autoTradeStatus, setAutoTradeStatus] = useState<AutoTradeStatus | null>(null);
+  const [showAutoTradeModal, setShowAutoTradeModal] = useState(false);
+  const [autoTradeLoading, setAutoTradeLoading] = useState(false);
+  const [durationInput, setDurationInput] = useState('500');
+  const [autoTradeMessage, setAutoTradeMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  // 获取自动下单状态
+  const fetchAutoTradeStatus = useCallback(async () => {
+    try {
+      const data = await getAutoTradeStatus(apiBaseUrl);
+      setAutoTradeStatus(data);
+      setDurationInput(String(data.min_duration_ms));
+    } catch (error) {
+      console.error('获取自动下单状态失败:', error);
+    }
+  }, [apiBaseUrl]);
+
+  // 定期刷新自动下单状态
+  useEffect(() => {
+    fetchAutoTradeStatus();
+    const interval = setInterval(fetchAutoTradeStatus, 2000);
+    return () => clearInterval(interval);
+  }, [fetchAutoTradeStatus]);
+
+  // 显示消息
+  const showAutoTradeMsg = (text: string, type: 'success' | 'error') => {
+    setAutoTradeMessage({ text, type });
+    setTimeout(() => setAutoTradeMessage(null), 3000);
+  };
+
+  // 切换自动下单开关
+  const handleAutoTradeToggle = async () => {
+    if (!autoTradeStatus) return;
+    setAutoTradeLoading(true);
+    try {
+      if (autoTradeStatus.enabled) {
+        const result = await disableAutoTrade(apiBaseUrl);
+        if (result.success) showAutoTradeMsg('已关闭自动下单', 'success');
+        else showAutoTradeMsg(result.error || '操作失败', 'error');
+      } else {
+        const result = await enableAutoTrade(apiBaseUrl);
+        if (result.success) showAutoTradeMsg('已开启自动下单', 'success');
+        else showAutoTradeMsg(result.error || '操作失败', 'error');
+      }
+      await fetchAutoTradeStatus();
+    } catch (error) {
+      showAutoTradeMsg('操作失败', 'error');
+    }
+    setAutoTradeLoading(false);
+  };
+
+  // 重置次数
+  const handleAutoTradeReset = async () => {
+    setAutoTradeLoading(true);
+    try {
+      const result = await resetAutoTradeCount(apiBaseUrl);
+      if (result.success) showAutoTradeMsg('次数已重置', 'success');
+      else showAutoTradeMsg(result.error || '重置失败', 'error');
+      await fetchAutoTradeStatus();
+    } catch (error) {
+      showAutoTradeMsg('重置失败', 'error');
+    }
+    setAutoTradeLoading(false);
+  };
+
+  // 更新持续时间阈值
+  const handleUpdateDuration = async () => {
+    const duration = parseInt(durationInput);
+    if (isNaN(duration) || duration < 0) {
+      showAutoTradeMsg('请输入有效的时间', 'error');
+      return;
+    }
+    setAutoTradeLoading(true);
+    try {
+      const result = await updateAutoTradeSettings(apiBaseUrl, { min_duration_ms: duration });
+      if (result.success) showAutoTradeMsg('设置已更新', 'success');
+      else showAutoTradeMsg(result.error || '更新失败', 'error');
+      await fetchAutoTradeStatus();
+    } catch (error) {
+      showAutoTradeMsg('更新失败', 'error');
+    }
+    setAutoTradeLoading(false);
+  };
   
   // 当收到新数据时闪烁动画
   useEffect(() => {
@@ -169,6 +262,25 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
             </span>
           </div>
 
+          <div className="h-3 w-px bg-[--border-color]" />
+
+          {/* 自动下单按钮 */}
+          {autoTradeStatus && (
+            <button
+              onClick={() => setShowAutoTradeModal(true)}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold transition-colors ${
+                autoTradeStatus.enabled
+                  ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                  : 'bg-gray-500/20 text-gray-400 hover:bg-gray-500/30'
+              }`}
+              title="自动下单设置"
+            >
+              <span>🤖</span>
+              <span>{autoTradeStatus.enabled ? '自动' : '手动'}</span>
+              <span className="font-mono">{autoTradeStatus.trade_count}/{autoTradeStatus.max_trade_count}</span>
+            </button>
+          )}
+
           {/* 用户信息 */}
           {username && (
             <div className="flex items-center gap-1 pl-2 border-l border-[--border-color]">
@@ -186,6 +298,135 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
           )}
         </div>
       </div>
+
+      {/* 自动下单设置弹窗 */}
+      {showAutoTradeModal && autoTradeStatus && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowAutoTradeModal(false)}>
+          <div 
+            className="bg-[--bg-secondary] border border-[--border-color] rounded-lg shadow-xl w-80 max-w-[90vw]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 弹窗头部 */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[--border-color]">
+              <div className="flex items-center gap-2">
+                <span className="text-base">🤖</span>
+                <span className="font-semibold text-[--text-primary] text-sm">自动下单设置</span>
+              </div>
+              <button
+                onClick={() => setShowAutoTradeModal(false)}
+                className="text-[--text-muted] hover:text-[--text-primary] text-lg leading-none"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* 弹窗内容 */}
+            <div className="p-4 space-y-4">
+              {/* 开关状态 */}
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-[--text-secondary]">当前状态</span>
+                <div className="flex items-center gap-2">
+                  <span className={`text-xs px-2 py-1 rounded font-semibold ${
+                    autoTradeStatus.enabled
+                      ? 'bg-green-500/20 text-green-400'
+                      : 'bg-gray-500/20 text-gray-400'
+                  }`}>
+                    {autoTradeStatus.enabled ? '运行中' : '已关闭'}
+                  </span>
+                  <button
+                    onClick={handleAutoTradeToggle}
+                    disabled={autoTradeLoading}
+                    className={`text-xs px-3 py-1 rounded font-semibold transition-colors ${
+                      autoTradeStatus.enabled
+                        ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
+                        : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                    } ${autoTradeLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    {autoTradeStatus.enabled ? '关闭' : '开启'}
+                  </button>
+                </div>
+              </div>
+
+              {/* 下单次数 */}
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-[--text-secondary]">已下单次数</span>
+                <div className="flex items-center gap-2">
+                  <span className={`text-sm font-mono font-semibold ${
+                    autoTradeStatus.remaining > 0 ? 'text-green-400' : 'text-red-400'
+                  }`}>
+                    {autoTradeStatus.trade_count} / {autoTradeStatus.max_trade_count}
+                  </span>
+                  <button
+                    onClick={handleAutoTradeReset}
+                    disabled={autoTradeLoading}
+                    className="text-xs px-2 py-1 rounded bg-orange-500/20 text-orange-400 hover:bg-orange-500/30 transition-colors disabled:opacity-50"
+                  >
+                    重置
+                  </button>
+                </div>
+              </div>
+
+              {/* 持续时间阈值 */}
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-[--text-secondary]">最小持续时间</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={durationInput}
+                    onChange={(e) => setDurationInput(e.target.value)}
+                    className="w-20 text-xs px-2 py-1 rounded bg-[--bg-primary] border border-[--border-color] text-[--text-primary] focus:outline-none focus:border-blue-500 text-right"
+                    min="0"
+                    step="100"
+                  />
+                  <span className="text-xs text-[--text-muted]">ms</span>
+                  <button
+                    onClick={handleUpdateDuration}
+                    disabled={autoTradeLoading}
+                    className="text-xs px-2 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors disabled:opacity-50"
+                  >
+                    更新
+                  </button>
+                </div>
+              </div>
+
+              {/* 单次最大金额 */}
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-[--text-secondary]">单次最大金额</span>
+                <span className="text-sm font-mono text-[--text-primary]">${autoTradeStatus.max_amount}</span>
+              </div>
+
+              {/* 上次下单时间 */}
+              {autoTradeStatus.last_trade_time && (
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-[--text-secondary]">上次下单</span>
+                  <span className="text-xs text-[--text-muted]">
+                    {new Date(autoTradeStatus.last_trade_time).toLocaleString()}
+                  </span>
+                </div>
+              )}
+
+              {/* 消息提示 */}
+              {autoTradeMessage && (
+                <div className={`text-xs px-3 py-2 rounded ${
+                  autoTradeMessage.type === 'success'
+                    ? 'bg-green-500/20 text-green-400'
+                    : 'bg-red-500/20 text-red-400'
+                }`}>
+                  {autoTradeMessage.text}
+                </div>
+              )}
+            </div>
+
+            {/* 弹窗底部说明 */}
+            <div className="px-4 py-3 border-t border-[--border-color] bg-[--bg-tertiary] rounded-b-lg">
+              <p className="text-[10px] text-[--text-muted] leading-relaxed">
+                💡 测试阶段限制最多 {autoTradeStatus.max_trade_count} 次自动下单。
+                只有持续时间超过 {autoTradeStatus.min_duration_ms}ms 的套利机会才会触发下单。
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </header>
   );
 }

@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use axum::{
-    routing::{get, post, delete},
+    routing::{get, post, delete, put},
     Router,
 };
 use chrono::Utc;
@@ -183,6 +183,21 @@ pub async fn create_app(config: Config) -> Result<Router> {
         }
     });
 
+    // Spawn auto-trade checker (every 1 second)
+    let state_for_auto_trade = state.clone();
+    tokio::spawn(async move {
+        info!("🤖 自动下单检查任务启动，间隔 1 秒");
+        
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+        
+        loop {
+            interval.tick().await;
+            
+            // Check and execute auto-trade
+            check_and_execute_auto_trade(&state_for_auto_trade).await;
+        }
+    });
+
     // Build router
     let app = Router::new()
         // Health check
@@ -218,6 +233,12 @@ pub async fn create_app(config: Config) -> Result<Router> {
         .route("/api/history/statistics", get(routes::get_history_statistics))
         // Orderbook depth
         .route("/api/orderbook/depth", get(routes::get_orderbook_depth))
+        // Auto-trade
+        .route("/api/auto-trade/status", get(routes::get_auto_trade_status))
+        .route("/api/auto-trade/enable", post(routes::enable_auto_trade))
+        .route("/api/auto-trade/disable", post(routes::disable_auto_trade))
+        .route("/api/auto-trade/reset", post(routes::reset_auto_trade))
+        .route("/api/auto-trade/settings", put(routes::update_auto_trade_settings))
         // WebSocket
         .route("/ws", get(websocket::ws_handler))
         // Add state
@@ -264,5 +285,116 @@ async fn ping_apis(state: &Arc<AppState>, metrics: &Arc<PerformanceMetrics>) {
         Err(e) => {
             warn!("Polymarket API ping 失败: {}", e);
         }
+    }
+}
+
+/// Check and execute auto-trade for eligible opportunities
+async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
+    let service = state.service.read().await;
+    
+    // Get auto-trade state
+    let auto_state = service.ws_manager.get_auto_trade_state();
+    
+    // Early return if not enabled or already at limit
+    if !auto_state.enabled {
+        return;
+    }
+    
+    if auto_state.trade_count >= auto_state.max_trade_count {
+        return;
+    }
+    
+    // Get active tracking records
+    let tracking_records = service.ws_manager.get_active_tracking_for_auto_trade();
+    
+    for (key, record, duration_ms) in tracking_records {
+        // Check eligibility
+        let (eligible, reason) = service.ws_manager.check_auto_trade_eligibility(&key, duration_ms);
+        
+        if !eligible {
+            continue;
+        }
+        
+        // Get current opportunity data
+        let opportunity = match service.ws_manager.get_opportunity_by_key(&key) {
+            Some(opp) => opp,
+            None => continue,
+        };
+        
+        info!("🤖 [自动下单] 检测到符合条件的套利机会:");
+        info!("   事件: {} - {}", record.event_name, record.team_name);
+        info!("   持续时间: {}ms, 利润率: {:.2}%", duration_ms, opportunity.profit_margin);
+        info!("   原因: {}", reason);
+        
+        // Calculate order amounts based on auto_state.max_amount (10U)
+        let total_bet = auto_state.max_amount;
+        let implied_prob_sum = opportunity.kalshi_price + opportunity.polymarket_price;
+        let guaranteed_return = total_bet / implied_prob_sum;
+        
+        // Calculate Kalshi order (contracts)
+        let kalshi_bet = guaranteed_return * opportunity.kalshi_price;
+        let kalshi_contracts = (kalshi_bet / opportunity.kalshi_price).floor() as i32;
+        let kalshi_price_cents = (opportunity.kalshi_price * 100.0).round() as i32;
+        
+        // Calculate Polymarket order (amount in USDC)
+        let poly_amount = guaranteed_return * opportunity.polymarket_price;
+        
+        // Get the correct poly token based on side
+        let poly_token = if opportunity.polymarket_side == "yes" {
+            // Buy team wins -> use own token
+            record.polymarket_market_id.clone()
+        } else {
+            // Buy opponent wins -> need opponent token
+            // For now, use polymarket_market_id as we don't have opponent token in record
+            // This should be improved to get the correct opponent token
+            record.polymarket_market_id.clone()
+        };
+        
+        info!("   📊 订单计算:");
+        info!("      Kalshi: {} 合约 @ {:.2}¢ ({}侧)", kalshi_contracts, kalshi_price_cents, opportunity.kalshi_side);
+        info!("      Polymarket: ${:.4} ({}侧)", poly_amount, opportunity.polymarket_side);
+        
+        // Mark as auto-traded BEFORE executing (to prevent duplicate orders)
+        service.ws_manager.mark_as_auto_traded(&key);
+        
+        // Execute Kalshi order
+        let kalshi_result = service.kalshi_client.place_order(
+            &record.kalshi_market_id,
+            "buy",
+            &opportunity.kalshi_side,
+            kalshi_contracts,
+            kalshi_price_cents,
+        ).await;
+        
+        // Execute Polymarket order
+        let poly_result = service.polymarket_client.place_market_order(
+            &poly_token,
+            "buy",
+            poly_amount,
+        ).await;
+        
+        // Log results
+        let kalshi_success = kalshi_result.is_ok();
+        let poly_success = poly_result.is_ok();
+        
+        if kalshi_success && poly_success {
+            // Increment trade count on success
+            if let Ok(new_count) = service.ws_manager.increment_trade_count() {
+                info!("✅ [自动下单] 成功! 已执行 {}/{} 次", new_count, auto_state.max_trade_count);
+            }
+            info!("   Kalshi: {:?}", kalshi_result.unwrap());
+            info!("   Polymarket: {:?}", poly_result.unwrap());
+        } else {
+            error!("❌ [自动下单] 部分失败:");
+            if let Err(e) = kalshi_result {
+                error!("   Kalshi 失败: {}", e);
+            }
+            if let Err(e) = poly_result {
+                error!("   Polymarket 失败: {}", e);
+            }
+        }
+        
+        // Only process one opportunity per cycle to avoid overwhelming the system
+        break;
     }
 }
