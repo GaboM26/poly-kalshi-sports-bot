@@ -13,6 +13,8 @@ interface HistoryRecord {
   team_name: string;
   kalshi_market_id: string;
   polymarket_market_id: string;
+  kalshi_side: string;  // yes 或 no
+  polymarket_side: string;  // yes 或 no
   start_time: string;
   end_time?: string;
   duration_seconds?: number;
@@ -23,6 +25,9 @@ interface HistoryRecord {
   // 深度信息
   poly_ask_depth?: number;  // Polymarket ask 深度 (USD)
   kalshi_ask_depth?: number;  // Kalshi ask 深度 (contracts)
+  // 价格信息
+  kalshi_ask_price?: number;  // Kalshi ask 价格
+  polymarket_ask_price?: number;  // Polymarket ask 价格
 }
 
 interface SearchResult {
@@ -679,7 +684,7 @@ export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
               </div>
             </div>
 
-            {/* 深度信息 */}
+            {/* 深度和价格信息 */}
             <div className="grid grid-cols-2 gap-4 mb-4">
               <div className="bg-[--bg-tertiary] rounded p-3">
                 <div className="text-xs text-[--text-muted] mb-1">Polymarket 深度</div>
@@ -698,6 +703,28 @@ export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
                   {selectedRecord.kalshi_ask_depth ?? '-'}
                 </div>
                 <div className="text-xs text-[--text-muted] mt-1">合约数量</div>
+              </div>
+            </div>
+
+            {/* 价格信息 */}
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div className="bg-[--bg-tertiary] rounded p-3">
+                <div className="text-xs text-[--text-muted] mb-1">Polymarket 价格</div>
+                <div className="text-lg font-bold text-[--accent-purple] tabular-nums">
+                  {selectedRecord.polymarket_ask_price ? `${(selectedRecord.polymarket_ask_price * 100).toFixed(1)}¢` : '-'}
+                </div>
+                <div className="text-xs text-[--text-muted] mt-1">
+                  {selectedRecord.polymarket_side ? `买入 ${selectedRecord.polymarket_side.toUpperCase()}` : 'Ask 价格'}
+                </div>
+              </div>
+              <div className="bg-[--bg-tertiary] rounded p-3">
+                <div className="text-xs text-[--text-muted] mb-1">Kalshi 价格</div>
+                <div className="text-lg font-bold text-[--accent-blue] tabular-nums">
+                  {selectedRecord.kalshi_ask_price ? `${(selectedRecord.kalshi_ask_price * 100).toFixed(1)}¢` : '-'}
+                </div>
+                <div className="text-xs text-[--text-muted] mt-1">
+                  {selectedRecord.kalshi_side ? `买入 ${selectedRecord.kalshi_side.toUpperCase()}` : 'Ask 价格'}
+                </div>
               </div>
             </div>
 
