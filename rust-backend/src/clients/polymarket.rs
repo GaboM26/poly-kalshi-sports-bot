@@ -633,31 +633,6 @@ impl PolymarketClient {
         let yes_bid = book.best_bid().map(|(p, _)| p);
         let yes_ask = book.best_ask().map(|(p, _)| p);
         
-        // #region agent log
-        {
-            use std::io::Write;
-            let log_entry = serde_json::json!({
-                "hypothesisId": "A,C",
-                "location": "polymarket.rs:parse_book_message",
-                "message": "book snapshot parsed",
-                "data": {
-                    "asset_id": asset_id,
-                    "bids_count": book.bids.len(),
-                    "asks_count": book.asks.len(),
-                    "best_bid": yes_bid,
-                    "best_ask": yes_ask,
-                    "first_3_asks": book.asks.iter().take(3).collect::<Vec<_>>(),
-                    "last_3_asks": book.asks.iter().rev().take(3).collect::<Vec<_>>()
-                },
-                "timestamp": chrono::Utc::now().timestamp_millis(),
-                "sessionId": "debug-session"
-            });
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
-                let _ = writeln!(f, "{}", log_entry);
-            }
-        }
-        // #endregion
-        
         // Store in cache
         orderbook_cache.write().insert(asset_id.clone(), book);
         
@@ -730,39 +705,6 @@ impl PolymarketClient {
             let parsed_bid = raw_best_bid.and_then(|v| Self::parse_string_or_number(v));
             let parsed_ask = raw_best_ask.and_then(|v| Self::parse_string_or_number(v));
             
-            // #region agent log
-            {
-                use std::io::Write;
-                let cache_ask = orderbook_cache.read().get(&asset_id).and_then(|b| b.best_ask()).map(|(p, _)| p);
-                let cache_bid = orderbook_cache.read().get(&asset_id).and_then(|b| b.best_bid()).map(|(p, _)| p);
-                // Only log for CHI-MIA related tokens
-                if asset_id.contains("9451577629") || asset_id.contains("1621588904") {
-                    let log_entry = serde_json::json!({
-                        "hypothesisId": "B,E",
-                        "location": "polymarket.rs:parse_price_change",
-                        "message": "price_change parsing",
-                        "data": {
-                            "asset_id": asset_id,
-                            "delta_price": delta_price,
-                            "delta_size": delta_size,
-                            "delta_side": delta_side,
-                            "raw_best_bid": format!("{:?}", raw_best_bid),
-                            "raw_best_ask": format!("{:?}", raw_best_ask),
-                            "parsed_bid": parsed_bid,
-                            "parsed_ask": parsed_ask,
-                            "cache_bid_after_update": cache_bid,
-                            "cache_ask_after_update": cache_ask
-                        },
-                        "timestamp": chrono::Utc::now().timestamp_millis(),
-                        "sessionId": "debug-session"
-                    });
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
-                        let _ = writeln!(f, "{}", log_entry);
-                    }
-                }
-            }
-            // #endregion
-            
             // 重要修复: 始终从本地订单簿缓存获取 best_ask
             // Polymarket 的 price_change 消息中的 best_ask 字段不可信（可能是过时的）
             // 我们自己维护的订单簿是通过 delta 更新的，更准确
@@ -771,31 +713,6 @@ impl PolymarketClient {
             
             let yes_bid = cache_bid_final.or(parsed_bid);
             let yes_ask = cache_ask_final.or(parsed_ask);
-            
-            // #region agent log - final values
-            if asset_id.contains("9451577629") || asset_id.contains("1621588904") {
-                use std::io::Write;
-                let log_entry = serde_json::json!({
-                    "hypothesisId": "FINAL",
-                    "location": "polymarket.rs:final_yes_ask",
-                    "message": "final PriceUpdate values",
-                    "data": {
-                        "asset_id": asset_id,
-                        "cache_bid_final": cache_bid_final,
-                        "cache_ask_final": cache_ask_final,
-                        "parsed_bid": parsed_bid,
-                        "parsed_ask": parsed_ask,
-                        "yes_bid_result": yes_bid,
-                        "yes_ask_result": yes_ask
-                    },
-                    "timestamp": chrono::Utc::now().timestamp_millis(),
-                    "sessionId": "debug-session"
-                });
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
-                    let _ = writeln!(f, "{}", log_entry);
-                }
-            }
-            // #endregion
             
             updates.push(PriceUpdate {
                 platform: Platform::Polymarket,

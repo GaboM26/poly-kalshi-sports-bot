@@ -5,8 +5,10 @@ Polymarket 订单簿实时监控 TUI
 
 使用方法:
   python poly_orderbook_monitor.py                                      # 自动获取第一个可用市场
-  python poly_orderbook_monitor.py --token 1234567890...                # 直接监控指定 token_id
+  python poly_orderbook_monitor.py --token TOKEN_A TOKEN_B              # 直接监控指定 token_id
+  python poly_orderbook_monitor.py --token TOKEN_A TOKEN_B --names "Heat" "Bulls"  # 指定队伍名称
   python poly_orderbook_monitor.py --search "lakers"                    # 搜索包含关键字的市场
+  python poly_orderbook_monitor.py --search "CHI" --debug               # 调试模式：详细输出原始JSON和价格对比
 """
 
 import asyncio
@@ -182,7 +184,9 @@ def search_market(keyword: str) -> Optional[Tuple[str, str, dict]]:
 
 
 class OrderbookMonitor:
-    def __init__(self):
+    def __init__(self, debug_mode: bool = False):
+        # 调试模式
+        self.debug_mode = debug_mode
         # 订单簿数据: token_id -> {"bids": [...], "asks": [...]}
         self.orderbooks: Dict[str, dict] = {}
         # 价格缓存: token_id -> {"bid": x, "ask": x}
@@ -249,6 +253,39 @@ class OrderbookMonitor:
         asks = data.get("asks", [])
         last_trade = data.get("last_trade_price", "")
         
+        # DEBUG 模式：详细输出
+        if self.debug_mode:
+            team_name = self.token_names.get(asset_id, "Unknown")
+            print(f"\n{'='*80}")
+            print(f"[BOOK] 📦 {team_name}")
+            print(f"{'='*80}")
+            print(f"Raw JSON keys: {list(data.keys())}")
+            print(f"  Bids count: {len(bids)}")
+            print(f"  Asks count: {len(asks)}")
+            print(f"  last_trade_price: {last_trade}")
+            
+            # 分析 bids 排序
+            if bids:
+                bid_prices = [float(b.get("price", 0)) for b in bids if isinstance(b, dict)]
+                print(f"\n  [Bids 分析]")
+                print(f"    First 3 bids: {bids[:3]}")
+                print(f"    Last 3 bids:  {bids[-3:]}")
+                print(f"    First bid price: {bid_prices[0] if bid_prices else 'N/A'}")
+                print(f"    Last bid price:  {bid_prices[-1] if bid_prices else 'N/A'}")
+                print(f"    排序: {'升序 (ascending)' if bid_prices == sorted(bid_prices) else '降序 (descending)' if bid_prices == sorted(bid_prices, reverse=True) else '无序'}")
+                print(f"    Best Bid (最高买价) = Last element: {bid_prices[-1]*100:.2f}¢" if bid_prices else "    No bids")
+            
+            # 分析 asks 排序
+            if asks:
+                ask_prices = [float(a.get("price", 0)) for a in asks if isinstance(a, dict)]
+                print(f"\n  [Asks 分析]")
+                print(f"    First 3 asks: {asks[:3]}")
+                print(f"    Last 3 asks:  {asks[-3:]}")
+                print(f"    First ask price: {ask_prices[0] if ask_prices else 'N/A'}")
+                print(f"    Last ask price:  {ask_prices[-1] if ask_prices else 'N/A'}")
+                print(f"    排序: {'升序 (ascending)' if ask_prices == sorted(ask_prices) else '降序 (descending)' if ask_prices == sorted(ask_prices, reverse=True) else '无序'}")
+                print(f"    Best Ask (最低卖价) = Last element: {ask_prices[-1]*100:.2f}¢" if ask_prices else "    No asks")
+        
         # 存储订单簿
         self.orderbooks[asset_id] = {
             "bids": bids.copy() if bids else [],
@@ -265,6 +302,13 @@ class OrderbookMonitor:
             except:
                 pass
         
+        # DEBUG 模式：输出计算结果
+        if self.debug_mode:
+            prices = self.prices.get(asset_id, {})
+            print(f"\n  [计算结果]")
+            print(f"    Computed Best Bid: {prices.get('bid', 'N/A')}")
+            print(f"    Computed Best Ask: {prices.get('ask', 'N/A')}")
+        
         details = f"bids={len(bids)}, asks={len(asks)}"
         if last_trade:
             details += f", last={float(last_trade)*100:.1f}¢"
@@ -277,7 +321,8 @@ class OrderbookMonitor:
         """处理 price_change 消息
         
         格式: { "event_type": "price_change", "market": "...", 
-                "price_changes": [{ "asset_id": "...", "best_bid": "...", "best_ask": "..." }, ...] }
+                "price_changes": [{ "asset_id": "...", "best_bid": "...", "best_ask": "...", 
+                                    "price": "...", "size": "...", "side": "BUY"|"SELL" }, ...] }
         """
         price_changes = data.get("price_changes", [])
         
@@ -289,33 +334,156 @@ class OrderbookMonitor:
             
             self.update_count += 1
             
-            best_bid = change.get("best_bid")
-            best_ask = change.get("best_ask")
+            # 获取消息中的值
+            msg_best_bid = change.get("best_bid")
+            msg_best_ask = change.get("best_ask")
+            delta_price = change.get("price")
+            delta_size = change.get("size")
+            delta_side = change.get("side")
             
-            # 更新价格
+            # 获取更新前的本地计算值
+            local_bid_before = self.prices.get(asset_id, {}).get("bid")
+            local_ask_before = self.prices.get(asset_id, {}).get("ask")
+            
+            # 应用 delta 更新到本地订单簿
+            if delta_price and delta_size and delta_side:
+                self._apply_orderbook_delta(asset_id, delta_price, delta_size, delta_side)
+            
+            # 从本地订单簿重新计算 best_bid/best_ask
+            book = self.orderbooks.get(asset_id, {})
+            bids = book.get("bids", [])
+            asks = book.get("asks", [])
+            
+            local_bid_computed = None
+            local_ask_computed = None
+            
+            if bids:
+                try:
+                    bid_prices = [float(b.get("price", 0)) for b in bids if isinstance(b, dict)]
+                    if bid_prices:
+                        local_bid_computed = max(bid_prices)  # 最高买价
+                except:
+                    pass
+            
+            if asks:
+                try:
+                    ask_prices = [float(a.get("price", 0)) for a in asks if isinstance(a, dict)]
+                    if ask_prices:
+                        local_ask_computed = min(ask_prices)  # 最低卖价
+                except:
+                    pass
+            
+            # DEBUG 模式：详细对比
+            if self.debug_mode:
+                team_name = self.token_names.get(asset_id, "Unknown")
+                print(f"\n[PRICE_CHANGE] #{self.price_change_count} 📊 {team_name}")
+                
+                # 简化的 change 输出，移除冗长的 asset_id
+                change_display = {k: v for k, v in change.items() if k != "asset_id"}
+                print(f"  Raw: {json.dumps(change_display)}")
+                
+                # Delta 更新分析
+                if delta_price or delta_size or delta_side:
+                    print(f"  [Delta] ✓ price={delta_price}, size={delta_size}, side={delta_side}")
+                else:
+                    print(f"  [Delta] ✗ 无 (只有 best_bid/best_ask)")
+                
+                # 价格对比
+                msg_bid_cents = float(msg_best_bid)*100 if msg_best_bid else None
+                msg_ask_cents = float(msg_best_ask)*100 if msg_best_ask else None
+                local_bid_cents = local_bid_computed*100 if local_bid_computed else None
+                local_ask_cents = local_ask_computed*100 if local_ask_computed else None
+                
+                print(f"  [对比] 消息: bid={msg_bid_cents:.2f}¢" if msg_bid_cents else "  [对比] 消息: bid=None", end="")
+                print(f", ask={msg_ask_cents:.2f}¢" if msg_ask_cents else ", ask=None")
+                print(f"         本地: bid={local_bid_cents:.2f}¢" if local_bid_cents else "         本地: bid=None", end="")
+                print(f", ask={local_ask_cents:.2f}¢" if local_ask_cents else ", ask=None")
+                
+                # 差异检测
+                if msg_ask_cents and local_ask_cents:
+                    diff = abs(msg_ask_cents - local_ask_cents)
+                    if diff > 0.1:
+                        print(f"  ⚠️  ASK 不匹配! 消息={msg_ask_cents:.2f}¢ vs 本地={local_ask_cents:.2f}¢ (差={diff:.2f}¢)")
+                
+                if msg_bid_cents and local_bid_cents:
+                    diff = abs(msg_bid_cents - local_bid_cents)
+                    if diff > 0.1:
+                        print(f"  ⚠️  BID 不匹配! 消息={msg_bid_cents:.2f}¢ vs 本地={local_bid_cents:.2f}¢ (差={diff:.2f}¢)")
+            
+            # 更新价格缓存 (使用本地计算的值而不是消息中的值)
             if asset_id not in self.prices:
                 self.prices[asset_id] = {"bid": None, "ask": None}
             
-            if best_bid is not None and best_bid != "":
+            # 优先使用本地计算值，如果本地订单簿为空则用消息值
+            if local_bid_computed is not None:
+                self.prices[asset_id]["bid"] = local_bid_computed
+            elif msg_best_bid is not None and msg_best_bid != "":
                 try:
-                    self.prices[asset_id]["bid"] = float(best_bid)
+                    self.prices[asset_id]["bid"] = float(msg_best_bid)
                 except:
                     pass
             
-            if best_ask is not None and best_ask != "":
+            if local_ask_computed is not None:
+                self.prices[asset_id]["ask"] = local_ask_computed
+            elif msg_best_ask is not None and msg_best_ask != "":
                 try:
-                    self.prices[asset_id]["ask"] = float(best_ask)
+                    self.prices[asset_id]["ask"] = float(msg_best_ask)
                 except:
                     pass
             
-            bid_str = f"{float(best_bid)*100:.1f}¢" if best_bid else "-"
-            ask_str = f"{float(best_ask)*100:.1f}¢" if best_ask else "-"
+            bid_str = f"{self.prices[asset_id].get('bid', 0)*100:.1f}¢" if self.prices[asset_id].get('bid') else "-"
+            ask_str = f"{self.prices[asset_id].get('ask', 0)*100:.1f}¢" if self.prices[asset_id].get('ask') else "-"
             details = f"bid={bid_str}, ask={ask_str}"
             
             self.update_history.append((datetime.now(), asset_id, "PRICE", details))
         
         if len(self.update_history) > 20:
             self.update_history = self.update_history[-20:]
+    
+    def _apply_orderbook_delta(self, asset_id: str, price_str: str, size_str: str, side: str):
+        """应用订单簿增量更新
+        
+        根据 Polymarket 文档:
+        - side=BUY: 更新 bids
+        - side=SELL: 更新 asks
+        - size=0: 删除该价格层级
+        """
+        try:
+            price = float(price_str)
+            size = float(size_str)
+        except (ValueError, TypeError):
+            return
+        
+        if asset_id not in self.orderbooks:
+            self.orderbooks[asset_id] = {"bids": [], "asks": []}
+        
+        book = self.orderbooks[asset_id]
+        
+        if side.upper() == "BUY":
+            book_side = book["bids"]
+        else:
+            book_side = book["asks"]
+        
+        # 查找该价格层级
+        found_idx = None
+        for i, entry in enumerate(book_side):
+            if isinstance(entry, dict):
+                entry_price = float(entry.get("price", 0))
+                if abs(entry_price - price) < 0.0001:
+                    found_idx = i
+                    break
+        
+        if size <= 0:
+            # 删除层级
+            if found_idx is not None:
+                book_side.pop(found_idx)
+        else:
+            if found_idx is not None:
+                # 更新现有层级
+                book_side[found_idx]["size"] = str(size)
+            else:
+                # 插入新层级
+                book_side.append({"price": str(price), "size": str(size)})
     
     def _calculate_prices(self, asset_id: str, bids: list, asks: list):
         """从订单簿计算最佳买卖价
@@ -499,6 +667,26 @@ async def main():
     token_a = None
     token_b = None
     market_info = None
+    debug_mode = False
+    custom_names = []
+    
+    # 检查是否有 --debug 标志
+    if "--debug" in args:
+        debug_mode = True
+        args = [a for a in args if a != "--debug"]
+        console.print("[bold yellow]🔍 调试模式已启用 - 将输出详细的原始JSON和价格对比[/bold yellow]\n")
+    
+    # 检查是否有 --names 参数
+    if "--names" in args:
+        names_idx = args.index("--names")
+        # 获取 --names 后面的名称
+        remaining = args[names_idx + 1:]
+        for name in remaining:
+            if name.startswith("--"):
+                break
+            custom_names.append(name)
+        # 移除 --names 和其参数
+        args = args[:names_idx]
     
     if args:
         if args[0] == "--help" or args[0] == "-h":
@@ -541,17 +729,30 @@ async def main():
         tokens.append(token_b)
     
     console.print(f"\n[bold cyan]开始监控 {len(tokens)} 个 token...[/bold cyan]")
+    if debug_mode:
+        console.print(f"[dim]Token A: {token_a}[/dim]")
+        console.print(f"[dim]Token B: {token_b}[/dim]")
     console.print(f"[dim]日志文件: {LOG_FILE}[/dim]\n")
     
-    monitor = OrderbookMonitor()
+    monitor = OrderbookMonitor(debug_mode=debug_mode)
     monitor.tokens = tokens
     monitor.market_info = market_info
     
     # 设置 token 名称映射
-    if market_info:
+    if custom_names:
+        # 使用用户自定义名称
+        monitor.token_names[token_a] = custom_names[0] if len(custom_names) > 0 else 'Team A'
+        if token_b:
+            monitor.token_names[token_b] = custom_names[1] if len(custom_names) > 1 else 'Team B'
+    elif market_info:
         monitor.token_names[token_a] = market_info.get('team_a', 'Team A')
         if token_b:
             monitor.token_names[token_b] = market_info.get('team_b', 'Team B')
+    else:
+        # 直接指定 token 时，使用简单名称
+        monitor.token_names[token_a] = 'Team A'
+        if token_b:
+            monitor.token_names[token_b] = 'Team B'
     
     async def connect_and_monitor():
         retry_count = 0
@@ -602,15 +803,26 @@ async def main():
     # 等待一秒让连接建立
     await asyncio.sleep(1)
     
-    # 启动 TUI 显示
-    with Live(monitor.create_display(), refresh_per_second=4, console=console) as live:
+    if debug_mode:
+        # 调试模式：直接输出到控制台，不使用 TUI
+        console.print("[bold green]✅ 调试模式运行中，按 Ctrl+C 退出[/bold green]")
+        console.print("[dim]等待 WebSocket 消息...[/dim]\n")
         try:
             while True:
-                await asyncio.sleep(0.25)
-                live.update(monitor.create_display())
+                await asyncio.sleep(1)
         except KeyboardInterrupt:
             console.print("\n[yellow]正在关闭...[/yellow]")
             ws_task.cancel()
+    else:
+        # 正常模式：启动 TUI 显示
+        with Live(monitor.create_display(), refresh_per_second=4, console=console) as live:
+            try:
+                while True:
+                    await asyncio.sleep(0.25)
+                    live.update(monitor.create_display())
+            except KeyboardInterrupt:
+                console.print("\n[yellow]正在关闭...[/yellow]")
+                ws_task.cancel()
 
 
 if __name__ == "__main__":

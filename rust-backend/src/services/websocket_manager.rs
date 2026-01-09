@@ -110,44 +110,6 @@ impl WebSocketManager {
         let matcher = EventMatcher::new(24);
         let sub_info = matcher.get_subscription_info(&markets);
         
-        // #region agent log
-        {
-            use std::io::Write;
-            // Log CHI-MIA related lookup entries
-            let chi_mia_entries: Vec<_> = sub_info.market_lookup.iter()
-                .filter(|(k, _)| k.contains("9451577629") || k.contains("1621588904"))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            let chi_mia_markets: Vec<_> = markets.iter().enumerate()
-                .filter(|(_, m)| m.event_name.contains("CHI") || m.event_name.contains("MIA"))
-                .map(|(i, m)| serde_json::json!({
-                    "idx": i,
-                    "event": &m.event_name,
-                    "team": &m.team_name,
-                    "own_token": m.polymarket_market.get_token_for_team(&m.team_name),
-                    "init_yes": m.poly_yes_price,
-                    "init_no": m.poly_no_price
-                }))
-                .collect();
-            let log_entry = serde_json::json!({
-                "hypothesisId": "F,G,H",
-                "location": "websocket_manager.rs:set_matched_markets",
-                "message": "market_lookup initialized",
-                "data": {
-                    "total_markets": markets.len(),
-                    "lookup_size": sub_info.market_lookup.len(),
-                    "chi_mia_lookup": chi_mia_entries,
-                    "chi_mia_markets": chi_mia_markets
-                },
-                "timestamp": chrono::Utc::now().timestamp_millis(),
-                "sessionId": "debug-session"
-            });
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
-                let _ = writeln!(f, "{}", log_entry);
-            }
-        }
-        // #endregion
-
         *self.matched_markets.write() = markets;
         *self.market_lookup.write() = sub_info.market_lookup;
 
@@ -235,28 +197,6 @@ impl WebSocketManager {
             info!("✅ [Polymarket] 开始接收实时价格数据");
         }
 
-        // #region agent log
-        {
-            use std::io::Write;
-            let log_entry = serde_json::json!({
-                "hypothesisId": "A,D",
-                "location": "websocket_manager.rs:on_polymarket_price_update",
-                "message": "received PriceUpdate",
-                "data": {
-                    "market_id": &update.market_id,
-                    "yes_ask": update.yes_ask,
-                    "yes_bid": update.yes_bid,
-                    "will_update": update.yes_ask.is_some()
-                },
-                "timestamp": chrono::Utc::now().timestamp_millis(),
-                "sessionId": "debug-session"
-            });
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
-                let _ = writeln!(f, "{}", log_entry);
-            }
-        }
-        // #endregion
-        
         // Update token price cache (using Ask price for buying)
         // 只使用 Ask 价格，不 fallback 到 Bid - 套利买入必须用 Ask
         // 如果没有 Ask 价格，保持之前的缓存值不变
@@ -283,7 +223,7 @@ impl WebSocketManager {
 
                         // Update the correct price field
                         let is_own = Some(update.market_id.as_str()) == own_token;
-                        markets_to_update.push((idx, is_own, price, mm.event_name.clone(), mm.team_name.clone()));
+                        markets_to_update.push((idx, is_own, price));
                     }
                 }
 
@@ -293,71 +233,20 @@ impl WebSocketManager {
                 // Apply updates and recalculate
                 {
                     let mut markets = self.matched_markets.write();
-                    for (idx, is_own, price, event_name, team_name) in &markets_to_update {
+                    for (idx, is_own, price) in &markets_to_update {
                         if *idx < markets.len() {
-                            let before_yes = markets[*idx].poly_yes_price;
-                            let before_no = markets[*idx].poly_no_price;
-                            
                             if *is_own {
                                 markets[*idx].poly_yes_price = *price;
                             } else {
                                 markets[*idx].poly_no_price = *price;
                             }
-                            
-                            // #region agent log
-                            if event_name.contains("CHI") || event_name.contains("MIA") {
-                                use std::io::Write;
-                                let log_entry = serde_json::json!({
-                                    "hypothesisId": "F,G",
-                                    "location": "websocket_manager.rs:apply_price_update",
-                                    "message": "price update applied",
-                                    "data": {
-                                        "event_name": event_name,
-                                        "team_name": team_name,
-                                        "token_id": &update.market_id,
-                                        "is_own_token": is_own,
-                                        "new_price": price,
-                                        "before_yes": before_yes,
-                                        "before_no": before_no,
-                                        "after_yes": markets[*idx].poly_yes_price,
-                                        "after_no": markets[*idx].poly_no_price
-                                    },
-                                    "timestamp": chrono::Utc::now().timestamp_millis(),
-                                    "sessionId": "debug-session"
-                                });
-                                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
-                                    let _ = writeln!(f, "{}", log_entry);
-                                }
-                            }
-                            // #endregion
                         }
                     }
                 }
 
-                for (idx, _, _, _, _) in markets_to_update {
+                for (idx, _, _) in markets_to_update {
                     self.calculate_and_notify(idx);
                 }
-            } else {
-                // #region agent log
-                // Token not in lookup - log for debugging
-                if update.market_id.contains("9451577629") || update.market_id.contains("1621588904") {
-                    use std::io::Write;
-                    let log_entry = serde_json::json!({
-                        "hypothesisId": "G",
-                        "location": "websocket_manager.rs:on_polymarket_price_update",
-                        "message": "token NOT in market_lookup",
-                        "data": {
-                            "token_id": &update.market_id,
-                            "yes_ask": update.yes_ask
-                        },
-                        "timestamp": chrono::Utc::now().timestamp_millis(),
-                        "sessionId": "debug-session"
-                    });
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
-                        let _ = writeln!(f, "{}", log_entry);
-                    }
-                }
-                // #endregion
             }
         }
         
@@ -752,32 +641,6 @@ impl WebSocketManager {
                 // Get Polymarket prices
                 let p_yes = mm.poly_yes_price;
                 let p_no = mm.poly_no_price;
-                
-                // #region agent log
-                if mm.event_name.contains("CHI") || mm.event_name.contains("MIA") {
-                    use std::io::Write;
-                    let log_entry = serde_json::json!({
-                        "hypothesisId": "D",
-                        "location": "websocket_manager.rs:get_matched_markets_for_frontend",
-                        "message": "frontend data",
-                        "data": {
-                            "event_name": &mm.event_name,
-                            "team_name": &mm.team_name,
-                            "poly_yes_price": p_yes,
-                            "poly_no_price": p_no,
-                            "own_token": own_token,
-                            "opponent_token": opponent_token,
-                            "has_own_in_cache": has_own,
-                            "has_opp_in_cache": has_opp
-                        },
-                        "timestamp": chrono::Utc::now().timestamp_millis(),
-                        "sessionId": "debug-session"
-                    });
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
-                        let _ = writeln!(f, "{}", log_entry);
-                    }
-                }
-                // #endregion
 
                 // Get opportunity info if exists
                 let opportunity = opp_map.get(&key);
