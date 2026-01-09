@@ -1,4 +1,5 @@
-# Python
+# Python (entire python-backend is ignored)
+python-backend/
 __pycache__/
 *.py[cod]
 *$py.class
