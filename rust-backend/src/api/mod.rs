@@ -239,6 +239,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
         .route("/api/auto-trade/disable", post(routes::disable_auto_trade))
         .route("/api/auto-trade/reset", post(routes::reset_auto_trade))
         .route("/api/auto-trade/settings", put(routes::update_auto_trade_settings))
+        .route("/api/auto-trade/history", get(routes::get_auto_trade_history))
         // WebSocket
         .route("/ws", get(websocket::ws_handler))
         // Add state
@@ -373,10 +374,48 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
             poly_amount,
         ).await;
         
-        // Log results
+        // Extract results for logging and recording
         let kalshi_success = kalshi_result.is_ok();
         let poly_success = poly_result.is_ok();
         
+        // Extract order IDs and errors
+        let (kalshi_order_id, kalshi_error) = match &kalshi_result {
+            Ok(res) => (res.get("order_id").and_then(|v| v.as_str()).map(|s| s.to_string()), None),
+            Err(e) => (None, Some(e.to_string())),
+        };
+        
+        let (poly_order_id, poly_error) = match &poly_result {
+            Ok(res) => (res.get("order_id").and_then(|v| v.as_str()).map(|s| s.to_string()), None),
+            Err(e) => (None, Some(e.to_string())),
+        };
+        
+        // Save trade record to database
+        let storage = service.ws_manager.get_storage();
+        if let Err(e) = storage.save_auto_trade_record(
+            &record.event_name,
+            &record.team_name,
+            &record.kalshi_market_id,
+            &record.polymarket_market_id,
+            &opportunity.kalshi_side,
+            &opportunity.polymarket_side,
+            kalshi_contracts,
+            opportunity.kalshi_price,
+            poly_amount,
+            opportunity.polymarket_price,
+            total_bet,
+            opportunity.profit_margin,
+            duration_ms,
+            kalshi_success,
+            poly_success,
+            kalshi_order_id.as_deref(),
+            poly_order_id.as_deref(),
+            kalshi_error.as_deref(),
+            poly_error.as_deref(),
+        ) {
+            error!("保存自动下单记录失败: {}", e);
+        }
+        
+        // Log results
         if kalshi_success && poly_success {
             // Increment trade count on success
             if let Ok(new_count) = service.ws_manager.increment_trade_count() {
@@ -385,12 +424,16 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
             info!("   Kalshi: {:?}", kalshi_result.unwrap());
             info!("   Polymarket: {:?}", poly_result.unwrap());
         } else {
-            error!("❌ [自动下单] 部分失败:");
-            if let Err(e) = kalshi_result {
-                error!("   Kalshi 失败: {}", e);
+            // Still increment count even on partial failure to track attempts
+            if let Ok(new_count) = service.ws_manager.increment_trade_count() {
+                info!("⚠️ [自动下单] 部分成功，已记录 {}/{} 次", new_count, auto_state.max_trade_count);
             }
-            if let Err(e) = poly_result {
-                error!("   Polymarket 失败: {}", e);
+            error!("❌ [自动下单] 部分失败:");
+            if let Some(err) = &kalshi_error {
+                error!("   Kalshi 失败: {}", err);
+            }
+            if let Some(err) = &poly_error {
+                error!("   Polymarket 失败: {}", err);
             }
         }
         

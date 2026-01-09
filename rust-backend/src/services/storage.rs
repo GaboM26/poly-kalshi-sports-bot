@@ -41,6 +41,32 @@ impl Default for AutoTradeState {
     }
 }
 
+/// Auto-trade execution record
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoTradeRecord {
+    pub id: i64,
+    pub event_name: String,
+    pub team_name: String,
+    pub kalshi_market_id: String,
+    pub polymarket_market_id: String,
+    pub kalshi_side: String,
+    pub polymarket_side: String,
+    pub kalshi_contracts: i32,
+    pub kalshi_price: f64,
+    pub polymarket_amount: f64,
+    pub polymarket_price: f64,
+    pub total_amount: f64,
+    pub profit_margin: f64,
+    pub duration_ms: i64,
+    pub kalshi_success: bool,
+    pub polymarket_success: bool,
+    pub kalshi_order_id: Option<String>,
+    pub polymarket_order_id: Option<String>,
+    pub kalshi_error: Option<String>,
+    pub polymarket_error: Option<String>,
+    pub created_at: String,
+}
+
 /// Storage command for async queue
 pub enum StorageCommand {
     TrackStart(ArbitrageTrackingRecord),
@@ -142,7 +168,40 @@ impl ArbitrageStorage {
             [],
         )?;
 
-        info!("📦 数据库初始化完成，包含 auto_trade_state 表");
+        // Create auto_trade_history table for recording executed trades
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS auto_trade_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_name TEXT NOT NULL,
+                team_name TEXT NOT NULL,
+                kalshi_market_id TEXT NOT NULL,
+                polymarket_market_id TEXT NOT NULL,
+                kalshi_side TEXT NOT NULL,
+                polymarket_side TEXT NOT NULL,
+                kalshi_contracts INTEGER NOT NULL,
+                kalshi_price REAL NOT NULL,
+                polymarket_amount REAL NOT NULL,
+                polymarket_price REAL NOT NULL,
+                total_amount REAL NOT NULL,
+                profit_margin REAL NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                kalshi_success INTEGER NOT NULL,
+                polymarket_success INTEGER NOT NULL,
+                kalshi_order_id TEXT,
+                polymarket_order_id TEXT,
+                kalshi_error TEXT,
+                polymarket_error TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auto_trade_created_at ON auto_trade_history(created_at)",
+            [],
+        )?;
+
+        info!("📦 数据库初始化完成，包含 auto_trade_state 和 auto_trade_history 表");
 
         let conn = Arc::new(Mutex::new(conn));
 
@@ -692,5 +751,118 @@ impl ArbitrageStorage {
             "可以下单 ({}/{})",
             state.trade_count, state.max_trade_count
         )))
+    }
+
+    /// Save an auto-trade execution record
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_auto_trade_record(
+        &self,
+        event_name: &str,
+        team_name: &str,
+        kalshi_market_id: &str,
+        polymarket_market_id: &str,
+        kalshi_side: &str,
+        polymarket_side: &str,
+        kalshi_contracts: i32,
+        kalshi_price: f64,
+        polymarket_amount: f64,
+        polymarket_price: f64,
+        total_amount: f64,
+        profit_margin: f64,
+        duration_ms: i64,
+        kalshi_success: bool,
+        polymarket_success: bool,
+        kalshi_order_id: Option<&str>,
+        polymarket_order_id: Option<&str>,
+        kalshi_error: Option<&str>,
+        polymarket_error: Option<&str>,
+    ) -> Result<i64> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO auto_trade_history (
+                event_name, team_name, kalshi_market_id, polymarket_market_id,
+                kalshi_side, polymarket_side, kalshi_contracts, kalshi_price,
+                polymarket_amount, polymarket_price, total_amount, profit_margin,
+                duration_ms, kalshi_success, polymarket_success,
+                kalshi_order_id, polymarket_order_id, kalshi_error, polymarket_error,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            params![
+                event_name,
+                team_name,
+                kalshi_market_id,
+                polymarket_market_id,
+                kalshi_side,
+                polymarket_side,
+                kalshi_contracts,
+                kalshi_price,
+                polymarket_amount,
+                polymarket_price,
+                total_amount,
+                profit_margin,
+                duration_ms,
+                kalshi_success as i32,
+                polymarket_success as i32,
+                kalshi_order_id,
+                polymarket_order_id,
+                kalshi_error,
+                polymarket_error,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        
+        let id = conn.last_insert_rowid();
+        info!("📝 自动下单记录已保存: ID={}, 事件={}, 状态=K:{}/P:{}", 
+            id, event_name, 
+            if kalshi_success { "成功" } else { "失败" },
+            if polymarket_success { "成功" } else { "失败" }
+        );
+        Ok(id)
+    }
+
+    /// Get auto-trade execution history
+    pub fn get_auto_trade_history(&self, limit: usize) -> Result<Vec<AutoTradeRecord>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, event_name, team_name, kalshi_market_id, polymarket_market_id,
+                    kalshi_side, polymarket_side, kalshi_contracts, kalshi_price,
+                    polymarket_amount, polymarket_price, total_amount, profit_margin,
+                    duration_ms, kalshi_success, polymarket_success,
+                    kalshi_order_id, polymarket_order_id, kalshi_error, polymarket_error,
+                    created_at
+             FROM auto_trade_history
+             ORDER BY created_at DESC
+             LIMIT ?1",
+        )?;
+
+        let records = stmt
+            .query_map([limit], |row| {
+                Ok(AutoTradeRecord {
+                    id: row.get(0)?,
+                    event_name: row.get(1)?,
+                    team_name: row.get(2)?,
+                    kalshi_market_id: row.get(3)?,
+                    polymarket_market_id: row.get(4)?,
+                    kalshi_side: row.get(5)?,
+                    polymarket_side: row.get(6)?,
+                    kalshi_contracts: row.get(7)?,
+                    kalshi_price: row.get(8)?,
+                    polymarket_amount: row.get(9)?,
+                    polymarket_price: row.get(10)?,
+                    total_amount: row.get(11)?,
+                    profit_margin: row.get(12)?,
+                    duration_ms: row.get(13)?,
+                    kalshi_success: row.get::<_, i32>(14)? != 0,
+                    polymarket_success: row.get::<_, i32>(15)? != 0,
+                    kalshi_order_id: row.get(16)?,
+                    polymarket_order_id: row.get(17)?,
+                    kalshi_error: row.get(18)?,
+                    polymarket_error: row.get(19)?,
+                    created_at: row.get(20)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(records)
     }
 }

@@ -936,3 +936,37 @@ pub async fn update_auto_trade_settings(
         }
     }
 }
+
+/// Query params for auto-trade history
+#[derive(Deserialize)]
+pub struct AutoTradeHistoryQuery {
+    pub limit: Option<usize>,
+}
+
+/// Get auto-trade execution history
+pub async fn get_auto_trade_history(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AutoTradeHistoryQuery>,
+) -> impl IntoResponse {
+    let service = state.service.read().await;
+    let storage = service.ws_manager.get_storage();
+    let limit = query.limit.unwrap_or(50);
+    
+    match storage.get_auto_trade_history(limit) {
+        Ok(records) => Json(serde_json::json!({
+            "records": records,
+            "total": records.len()
+        })).into_response(),
+        Err(e) => {
+            error!("获取自动下单历史失败: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "records": [],
+                    "total": 0,
+                    "error": e.to_string()
+                }))
+            ).into_response()
+        }
+    }
+}

@@ -20,6 +20,30 @@ interface ArbitrageRecord {
   profit_history?: ProfitHistoryEntry[];
 }
 
+interface AutoTradeRecord {
+  id: number;
+  event_name: string;
+  team_name: string;
+  kalshi_market_id: string;
+  polymarket_market_id: string;
+  kalshi_side: string;
+  polymarket_side: string;
+  kalshi_contracts: number;
+  kalshi_price: number;
+  polymarket_amount: number;
+  polymarket_price: number;
+  total_amount: number;
+  profit_margin: number;
+  duration_ms: number;
+  kalshi_success: boolean;
+  polymarket_success: boolean;
+  kalshi_order_id?: string;
+  polymarket_order_id?: string;
+  kalshi_error?: string;
+  polymarket_error?: string;
+  created_at: string;
+}
+
 interface ArbitrageHistoryData {
   active: ArbitrageRecord[];
   completed: ArbitrageRecord[];
@@ -32,12 +56,16 @@ interface ArbitrageHistoryProps {
 
 export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistoryProps) {
   const [data, setData] = useState<ArbitrageHistoryData>({ active: [], completed: [] });
+  const [autoTradeRecords, setAutoTradeRecords] = useState<AutoTradeRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedRecord, setSelectedRecord] = useState<ArbitrageRecord | null>(null);
+  const [selectedAutoTrade, setSelectedAutoTrade] = useState<AutoTradeRecord | null>(null);
+  const [activeTab, setActiveTab] = useState<'tracking' | 'trades'>('tracking');
 
   useEffect(() => {
     const fetchHistory = async () => {
       try {
+        // Fetch arbitrage tracking history
         const response = await fetch(`${apiBaseUrl}/api/arbitrage-history`);
         if (response.ok) {
           const result = await response.json();
@@ -46,8 +74,15 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
             completed: result?.completed || []
           });
         }
+        
+        // Fetch auto-trade history
+        const autoTradeResponse = await fetch(`${apiBaseUrl}/api/auto-trade/history?limit=50`);
+        if (autoTradeResponse.ok) {
+          const result = await autoTradeResponse.json();
+          setAutoTradeRecords(result?.records || []);
+        }
       } catch (error) {
-        console.error('Failed to fetch arbitrage history:', error);
+        console.error('Failed to fetch history:', error);
       } finally {
         setLoading(false);
       }
@@ -85,12 +120,49 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
     return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
   };
 
+  // 获取下单状态样式
+  const getTradeStatus = (record: AutoTradeRecord) => {
+    if (record.kalshi_success && record.polymarket_success) {
+      return { text: '成功', color: 'text-green-400', bg: 'bg-green-500/20' };
+    } else if (!record.kalshi_success && !record.polymarket_success) {
+      return { text: '失败', color: 'text-red-400', bg: 'bg-red-500/20' };
+    } else {
+      return { text: '部分成功', color: 'text-yellow-400', bg: 'bg-yellow-500/20' };
+    }
+  };
+
   return (
     <div className="h-full flex flex-col p-2 space-y-2 overflow-hidden">
       {/* 标题/工具栏 */}
       <div className="flex justify-between items-center flex-shrink-0 pb-1 border-b border-[--border-color]">
-        <h3 className="text-xs font-semibold text-[--text-muted] uppercase tracking-wider">套利记录</h3>
-        {onOpenExplorer && (
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setActiveTab('tracking')}
+            className={`text-[10px] px-2 py-0.5 rounded transition-colors ${
+              activeTab === 'tracking'
+                ? 'bg-[--accent-blue]/20 text-[--accent-blue]'
+                : 'text-[--text-muted] hover:text-[--text-secondary]'
+            }`}
+          >
+            📊 追踪记录
+          </button>
+          <button
+            onClick={() => setActiveTab('trades')}
+            className={`text-[10px] px-2 py-0.5 rounded transition-colors flex items-center gap-1 ${
+              activeTab === 'trades'
+                ? 'bg-[--accent-green]/20 text-[--accent-green]'
+                : 'text-[--text-muted] hover:text-[--text-secondary]'
+            }`}
+          >
+            🤖 下单记录
+            {autoTradeRecords.length > 0 && (
+              <span className="bg-[--accent-green] text-black text-[8px] px-1 rounded-full">
+                {autoTradeRecords.length}
+              </span>
+            )}
+          </button>
+        </div>
+        {onOpenExplorer && activeTab === 'tracking' && (
           <button
             onClick={onOpenExplorer}
             className="text-[10px] px-2 py-0.5 bg-[--accent-purple]/10 text-[--accent-purple] rounded hover:bg-[--accent-purple]/20 transition-colors flex items-center gap-1"
@@ -101,6 +173,55 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
       </div>
 
       <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+        {/* 自动下单记录 */}
+        {activeTab === 'trades' && (
+          <div>
+            {autoTradeRecords.length === 0 ? (
+              <div className="text-center text-[--text-muted] py-8">
+                <div className="text-2xl mb-2">🤖</div>
+                <div className="text-xs">暂无自动下单记录</div>
+                <div className="text-[10px] mt-1">开启自动下单后，执行记录将显示在这里</div>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {autoTradeRecords.map((record) => {
+                  const status = getTradeStatus(record);
+                  return (
+                    <div
+                      key={record.id}
+                      className={`${status.bg} border border-[--border-color] rounded p-2 cursor-pointer hover:brightness-110 transition-all`}
+                      onClick={() => setSelectedAutoTrade(record)}
+                    >
+                      <div className="flex justify-between items-start">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-medium text-[--text-primary] truncate">{record.event_name}</div>
+                          <div className="text-[10px] text-[--accent-yellow] truncate">{record.team_name}</div>
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <span className={`text-xs font-bold tabular-nums ${status.color}`}>
+                            {record.profit_margin.toFixed(2)}%
+                          </span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${status.bg} ${status.color} font-semibold`}>
+                            {status.text}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex justify-between items-center text-[10px] text-[--text-muted] mt-1">
+                        <span>
+                          K:{record.kalshi_contracts}合约 P:${record.polymarket_amount.toFixed(2)}
+                        </span>
+                        <span>{formatTime(record.created_at)}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'tracking' && (
+          <>
         {/* 活跃套利 */}
         {data?.active?.length > 0 && (
           <div>
@@ -165,6 +286,8 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
             </div>
           )}
         </div>
+        </>
+        )}
       </div>
 
       {/* 详情弹窗 */}
@@ -244,6 +367,134 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* 自动下单详情弹窗 */}
+      {selectedAutoTrade && (
+        <div 
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 backdrop-blur-sm"
+          onClick={() => setSelectedAutoTrade(null)}
+        >
+          <div 
+            className="bg-[--bg-secondary] rounded-lg p-4 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto border border-[--border-color] shadow-xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-start mb-4 pb-2 border-b border-[--border-color]">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-base">🤖</span>
+                  <h3 className="text-base font-semibold text-[--text-primary]">自动下单详情</h3>
+                </div>
+                <div className="text-xs text-[--text-muted] mt-1">{selectedAutoTrade.event_name}</div>
+                <div className="text-[--accent-yellow] text-xs">{selectedAutoTrade.team_name}</div>
+              </div>
+              <button 
+                className="text-[--text-muted] hover:text-[--text-primary] text-lg"
+                onClick={() => setSelectedAutoTrade(null)}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* 状态和利润 */}
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div className={`rounded p-2.5 ${getTradeStatus(selectedAutoTrade).bg}`}>
+                <div className="text-[10px] text-[--text-muted] mb-1">下单状态</div>
+                <div className={`text-lg font-bold ${getTradeStatus(selectedAutoTrade).color}`}>
+                  {getTradeStatus(selectedAutoTrade).text}
+                </div>
+              </div>
+              <div className="bg-[--bg-tertiary] rounded p-2.5">
+                <div className="text-[10px] text-[--text-muted] mb-1">利润率</div>
+                <div className="text-lg font-bold text-[--accent-green] tabular-nums">
+                  {selectedAutoTrade.profit_margin.toFixed(2)}%
+                </div>
+              </div>
+            </div>
+
+            {/* Kalshi 订单详情 */}
+            <div className="mb-3 p-2.5 bg-[--bg-tertiary] rounded">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-blue-400">Kalshi</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded ${selectedAutoTrade.kalshi_success ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                  {selectedAutoTrade.kalshi_success ? '成功' : '失败'}
+                </span>
+              </div>
+              <div className="space-y-1 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-[--text-muted]">方向</span>
+                  <span className="text-[--text-primary]">{selectedAutoTrade.kalshi_side.toUpperCase()}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[--text-muted]">合约数量</span>
+                  <span className="text-[--text-primary] tabular-nums">{selectedAutoTrade.kalshi_contracts}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[--text-muted]">价格</span>
+                  <span className="text-[--text-primary] tabular-nums">{(selectedAutoTrade.kalshi_price * 100).toFixed(0)}¢</span>
+                </div>
+                {selectedAutoTrade.kalshi_order_id && (
+                  <div className="flex justify-between">
+                    <span className="text-[--text-muted]">订单ID</span>
+                    <span className="text-[--text-primary] text-[10px] font-mono truncate max-w-[150px]">{selectedAutoTrade.kalshi_order_id}</span>
+                  </div>
+                )}
+                {selectedAutoTrade.kalshi_error && (
+                  <div className="text-red-400 text-[10px] mt-1 p-1 bg-red-500/10 rounded">{selectedAutoTrade.kalshi_error}</div>
+                )}
+              </div>
+            </div>
+
+            {/* Polymarket 订单详情 */}
+            <div className="mb-3 p-2.5 bg-[--bg-tertiary] rounded">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-purple-400">Polymarket</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded ${selectedAutoTrade.polymarket_success ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                  {selectedAutoTrade.polymarket_success ? '成功' : '失败'}
+                </span>
+              </div>
+              <div className="space-y-1 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-[--text-muted]">方向</span>
+                  <span className="text-[--text-primary]">{selectedAutoTrade.polymarket_side.toUpperCase()}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[--text-muted]">金额</span>
+                  <span className="text-[--text-primary] tabular-nums">${selectedAutoTrade.polymarket_amount.toFixed(4)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[--text-muted]">价格</span>
+                  <span className="text-[--text-primary] tabular-nums">{(selectedAutoTrade.polymarket_price * 100).toFixed(2)}¢</span>
+                </div>
+                {selectedAutoTrade.polymarket_order_id && (
+                  <div className="flex justify-between">
+                    <span className="text-[--text-muted]">订单ID</span>
+                    <span className="text-[--text-primary] text-[10px] font-mono truncate max-w-[150px]">{selectedAutoTrade.polymarket_order_id}</span>
+                  </div>
+                )}
+                {selectedAutoTrade.polymarket_error && (
+                  <div className="text-red-400 text-[10px] mt-1 p-1 bg-red-500/10 rounded">{selectedAutoTrade.polymarket_error}</div>
+                )}
+              </div>
+            </div>
+
+            {/* 其他信息 */}
+            <div className="space-y-1.5 text-xs border-t border-[--border-color] pt-3">
+              <div className="flex justify-between">
+                <span className="text-[--text-muted]">总金额</span>
+                <span className="text-[--text-primary] tabular-nums">${selectedAutoTrade.total_amount.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[--text-muted]">持续时间</span>
+                <span className="text-[--text-primary] tabular-nums">{selectedAutoTrade.duration_ms}ms</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[--text-muted]">执行时间</span>
+                <span className="text-[--text-primary]">{formatDate(selectedAutoTrade.created_at)} {formatTime(selectedAutoTrade.created_at)}</span>
+              </div>
+            </div>
           </div>
         </div>
       )}
