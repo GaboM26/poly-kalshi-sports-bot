@@ -42,6 +42,36 @@ impl PolyOrderBook {
     pub fn best_ask(&self) -> Option<(f64, f64)> {
         self.asks.last().copied()
     }
+
+    /// 计算 asks 侧的可用深度（买入时使用）
+    /// 返回在指定金额内可获得的总深度（USD）
+    /// asks 降序排列，last 是 best_ask（最低卖价）
+    pub fn ask_depth(&self, max_amount: f64) -> f64 {
+        let mut depth = 0.0;
+        // 从 best_ask（最低价）开始累计
+        for (price, size) in self.asks.iter().rev() {
+            let level_value = price * size;
+            depth += level_value;
+            if depth >= max_amount {
+                return max_amount;
+            }
+        }
+        depth
+    }
+
+    /// 计算 bids 侧的可用深度（卖出时使用）
+    pub fn bid_depth(&self, max_amount: f64) -> f64 {
+        let mut depth = 0.0;
+        // 从 best_bid（最高价）开始累计
+        for (price, size) in self.bids.iter().rev() {
+            let level_value = price * size;
+            depth += level_value;
+            if depth >= max_amount {
+                return max_amount;
+            }
+        }
+        depth
+    }
 }
 
 const POLY_WS_URL: &str = "wss://ws-subscriptions-clob.polymarket.com/ws/market";

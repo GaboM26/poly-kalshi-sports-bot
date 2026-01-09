@@ -79,6 +79,9 @@ pub struct SettingsConfig {
     /// Default bet amount in USD
     #[serde(default = "default_bet_amount")]
     pub default_bet_amount: f64,
+    /// Tracking threshold for high-profit opportunities (percentage)
+    #[serde(default = "default_tracking_threshold")]
+    pub tracking_threshold: f64,
 }
 
 fn default_refresh_interval() -> u64 {
@@ -90,7 +93,11 @@ fn default_min_profit_margin() -> f64 {
 }
 
 fn default_bet_amount() -> f64 {
-    100.0
+    10.0  // Testing phase: reduced from 100.0 to 10.0
+}
+
+fn default_tracking_threshold() -> f64 {
+    1.0  // Start tracking when profit >= 1%
 }
 
 impl Default for SettingsConfig {
@@ -99,6 +106,7 @@ impl Default for SettingsConfig {
             refresh_interval: default_refresh_interval(),
             min_profit_margin: default_min_profit_margin(),
             default_bet_amount: default_bet_amount(),
+            tracking_threshold: default_tracking_threshold(),
         }
     }
 }

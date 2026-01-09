@@ -262,6 +262,53 @@ pub async fn execute_arbitrage(
     let kalshi_amount = (total_bet / 2.0 * 100.0) as i32; // Convert to cents
     let poly_amount = total_bet / 2.0;
 
+    // Get Polymarket token
+    let poly_token = if req.polymarket_side == "yes" {
+        mm.polymarket_market.get_token_for_team(&mm.team_name)
+    } else {
+        let opponent = mm.polymarket_market.get_opponent(&mm.team_name);
+        opponent.and_then(|o| mm.polymarket_market.get_token_for_team(o))
+    };
+
+    // === Pre-order depth validation ===
+    // Check Polymarket depth
+    let poly_depth = poly_token
+        .and_then(|token| service.polymarket_client.get_orderbook(token))
+        .map(|book| book.ask_depth(poly_amount))
+        .unwrap_or(0.0);
+
+    // Require at least 90% of requested amount
+    let min_poly_depth = poly_amount * 0.9;
+    if poly_depth < min_poly_depth {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": format!("Polymarket 深度不足: 需要 {:.2} USD, 可用 {:.2} USD", min_poly_depth, poly_depth),
+            "poly_depth": poly_depth,
+            "required_depth": min_poly_depth
+        }))
+        .into_response();
+    }
+
+    // Check Kalshi depth
+    let kalshi_contracts = kalshi_amount / 100; // Approximate contracts needed
+    let kalshi_depth = service
+        .kalshi_client
+        .get_orderbook(&mm.kalshi_market.market_id)
+        .map(|book| book.ask_depth_for_side(&req.kalshi_side, kalshi_contracts))
+        .unwrap_or(0);
+
+    let min_kalshi_depth = (kalshi_contracts as f64 * 0.9) as i32;
+    if kalshi_depth < min_kalshi_depth {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": format!("Kalshi 深度不足: 需要 {} 合约, 可用 {} 合约", min_kalshi_depth, kalshi_depth),
+            "kalshi_depth": kalshi_depth,
+            "required_depth": min_kalshi_depth
+        }))
+        .into_response();
+    }
+
+    // === Execute orders ===
     // Place Kalshi order
     let kalshi_price = if req.kalshi_side == "yes" {
         (mm.kalshi_market.yes_price * 100.0) as i32
@@ -280,13 +327,6 @@ pub async fn execute_arbitrage(
         .await;
 
     // Place Polymarket order
-    let poly_token = if req.polymarket_side == "yes" {
-        mm.polymarket_market.get_token_for_team(&mm.team_name)
-    } else {
-        let opponent = mm.polymarket_market.get_opponent(&mm.team_name);
-        opponent.and_then(|o| mm.polymarket_market.get_token_for_team(o))
-    };
-
     let poly_result = match poly_token {
         Some(token) => service
             .place_polymarket_order(token, "buy", poly_amount)
@@ -296,6 +336,10 @@ pub async fn execute_arbitrage(
 
     Json(serde_json::json!({
         "success": kalshi_result.is_ok() && poly_result.is_ok(),
+        "depth_check": {
+            "poly_depth": poly_depth,
+            "kalshi_depth": kalshi_depth
+        },
         "kalshi": kalshi_result.map(|r| serde_json::json!({"success": true, "data": r}))
             .unwrap_or_else(|e| serde_json::json!({"success": false, "error": e.to_string()})),
         "polymarket": poly_result.map(|r| serde_json::json!({"success": true, "data": r}))

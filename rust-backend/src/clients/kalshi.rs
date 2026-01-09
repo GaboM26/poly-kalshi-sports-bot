@@ -52,6 +52,44 @@ pub struct OrderBook {
     pub no: Vec<(i32, i32)>,
 }
 
+impl OrderBook {
+    /// 计算 yes 侧的 ask 深度（买入 yes 时使用）
+    /// Kalshi: yes_ask = 1 - no_bid，所以买 yes 的深度看 no 侧的 bid
+    /// no 按价格升序排列，last 是最高买价（best no_bid）
+    pub fn yes_ask_depth(&self, max_contracts: i32) -> i32 {
+        let mut depth = 0;
+        for (_, qty) in self.no.iter().rev() {
+            depth += qty;
+            if depth >= max_contracts {
+                return max_contracts;
+            }
+        }
+        depth
+    }
+
+    /// 计算 no 侧的 ask 深度（买入 no 时使用）
+    /// no_ask = 1 - yes_bid，所以买 no 的深度看 yes 侧的 bid
+    pub fn no_ask_depth(&self, max_contracts: i32) -> i32 {
+        let mut depth = 0;
+        for (_, qty) in self.yes.iter().rev() {
+            depth += qty;
+            if depth >= max_contracts {
+                return max_contracts;
+            }
+        }
+        depth
+    }
+
+    /// 根据 side 获取对应的 ask 深度
+    pub fn ask_depth_for_side(&self, side: &str, max_contracts: i32) -> i32 {
+        match side.to_lowercase().as_str() {
+            "yes" => self.yes_ask_depth(max_contracts),
+            "no" => self.no_ask_depth(max_contracts),
+            _ => 0,
+        }
+    }
+}
+
 impl KalshiClient {
     /// Create a new Kalshi client
     pub fn new(config: KalshiConfig) -> Result<Self> {

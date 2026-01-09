@@ -50,7 +50,12 @@ impl ArbitrageStorage {
                 max_profit_margin REAL NOT NULL,
                 kalshi_side TEXT NOT NULL,
                 polymarket_side TEXT NOT NULL,
-                update_count INTEGER DEFAULT 0
+                update_count INTEGER DEFAULT 0,
+                poly_ask_depth REAL DEFAULT 0,
+                kalshi_ask_depth INTEGER DEFAULT 0,
+                duration_ms INTEGER DEFAULT 0,
+                kalshi_ask_price REAL DEFAULT 0,
+                polymarket_ask_price REAL DEFAULT 0
             )",
             [],
         )?;
@@ -59,6 +64,28 @@ impl ArbitrageStorage {
             "CREATE INDEX IF NOT EXISTS idx_start_time ON arbitrage_tracking(start_time)",
             [],
         )?;
+
+        // Migrate existing tables: add new columns if they don't exist
+        let _ = conn.execute(
+            "ALTER TABLE arbitrage_tracking ADD COLUMN poly_ask_depth REAL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE arbitrage_tracking ADD COLUMN kalshi_ask_depth INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE arbitrage_tracking ADD COLUMN duration_ms INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE arbitrage_tracking ADD COLUMN kalshi_ask_price REAL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE arbitrage_tracking ADD COLUMN polymarket_ask_price REAL DEFAULT 0",
+            [],
+        );
 
         let conn = Arc::new(Mutex::new(conn));
 
@@ -87,8 +114,10 @@ impl ArbitrageStorage {
                     "INSERT OR REPLACE INTO arbitrage_tracking 
                     (id, event_name, team_name, kalshi_market_id, polymarket_market_id, 
                      start_time, initial_profit_margin, max_profit_margin, 
-                     kalshi_side, polymarket_side, update_count)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                     kalshi_side, polymarket_side, update_count,
+                     poly_ask_depth, kalshi_ask_depth, duration_ms,
+                     kalshi_ask_price, polymarket_ask_price)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                     params![
                         record.id,
                         record.event_name,
@@ -101,6 +130,11 @@ impl ArbitrageStorage {
                         record.kalshi_side,
                         record.polymarket_side,
                         record.update_count,
+                        record.poly_ask_depth,
+                        record.kalshi_ask_depth,
+                        record.duration_ms,
+                        record.kalshi_ask_price,
+                        record.polymarket_ask_price,
                     ],
                 )?;
             }
@@ -114,9 +148,25 @@ impl ArbitrageStorage {
                 )?;
             }
             StorageCommand::TrackEnd(id) => {
+                let now = Utc::now();
+                // Calculate duration_ms from start_time
+                let duration_ms: i64 = conn
+                    .query_row(
+                        "SELECT start_time FROM arbitrage_tracking WHERE id = ?1",
+                        params![&id],
+                        |row| {
+                            let start_str: String = row.get(0)?;
+                            let start_dt = DateTime::parse_from_rfc3339(&start_str)
+                                .map(|dt| dt.with_timezone(&Utc))
+                                .unwrap_or(now);
+                            Ok(now.signed_duration_since(start_dt).num_milliseconds())
+                        },
+                    )
+                    .unwrap_or(0);
+
                 conn.execute(
-                    "UPDATE arbitrage_tracking SET end_time = ?1 WHERE id = ?2",
-                    params![Utc::now().to_rfc3339(), id],
+                    "UPDATE arbitrage_tracking SET end_time = ?1, duration_ms = ?2 WHERE id = ?3",
+                    params![now.to_rfc3339(), duration_ms, id],
                 )?;
             }
         }
@@ -149,7 +199,9 @@ impl ArbitrageStorage {
         let mut stmt = conn.prepare(
             "SELECT id, event_name, team_name, kalshi_market_id, polymarket_market_id,
                     start_time, end_time, initial_profit_margin, max_profit_margin,
-                    kalshi_side, polymarket_side, update_count
+                    kalshi_side, polymarket_side, update_count,
+                    poly_ask_depth, kalshi_ask_depth, duration_ms,
+                    kalshi_ask_price, polymarket_ask_price
              FROM arbitrage_tracking
              ORDER BY start_time DESC
              LIMIT ?1",
@@ -175,6 +227,11 @@ impl ArbitrageStorage {
                     kalshi_side: row.get(9)?,
                     polymarket_side: row.get(10)?,
                     update_count: row.get(11)?,
+                    poly_ask_depth: row.get(12).unwrap_or(0.0),
+                    kalshi_ask_depth: row.get(13).unwrap_or(0),
+                    duration_ms: row.get(14).unwrap_or(0),
+                    kalshi_ask_price: row.get(15).unwrap_or(0.0),
+                    polymarket_ask_price: row.get(16).unwrap_or(0.0),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -266,7 +323,8 @@ impl ArbitrageStorage {
         let query = format!(
             "SELECT id, event_name, team_name, kalshi_market_id, polymarket_market_id,
                     start_time, end_time, initial_profit_margin, max_profit_margin,
-                    kalshi_side, polymarket_side, update_count
+                    kalshi_side, polymarket_side, update_count,
+                    poly_ask_depth, kalshi_ask_depth, duration_ms
              FROM arbitrage_tracking
              WHERE {}
              ORDER BY {}
@@ -283,15 +341,9 @@ impl ArbitrageStorage {
             .query_map(&params_refs[..], |row| {
                 let start_time: String = row.get(5)?;
                 let end_time: Option<String> = row.get(6)?;
-                let start_dt = DateTime::parse_from_rfc3339(&start_time)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now());
-                let end_dt = end_time
-                    .as_ref()
-                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                    .map(|dt| dt.with_timezone(&Utc));
-
-                let duration = end_dt.map(|end| end.signed_duration_since(start_dt).num_seconds());
+                let duration_ms: i64 = row.get(14).unwrap_or(0);
+                let poly_depth: f64 = row.get(12).unwrap_or(0.0);
+                let kalshi_depth: i32 = row.get(13).unwrap_or(0);
 
                 Ok(serde_json::json!({
                     "id": row.get::<_, String>(0)?,
@@ -301,8 +353,11 @@ impl ArbitrageStorage {
                     "polymarket_market_id": row.get::<_, String>(4)?,
                     "start_time": start_time,
                     "end_time": end_time,
-                    "duration_seconds": duration,
+                    "duration_ms": duration_ms,
+                    "duration_seconds": duration_ms / 1000,
                     "max_profit_margin": row.get::<_, f64>(8)?,
+                    "poly_ask_depth": poly_depth,
+                    "kalshi_ask_depth": kalshi_depth,
                 }))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

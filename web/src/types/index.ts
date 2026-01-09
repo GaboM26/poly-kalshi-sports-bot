@@ -112,9 +112,13 @@ export interface TrackingRecord {
   start_time: string;
   end_time: string | null;
   duration_seconds: number | null;
+  duration_ms: number | null;  // 毫秒级持续时间
   max_profit_margin: number;
   max_profit_time: string | null;
   profit_history: ProfitHistoryEntry[];
+  // 深度信息
+  poly_ask_depth: number;  // Polymarket ask 深度 (USD)
+  kalshi_ask_depth: number;  // Kalshi ask 深度 (contracts)
 }
 
 export interface ActiveTracking {

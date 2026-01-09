@@ -251,6 +251,8 @@ impl ArbitrageCalculator {
             gross_profit,
             timestamp: Utc::now(),
             start_time: kalshi_market.start_time,
+            poly_ask_depth: 0.0,      // Will be set by WebSocketManager
+            kalshi_ask_depth: 0,      // Will be set by WebSocketManager
         })
     }
 }

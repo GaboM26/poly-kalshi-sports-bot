@@ -19,6 +19,7 @@ use parking_lot::RwLock;
 use tokio::sync::broadcast;
 use tracing::{debug, info};
 
+use crate::clients::{KalshiClient, PolymarketClient};
 use crate::core::{ArbitrageCalculator, EventMatcher};
 use crate::models::{
     ArbitrageOpportunity, ArbitrageTrackingRecord, MatchedMarket, MatchedMarketFrontend,
@@ -26,9 +27,6 @@ use crate::models::{
 };
 use crate::services::storage::ArbitrageStorage;
 use crate::services::metrics::{PerformanceMetrics, Operation};
-
-/// Tracking threshold for high-profit opportunities
-const TRACKING_THRESHOLD: f64 = 3.0;
 
 /// WebSocket manager for real-time price updates
 pub struct WebSocketManager {
@@ -64,6 +62,12 @@ pub struct WebSocketManager {
     polymarket_last_update_time: Arc<RwLock<Option<DateTime<Utc>>>>,
     /// Performance metrics
     metrics: Arc<PerformanceMetrics>,
+    /// Kalshi client for orderbook depth queries
+    kalshi_client: Option<KalshiClient>,
+    /// Polymarket client for orderbook depth queries
+    polymarket_client: Option<PolymarketClient>,
+    /// Tracking threshold for high-profit opportunities (percentage)
+    tracking_threshold: f64,
 }
 
 impl WebSocketManager {
@@ -71,6 +75,7 @@ impl WebSocketManager {
     pub fn new(
         min_profit_margin: f64,
         default_bet_amount: f64,
+        tracking_threshold: f64,
         storage: Arc<ArbitrageStorage>,
         metrics: Arc<PerformanceMetrics>,
     ) -> Self {
@@ -96,7 +101,36 @@ impl WebSocketManager {
             kalshi_last_update_time: Arc::new(RwLock::new(None)),
             polymarket_last_update_time: Arc::new(RwLock::new(None)),
             metrics,
+            kalshi_client: None,
+            polymarket_client: None,
+            tracking_threshold,
         }
+    }
+
+    /// Set clients for orderbook depth queries
+    pub fn set_clients(&mut self, kalshi: KalshiClient, polymarket: PolymarketClient) {
+        self.kalshi_client = Some(kalshi);
+        self.polymarket_client = Some(polymarket);
+    }
+
+    /// Get Polymarket ask depth for a token
+    fn get_poly_ask_depth(&self, token_id: &str, max_amount: f64) -> f64 {
+        if let Some(client) = &self.polymarket_client {
+            if let Some(book) = client.get_orderbook(token_id) {
+                return book.ask_depth(max_amount);
+            }
+        }
+        0.0
+    }
+
+    /// Get Kalshi ask depth for a market and side
+    fn get_kalshi_ask_depth(&self, ticker: &str, side: &str, max_contracts: i32) -> i32 {
+        if let Some(client) = &self.kalshi_client {
+            if let Some(book) = client.get_orderbook(ticker) {
+                return book.ask_depth_for_side(side, max_contracts);
+            }
+        }
+        0
     }
     
     /// Get a reference to the performance metrics
@@ -376,14 +410,36 @@ impl WebSocketManager {
             p_no,
         );
 
+        // Get depth info for this opportunity (save values before dropping)
+        // 获取自己和对手的 token，用于根据策略方向查询正确的深度
+        let poly_own_token = mm.polymarket_market.get_token_for_team(&mm.team_name).map(|s| s.to_string());
+        let poly_opponent_token = mm.polymarket_market.get_opponent(&mm.team_name)
+            .and_then(|opp_name| mm.polymarket_market.get_token_for_team(opp_name))
+            .map(|s| s.to_string());
+        let kalshi_ticker = mm.kalshi_market.market_id.clone();
+
         drop(markets);
 
-        if let Some(opp) = opportunity {
+        if let Some(mut opp) = opportunity {
+            // Get depth info (10 USD for poly, 10 contracts for kalshi)
+            // 根据 polymarket_side 选择正确的 token 查询深度
+            // "yes" = 买自己队伍的 token, "no" = 买对手队伍的 token
+            let poly_token_for_depth = if opp.polymarket_side == "yes" {
+                poly_own_token.as_ref()
+            } else {
+                poly_opponent_token.as_ref()
+            };
+            
+            if let Some(token_id) = poly_token_for_depth {
+                opp.poly_ask_depth = self.get_poly_ask_depth(token_id, 10.0);
+            }
+            opp.kalshi_ask_depth = self.get_kalshi_ask_depth(&kalshi_ticker, &opp.kalshi_side, 10);
+
             // Broadcast opportunity
             let _ = self.opportunity_tx.send(opp.clone());
 
             // Track high-profit opportunities
-            if opp.profit_margin >= TRACKING_THRESHOLD {
+            if opp.profit_margin >= self.tracking_threshold {
                 self.track_opportunity(&opp);
             }
 
@@ -418,7 +474,7 @@ impl WebSocketManager {
             record.update_count += 1;
             self.storage.track_update(&key, opp.profit_margin);
         } else {
-            // Start new tracking
+            // Start new tracking with depth info
             let record = ArbitrageTrackingRecord {
                 id: key.clone(),
                 event_name: opp.event_name.clone(),
@@ -432,11 +488,17 @@ impl WebSocketManager {
                 kalshi_side: opp.kalshi_side.clone(),
                 polymarket_side: opp.polymarket_side.clone(),
                 update_count: 1,
+                poly_ask_depth: opp.poly_ask_depth,
+                kalshi_ask_depth: opp.kalshi_ask_depth,
+                duration_ms: 0,  // Will be calculated on track_end
+                kalshi_ask_price: opp.kalshi_price,
+                polymarket_ask_price: opp.polymarket_price,
             };
 
             info!(
-                "📈 开始跟踪: {} {} - {:.2}%",
-                opp.event_name, opp.team_name, opp.profit_margin
+                "📈 开始跟踪: {} {} - {:.2}% (poly_depth: {:.2}, kalshi_depth: {})",
+                opp.event_name, opp.team_name, opp.profit_margin,
+                opp.poly_ask_depth, opp.kalshi_ask_depth
             );
 
             self.storage.track_start(record.clone());

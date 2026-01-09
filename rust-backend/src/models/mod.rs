@@ -303,6 +303,14 @@ pub struct ArbitrageOpportunity {
     /// Game start time
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_time: Option<DateTime<Utc>>,
+
+    // Depth info for liquidity tracking
+    /// Polymarket ask 侧深度 (USD)
+    #[serde(default)]
+    pub poly_ask_depth: f64,
+    /// Kalshi ask 侧深度 (contracts)
+    #[serde(default)]
+    pub kalshi_ask_depth: i32,
 }
 
 /// System statistics
@@ -340,6 +348,21 @@ pub struct ArbitrageTrackingRecord {
     pub polymarket_side: String,
     #[serde(default)]
     pub update_count: u64,
+    /// Polymarket ask 侧深度 (USD)
+    #[serde(default)]
+    pub poly_ask_depth: f64,
+    /// Kalshi ask 侧深度 (contracts)
+    #[serde(default)]
+    pub kalshi_ask_depth: i32,
+    /// 持续时间（毫秒）
+    #[serde(default)]
+    pub duration_ms: i64,
+    /// Kalshi ask 价格（用于套利的那一侧）
+    #[serde(default)]
+    pub kalshi_ask_price: f64,
+    /// Polymarket ask 价格（用于套利的那一侧）
+    #[serde(default)]
+    pub polymarket_ask_price: f64,
 }
 
 /// Order side

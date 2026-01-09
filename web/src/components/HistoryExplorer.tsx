@@ -16,9 +16,13 @@ interface HistoryRecord {
   start_time: string;
   end_time?: string;
   duration_seconds?: number;
+  duration_ms?: number;  // 毫秒级持续时间
   max_profit_margin: number;
   max_profit_time?: string;
   profit_history?: ProfitHistoryEntry[];
+  // 深度信息
+  poly_ask_depth?: number;  // Polymarket ask 深度 (USD)
+  kalshi_ask_depth?: number;  // Kalshi ask 深度 (contracts)
 }
 
 interface SearchResult {
@@ -371,8 +375,9 @@ export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
                       <th className="text-left px-4 py-3 font-medium">队伍</th>
                       <th className="text-right px-4 py-3 font-medium">最高利润</th>
                       <th className="text-right px-4 py-3 font-medium">持续时间</th>
+                      <th className="text-right px-4 py-3 font-medium">Poly深度</th>
+                      <th className="text-right px-4 py-3 font-medium">Kalshi深度</th>
                       <th className="text-left px-4 py-3 font-medium">开始时间</th>
-                      <th className="text-center px-4 py-3 font-medium">历史点</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -400,18 +405,27 @@ export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
                           </span>
                         </td>
                         <td className="px-4 py-3 text-right">
-                          <span className="text-sm text-[--text-secondary] tabular-nums">
-                            {formatDuration(record.duration_seconds)}
+                          <span className="text-sm text-[--text-secondary] tabular-nums" title={record.duration_ms ? `${record.duration_ms.toLocaleString()} ms` : ''}>
+                            {record.duration_ms ? formatDurationMs(record.duration_ms) : formatDuration(record.duration_seconds)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className={`text-sm tabular-nums ${
+                            (record.poly_ask_depth || 0) >= 10 ? 'text-[--accent-green]' : 'text-[--accent-red]'
+                          }`}>
+                            {record.poly_ask_depth ? `$${record.poly_ask_depth.toFixed(1)}` : '-'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <span className={`text-sm tabular-nums ${
+                            (record.kalshi_ask_depth || 0) >= 10 ? 'text-[--accent-green]' : 'text-[--accent-red]'
+                          }`}>
+                            {record.kalshi_ask_depth ? `${record.kalshi_ask_depth}` : '-'}
                           </span>
                         </td>
                         <td className="px-4 py-3">
                           <span className="text-xs text-[--text-muted]">
                             {formatDate(record.start_time)} {formatTime(record.start_time)}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <span className="text-xs text-[--text-muted]">
-                            {record.profit_history?.length || 0}
                           </span>
                         </td>
                       </tr>
@@ -655,8 +669,35 @@ export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
               <div className="bg-[--bg-tertiary] rounded p-3">
                 <div className="text-xs text-[--text-muted] mb-1">持续时间</div>
                 <div className="text-xl font-bold text-[--text-primary] tabular-nums">
-                  {formatDuration(selectedRecord.duration_seconds)}
+                  {selectedRecord.duration_ms ? formatDurationMs(selectedRecord.duration_ms) : formatDuration(selectedRecord.duration_seconds)}
                 </div>
+                {selectedRecord.duration_ms && (
+                  <div className="text-xs text-[--text-muted] mt-1">
+                    {selectedRecord.duration_ms.toLocaleString()} 毫秒
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 深度信息 */}
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div className="bg-[--bg-tertiary] rounded p-3">
+                <div className="text-xs text-[--text-muted] mb-1">Polymarket 深度</div>
+                <div className={`text-lg font-bold tabular-nums ${
+                  (selectedRecord.poly_ask_depth || 0) >= 10 ? 'text-[--accent-green]' : 'text-[--accent-red]'
+                }`}>
+                  {selectedRecord.poly_ask_depth ? `$${selectedRecord.poly_ask_depth.toFixed(2)}` : '-'}
+                </div>
+                <div className="text-xs text-[--text-muted] mt-1">USD 可用买入深度</div>
+              </div>
+              <div className="bg-[--bg-tertiary] rounded p-3">
+                <div className="text-xs text-[--text-muted] mb-1">Kalshi 深度</div>
+                <div className={`text-lg font-bold tabular-nums ${
+                  (selectedRecord.kalshi_ask_depth || 0) >= 10 ? 'text-[--accent-green]' : 'text-[--accent-red]'
+                }`}>
+                  {selectedRecord.kalshi_ask_depth ?? '-'}
+                </div>
+                <div className="text-xs text-[--text-muted] mt-1">合约数量</div>
               </div>
             </div>
 

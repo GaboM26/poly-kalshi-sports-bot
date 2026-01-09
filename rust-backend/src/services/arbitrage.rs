@@ -56,12 +56,18 @@ impl ArbitrageService {
         );
 
         // Create WebSocket manager with metrics
-        let ws_manager = Arc::new(WebSocketManager::new(
+        let mut ws_manager = WebSocketManager::new(
             config.settings.min_profit_margin,
             config.settings.default_bet_amount,
+            config.settings.tracking_threshold,
             storage.clone(),
             metrics.clone(),
-        ));
+        );
+
+        // Set clients for orderbook depth queries
+        ws_manager.set_clients(kalshi_client.clone(), polymarket_client.clone());
+
+        let ws_manager = Arc::new(ws_manager);
 
         Ok(Self {
             kalshi_client,

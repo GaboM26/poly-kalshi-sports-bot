@@ -48,7 +48,7 @@ refresh_interval = 5
 min_profit_margin = 1.0
 
 # 默认下注金额（美元）
-default_bet_amount = 100.0
+default_bet_amount = 10.0  # Testing phase amount
 
 [auth]
 # Web UI 登录认证配置
