@@ -69,6 +69,8 @@ export interface MatchedMarketData {
   team_name: string;
   kalshi_market_id: string;
   polymarket_market_id: string;
+  poly_token_id?: string;           // Polymarket token_id for Yes orderbook
+  poly_opponent_token_id?: string;  // Polymarket opponent token_id for No orderbook
   kalshi_yes_price: number;
   kalshi_no_price: number;
   poly_yes_price: number;
@@ -333,4 +335,20 @@ export interface ArbitrageExecuteResponse {
     amount?: number;
     error?: string;
   };
+}
+
+// 订单簿深度
+export interface SideDepth {
+  price?: number;
+  size?: number;
+}
+
+export interface PlatformDepthDual {
+  yes: SideDepth;
+  no: SideDepth;
+}
+
+export interface OrderbookDepthResponse {
+  kalshi?: PlatformDepthDual;
+  polymarket?: PlatformDepthDual;
 }

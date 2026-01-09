@@ -19,7 +19,7 @@ interface HeaderProps {
   username?: string | null;
 }
 
-export function Header({ isConnected, stats, totalProfit, lastUpdateTime, updateCount, dataCoverage, metrics, apiBaseUrl, onLogout, username }: HeaderProps) {
+export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastUpdateTime, updateCount, dataCoverage, metrics, apiBaseUrl, onLogout, username }: HeaderProps) {
   const [isFlashing, setIsFlashing] = useState(false);
   const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null);
   
@@ -52,14 +52,6 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
     const interval = setInterval(fetchBalance, 10000);
     return () => clearInterval(interval);
   }, [apiBaseUrl]);
-
-  const formatLastUpdate = () => {
-    if (!lastUpdateTime) return '--';
-    const seconds = Math.floor((Date.now() - lastUpdateTime.getTime()) / 1000);
-    if (seconds < 5) return 'Just now';
-    if (seconds < 60) return `${seconds}s ago`;
-    return `${Math.floor(seconds / 60)}m ago`;
-  };
 
   // 每秒刷新显示时间
   const [, setTick] = useState(0);
@@ -180,7 +172,16 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime, update
           {/* 用户信息 */}
           {username && (
             <div className="flex items-center gap-1 pl-2 border-l border-[--border-color]">
-              <span className="text-[10px] text-[--text-muted]">Guest</span>
+              <span className="text-[10px] text-[--text-secondary]">👤 {username}</span>
+              {onLogout && (
+                <button
+                  onClick={onLogout}
+                  className="text-[10px] text-[--text-muted] hover:text-red-400 transition-colors px-1"
+                  title="退出登录"
+                >
+                  退出
+                </button>
+              )}
             </div>
           )}
         </div>

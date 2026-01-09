@@ -4,6 +4,7 @@
 
 pub mod routes;
 pub mod websocket;
+pub mod static_files;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -81,8 +82,9 @@ pub async fn create_app(config: Config) -> Result<Router> {
     // Build router
     let app = Router::new()
         // Health check
-        .route("/", get(routes::health_check))
         .route("/api/health", get(routes::health_check))
+        // Authentication
+        .route("/api/auth/login", post(routes::login))
         // Stats and data
         .route("/api/stats", get(routes::get_stats))
         .route("/api/data-coverage", get(routes::get_data_coverage))
@@ -110,6 +112,8 @@ pub async fn create_app(config: Config) -> Result<Router> {
         // History search
         .route("/api/history/search", get(routes::search_history))
         .route("/api/history/statistics", get(routes::get_history_statistics))
+        // Orderbook depth
+        .route("/api/orderbook/depth", get(routes::get_orderbook_depth))
         // WebSocket
         .route("/ws", get(websocket::ws_handler))
         // Add state
@@ -121,9 +125,11 @@ pub async fn create_app(config: Config) -> Result<Router> {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
-        .layer(TraceLayer::new_for_http());
+        .layer(TraceLayer::new_for_http())
+        // Static files - must be last!
+        .fallback(static_files::static_handler);
 
-    info!("✅ API 路由配置完成");
+    info!("✅ API 路由配置完成（包含前端静态文件）");
 
     Ok(app)
 }

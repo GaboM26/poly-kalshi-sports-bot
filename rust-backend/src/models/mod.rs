@@ -385,6 +385,12 @@ pub struct MatchedMarketFrontend {
     pub team_name: String,
     pub kalshi_market_id: String,
     pub polymarket_market_id: String,
+    /// Polymarket token_id (asset_id) for Yes orderbook lookup
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poly_token_id: Option<String>,
+    /// Polymarket opponent token_id for No orderbook lookup
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poly_opponent_token_id: Option<String>,
     pub kalshi_yes_price: f64,
     pub kalshi_no_price: f64,
     pub poly_yes_price: f64,

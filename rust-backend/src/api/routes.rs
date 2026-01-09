@@ -8,8 +8,10 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use chrono::{Duration, Utc};
+use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
-use tracing::error;
+use tracing::{error, info};
 
 use super::AppState;
 
@@ -575,4 +577,185 @@ pub async fn get_history_statistics(State(state): State<Arc<AppState>>) -> impl 
                 .into_response()
         }
     }
+}
+
+// ==================== Authentication ====================
+
+/// Login request
+#[derive(Deserialize)]
+pub struct LoginRequest {
+    username: String,
+    password: String,
+}
+
+/// Login response
+#[derive(Serialize)]
+pub struct LoginResponse {
+    access_token: String,
+    token_type: String,
+    username: String,
+}
+
+/// JWT Claims
+#[derive(Serialize, Deserialize)]
+struct Claims {
+    sub: String,
+    exp: i64,
+    iat: i64,
+}
+
+/// Login endpoint
+pub async fn login(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<LoginRequest>,
+) -> impl IntoResponse {
+    let auth_config = &state.config.auth;
+
+    // Validate credentials
+    if req.username != auth_config.username || req.password != auth_config.password {
+        error!("登录失败: 用户名或密码错误 (username: {})", req.username);
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "detail": "用户名或密码错误"
+            })),
+        )
+            .into_response();
+    }
+
+    // Generate JWT token
+    let now = Utc::now();
+    let exp = now + Duration::hours(auth_config.token_expire_hours as i64);
+
+    let claims = Claims {
+        sub: req.username.clone(),
+        exp: exp.timestamp(),
+        iat: now.timestamp(),
+    };
+
+    let token = match encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(auth_config.secret_key.as_bytes()),
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            error!("生成 JWT 失败: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "detail": "生成 token 失败"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    info!("用户 {} 登录成功", req.username);
+
+    Json(LoginResponse {
+        access_token: token,
+        token_type: "Bearer".to_string(),
+        username: req.username,
+    })
+    .into_response()
+}
+
+/// Query params for orderbook depth
+#[derive(Deserialize)]
+pub struct OrderbookDepthQuery {
+    pub kalshi_ticker: Option<String>,
+    pub poly_token_id: Option<String>,
+    pub poly_opponent_token_id: Option<String>,
+}
+
+/// Depth for a single side (Yes or No)
+#[derive(Serialize, Default)]
+pub struct SideDepth {
+    pub price: Option<f64>,
+    pub size: Option<f64>,
+}
+
+/// Orderbook depth for a single platform with Yes/No
+#[derive(Serialize, Default)]
+pub struct PlatformDepthDual {
+    pub yes: SideDepth,
+    pub no: SideDepth,
+}
+
+/// Full orderbook depth response
+#[derive(Serialize)]
+pub struct OrderbookDepthResponse {
+    pub kalshi: Option<PlatformDepthDual>,
+    pub polymarket: Option<PlatformDepthDual>,
+}
+
+/// Get orderbook depth for specified markets
+pub async fn get_orderbook_depth(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<OrderbookDepthQuery>,
+) -> impl IntoResponse {
+    let service = state.service.read().await;
+    
+    // Get Kalshi orderbook depth (Yes and No)
+    let kalshi_depth = query.kalshi_ticker.as_ref().and_then(|ticker| {
+        service.kalshi_client.get_orderbook(ticker).map(|book| {
+            // Kalshi orderbook stores bids for yes and no sides
+            // Yes ask = 1 - No best bid, No ask = 1 - Yes best bid
+            let yes_best_bid = book.yes.last();
+            let no_best_bid = book.no.last();
+            
+            // Yes side: best ask price = 1 - no_best_bid, size from no side
+            let yes = if let Some((price_cents, qty)) = no_best_bid {
+                SideDepth {
+                    price: Some(1.0 - (*price_cents as f64 / 100.0)),
+                    size: Some(*qty as f64),
+                }
+            } else {
+                SideDepth::default()
+            };
+            
+            // No side: best ask price = 1 - yes_best_bid, size from yes side
+            let no = if let Some((price_cents, qty)) = yes_best_bid {
+                SideDepth {
+                    price: Some(1.0 - (*price_cents as f64 / 100.0)),
+                    size: Some(*qty as f64),
+                }
+            } else {
+                SideDepth::default()
+            };
+            
+            PlatformDepthDual { yes, no }
+        })
+    });
+    
+    // Get Polymarket orderbook depth (Yes from own token, No from opponent token)
+    let poly_yes = query.poly_token_id.as_ref().and_then(|token_id| {
+        service.polymarket_client.get_orderbook(token_id).and_then(|book| {
+            book.best_ask().map(|(price, size)| SideDepth {
+                price: Some(price),
+                size: Some(size),
+            })
+        })
+    }).unwrap_or_default();
+    
+    let poly_no = query.poly_opponent_token_id.as_ref().and_then(|token_id| {
+        service.polymarket_client.get_orderbook(token_id).and_then(|book| {
+            book.best_ask().map(|(price, size)| SideDepth {
+                price: Some(price),
+                size: Some(size),
+            })
+        })
+    }).unwrap_or_default();
+    
+    let poly_depth = if query.poly_token_id.is_some() || query.poly_opponent_token_id.is_some() {
+        Some(PlatformDepthDual { yes: poly_yes, no: poly_no })
+    } else {
+        None
+    };
+    
+    Json(OrderbookDepthResponse {
+        kalshi: kalshi_depth,
+        polymarket: poly_depth,
+    })
 }

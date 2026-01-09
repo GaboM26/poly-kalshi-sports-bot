@@ -52,6 +52,14 @@ parking_lot = "0.12"
 dashmap = "6"
 url = "2"
 rand = "0.8"
+jsonwebtoken = "9"
+
+# Static file embedding
+rust-embed = { version = "8.0", features = ["interpolate-folder-path"] }
+mime_guess = "2.0"
+
+# OpenSSL vendored for cross-compilation
+openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

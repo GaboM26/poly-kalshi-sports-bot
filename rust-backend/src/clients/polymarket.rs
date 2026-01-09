@@ -4,12 +4,15 @@
 //! - Market data retrieval from Gamma API
 //! - WebSocket price subscription
 //! - Order placement via CLOB client
+//! - Local orderbook maintenance for depth queries
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
+use parking_lot::RwLock;
 use reqwest::Client;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -19,6 +22,27 @@ use tracing::{error, info, warn};
 use crate::clob::{ApiCreds, ClobClient, MarketOrderArgs, Side, SignatureType};
 use crate::config::PolymarketConfig;
 use crate::models::{Platform, PolymarketEvent, PolymarketMarket, PriceUpdate};
+
+/// Polymarket order book structure (price, size)
+#[derive(Debug, Clone, Default)]
+pub struct PolyOrderBook {
+    /// Bids sorted by price ascending (best bid = last)
+    pub bids: Vec<(f64, f64)>,
+    /// Asks sorted by price descending (best ask = last)
+    pub asks: Vec<(f64, f64)>,
+}
+
+impl PolyOrderBook {
+    /// Get best bid (highest price)
+    pub fn best_bid(&self) -> Option<(f64, f64)> {
+        self.bids.last().copied()
+    }
+
+    /// Get best ask (lowest price)
+    pub fn best_ask(&self) -> Option<(f64, f64)> {
+        self.asks.last().copied()
+    }
+}
 
 const POLY_WS_URL: &str = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
 
@@ -39,6 +63,8 @@ pub struct PolymarketClient {
     http: Client,
     /// CLOB client for order operations
     clob: Option<Arc<ClobClient>>,
+    /// Order book cache: token_id -> PolyOrderBook
+    orderbook_cache: Arc<RwLock<HashMap<String, PolyOrderBook>>>,
 }
 
 impl PolymarketClient {
@@ -48,7 +74,13 @@ impl PolymarketClient {
             config,
             http: Client::new(),
             clob: None,
+            orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Get order book from cache
+    pub fn get_orderbook(&self, token_id: &str) -> Option<PolyOrderBook> {
+        self.orderbook_cache.read().get(token_id).cloned()
     }
 
     /// Initialize CLOB client with API credentials
@@ -485,12 +517,14 @@ impl PolymarketClient {
 
         info!("已订阅 {} 个 Polymarket 代币", token_ids.len());
 
+        let orderbook_cache = self.orderbook_cache.clone();
+
         // Process messages
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
-                    // Parse message - may return multiple updates (especially for price_change)
-                    let updates = Self::parse_ws_message(&text);
+                    // Parse message and update orderbook cache
+                    let updates = Self::parse_ws_message(&text, &orderbook_cache);
                     for update in updates {
                         if price_tx.send(update).await.is_err() {
                             warn!("价格更新通道已关闭");
@@ -513,14 +547,17 @@ impl PolymarketClient {
         Ok(())
     }
 
-    /// Parse WebSocket message
+    /// Parse WebSocket message and update orderbook cache
     /// 
     /// Supports two message formats (matching Python implementation):
     /// 1. `book` (initial orderbook snapshot): { "event_type": "book", "asset_id": "...", "bids": [...], "asks": [...] }
-    /// 2. `price_change` (real-time updates): { "event_type": "price_change", "price_changes": [{ "asset_id": "...", "best_bid": "...", "best_ask": "..." }, ...] }
+    /// 2. `price_change` (real-time updates): { "event_type": "price_change", "price_changes": [{ "asset_id": "...", "price": "...", "size": "...", "side": "..." }, ...] }
     /// 
     /// Returns a Vec because price_change messages can contain multiple asset updates.
-    fn parse_ws_message(text: &str) -> Vec<PriceUpdate> {
+    fn parse_ws_message(
+        text: &str,
+        orderbook_cache: &Arc<RwLock<HashMap<String, PolyOrderBook>>>,
+    ) -> Vec<PriceUpdate> {
         let mut updates = Vec::new();
         
         // Parse JSON - handle both single object and array format
@@ -537,7 +574,7 @@ impl PolymarketClient {
         };
         
         for data in items {
-            if let Some(parsed) = Self::parse_single_message(&data) {
+            if let Some(parsed) = Self::parse_single_message(&data, orderbook_cache) {
                 updates.extend(parsed);
             }
         }
@@ -546,12 +583,15 @@ impl PolymarketClient {
     }
     
     /// Parse a single message object
-    fn parse_single_message(data: &Value) -> Option<Vec<PriceUpdate>> {
+    fn parse_single_message(
+        data: &Value,
+        orderbook_cache: &Arc<RwLock<HashMap<String, PolyOrderBook>>>,
+    ) -> Option<Vec<PriceUpdate>> {
         let event_type = data.get("event_type").and_then(|v| v.as_str())?;
         
         match event_type {
-            "book" => Self::parse_book_message(data),
-            "price_change" => Self::parse_price_change_message(data),
+            "book" => Self::parse_book_message(data, orderbook_cache),
+            "price_change" => Self::parse_price_change_message(data, orderbook_cache),
             "connected" => None, // Ignore connection confirmation messages
             _ => None,
         }
@@ -562,24 +602,64 @@ impl PolymarketClient {
     /// Format: { "event_type": "book", "asset_id": "...", "bids": [...], "asks": [...] }
     /// - bids: sorted ascending by price, best bid (highest) is last
     /// - asks: sorted descending by price, best ask (lowest) is last
-    fn parse_book_message(data: &Value) -> Option<Vec<PriceUpdate>> {
+    fn parse_book_message(
+        data: &Value,
+        orderbook_cache: &Arc<RwLock<HashMap<String, PolyOrderBook>>>,
+    ) -> Option<Vec<PriceUpdate>> {
         let asset_id = data.get("asset_id").and_then(|v| v.as_str())?.to_string();
         let bids = data.get("bids").and_then(|v| v.as_array())?;
         let asks = data.get("asks").and_then(|v| v.as_array())?;
         
-        // Best bid = highest price (last element, bids sorted ascending)
-        let yes_bid = if !bids.is_empty() {
-            bids.last().and_then(|entry| Self::extract_price_from_entry(entry))
-        } else {
-            None
-        };
+        // Build orderbook from snapshot
+        let mut book = PolyOrderBook::default();
         
-        // Best ask = lowest price (last element, asks sorted descending)
-        let yes_ask = if !asks.is_empty() {
-            asks.last().and_then(|entry| Self::extract_price_from_entry(entry))
-        } else {
-            None
-        };
+        for entry in bids {
+            if let Some((price, size)) = Self::extract_price_size_from_entry(entry) {
+                book.bids.push((price, size));
+            }
+        }
+        
+        for entry in asks {
+            if let Some((price, size)) = Self::extract_price_size_from_entry(entry) {
+                book.asks.push((price, size));
+            }
+        }
+        
+        // Sort: bids ascending by price, asks descending by price
+        book.bids.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        book.asks.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        
+        // Get best prices for PriceUpdate
+        let yes_bid = book.best_bid().map(|(p, _)| p);
+        let yes_ask = book.best_ask().map(|(p, _)| p);
+        
+        // #region agent log
+        {
+            use std::io::Write;
+            let log_entry = serde_json::json!({
+                "hypothesisId": "A,C",
+                "location": "polymarket.rs:parse_book_message",
+                "message": "book snapshot parsed",
+                "data": {
+                    "asset_id": asset_id,
+                    "bids_count": book.bids.len(),
+                    "asks_count": book.asks.len(),
+                    "best_bid": yes_bid,
+                    "best_ask": yes_ask,
+                    "first_3_asks": book.asks.iter().take(3).collect::<Vec<_>>(),
+                    "last_3_asks": book.asks.iter().rev().take(3).collect::<Vec<_>>()
+                },
+                "timestamp": chrono::Utc::now().timestamp_millis(),
+                "sessionId": "debug-session"
+            });
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
+                let _ = writeln!(f, "{}", log_entry);
+            }
+        }
+        // #endregion
+        
+        // Store in cache
+        orderbook_cache.write().insert(asset_id.clone(), book);
         
         Some(vec![PriceUpdate {
             platform: Platform::Polymarket,
@@ -594,8 +674,11 @@ impl PolymarketClient {
     
     /// Parse price_change message (real-time price updates)
     /// 
-    /// Format: { "event_type": "price_change", "market": "...", "price_changes": [{ "asset_id": "...", "best_bid": "...", "best_ask": "..." }, ...] }
-    fn parse_price_change_message(data: &Value) -> Option<Vec<PriceUpdate>> {
+    /// Format: { "event_type": "price_change", "price_changes": [{ "asset_id": "...", "price": "...", "size": "...", "side": "BUY"|"SELL", "best_bid": "...", "best_ask": "..." }, ...] }
+    fn parse_price_change_message(
+        data: &Value,
+        orderbook_cache: &Arc<RwLock<HashMap<String, PolyOrderBook>>>,
+    ) -> Option<Vec<PriceUpdate>> {
         let price_changes = data.get("price_changes").and_then(|v| v.as_array())?;
         let mut updates = Vec::new();
         
@@ -605,27 +688,114 @@ impl PolymarketClient {
                 None => continue,
             };
             
-            // Parse best_bid - can be string, number, null, or empty string
-            let yes_bid = change.get("best_bid").and_then(|v| {
-                if v.is_null() {
-                    None
-                } else if let Some(s) = v.as_str() {
-                    if s.is_empty() { None } else { s.parse().ok() }
-                } else {
-                    v.as_f64()
-                }
-            });
+            // Update orderbook cache with price/size/side delta
+            let delta_price = change.get("price").and_then(|v| Self::parse_string_or_number(v));
+            let delta_size = change.get("size").and_then(|v| Self::parse_string_or_number(v));
+            let delta_side = change.get("side").and_then(|v| v.as_str());
             
-            // Parse best_ask - can be string, number, null, or empty string
-            let yes_ask = change.get("best_ask").and_then(|v| {
-                if v.is_null() {
-                    None
-                } else if let Some(s) = v.as_str() {
-                    if s.is_empty() { None } else { s.parse().ok() }
+            if let (Some(price), Some(size), Some(side)) = (delta_price, delta_size, delta_side) {
+                let mut cache = orderbook_cache.write();
+                let book = cache.entry(asset_id.clone()).or_insert_with(PolyOrderBook::default);
+                
+                let book_side = if side.to_uppercase() == "BUY" {
+                    &mut book.bids
                 } else {
-                    v.as_f64()
+                    &mut book.asks
+                };
+                
+                // Find existing price level and update or insert
+                if let Some(pos) = book_side.iter().position(|(p, _)| (*p - price).abs() < 0.0001) {
+                    if size <= 0.0 {
+                        // Remove level if size is 0
+                        book_side.remove(pos);
+                    } else {
+                        // Update size
+                        book_side[pos].1 = size;
+                    }
+                } else if size > 0.0 {
+                    // Insert new level
+                    book_side.push((price, size));
+                    // Re-sort: bids ascending, asks descending
+                    if side.to_uppercase() == "BUY" {
+                        book_side.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                    } else {
+                        book_side.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                    }
                 }
-            });
+            }
+            
+            // Parse best_bid/best_ask for PriceUpdate (fallback to cache if not provided)
+            let raw_best_bid = change.get("best_bid");
+            let raw_best_ask = change.get("best_ask");
+            let parsed_bid = raw_best_bid.and_then(|v| Self::parse_string_or_number(v));
+            let parsed_ask = raw_best_ask.and_then(|v| Self::parse_string_or_number(v));
+            
+            // #region agent log
+            {
+                use std::io::Write;
+                let cache_ask = orderbook_cache.read().get(&asset_id).and_then(|b| b.best_ask()).map(|(p, _)| p);
+                let cache_bid = orderbook_cache.read().get(&asset_id).and_then(|b| b.best_bid()).map(|(p, _)| p);
+                // Only log for CHI-MIA related tokens
+                if asset_id.contains("9451577629") || asset_id.contains("1621588904") {
+                    let log_entry = serde_json::json!({
+                        "hypothesisId": "B,E",
+                        "location": "polymarket.rs:parse_price_change",
+                        "message": "price_change parsing",
+                        "data": {
+                            "asset_id": asset_id,
+                            "delta_price": delta_price,
+                            "delta_size": delta_size,
+                            "delta_side": delta_side,
+                            "raw_best_bid": format!("{:?}", raw_best_bid),
+                            "raw_best_ask": format!("{:?}", raw_best_ask),
+                            "parsed_bid": parsed_bid,
+                            "parsed_ask": parsed_ask,
+                            "cache_bid_after_update": cache_bid,
+                            "cache_ask_after_update": cache_ask
+                        },
+                        "timestamp": chrono::Utc::now().timestamp_millis(),
+                        "sessionId": "debug-session"
+                    });
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
+                        let _ = writeln!(f, "{}", log_entry);
+                    }
+                }
+            }
+            // #endregion
+            
+            // 重要修复: 始终从本地订单簿缓存获取 best_ask
+            // Polymarket 的 price_change 消息中的 best_ask 字段不可信（可能是过时的）
+            // 我们自己维护的订单簿是通过 delta 更新的，更准确
+            let cache_bid_final = orderbook_cache.read().get(&asset_id).and_then(|b| b.best_bid()).map(|(p, _)| p);
+            let cache_ask_final = orderbook_cache.read().get(&asset_id).and_then(|b| b.best_ask()).map(|(p, _)| p);
+            
+            let yes_bid = cache_bid_final.or(parsed_bid);
+            let yes_ask = cache_ask_final.or(parsed_ask);
+            
+            // #region agent log - final values
+            if asset_id.contains("9451577629") || asset_id.contains("1621588904") {
+                use std::io::Write;
+                let log_entry = serde_json::json!({
+                    "hypothesisId": "FINAL",
+                    "location": "polymarket.rs:final_yes_ask",
+                    "message": "final PriceUpdate values",
+                    "data": {
+                        "asset_id": asset_id,
+                        "cache_bid_final": cache_bid_final,
+                        "cache_ask_final": cache_ask_final,
+                        "parsed_bid": parsed_bid,
+                        "parsed_ask": parsed_ask,
+                        "yes_bid_result": yes_bid,
+                        "yes_ask_result": yes_ask
+                    },
+                    "timestamp": chrono::Utc::now().timestamp_millis(),
+                    "sessionId": "debug-session"
+                });
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
+                    let _ = writeln!(f, "{}", log_entry);
+                }
+            }
+            // #endregion
             
             updates.push(PriceUpdate {
                 platform: Platform::Polymarket,
@@ -645,11 +815,23 @@ impl PolymarketClient {
         }
     }
     
+    /// Parse a value that can be string or number
+    fn parse_string_or_number(v: &Value) -> Option<f64> {
+        if v.is_null() {
+            None
+        } else if let Some(s) = v.as_str() {
+            if s.is_empty() { None } else { s.parse().ok() }
+        } else {
+            v.as_f64()
+        }
+    }
+    
     /// Extract price from an orderbook entry
     /// 
     /// Entry can be either:
     /// - Object: { "price": "0.50", "size": "100" }
     /// - Array: [0.50, 100] (price, size)
+    #[allow(dead_code)]
     fn extract_price_from_entry(entry: &Value) -> Option<f64> {
         if let Some(obj) = entry.as_object() {
             // Object format: { "price": "0.50", ... }
@@ -661,6 +843,27 @@ impl PolymarketClient {
             arr.first().and_then(|p| {
                 p.as_str().and_then(|s| s.parse().ok()).or(p.as_f64())
             })
+        } else {
+            None
+        }
+    }
+
+    /// Extract price and size from an orderbook entry
+    /// 
+    /// Entry can be either:
+    /// - Object: { "price": "0.50", "size": "100" }
+    /// - Array: [price, size]
+    fn extract_price_size_from_entry(entry: &Value) -> Option<(f64, f64)> {
+        if let Some(obj) = entry.as_object() {
+            // Object format: { "price": "0.50", "size": "100" }
+            let price = obj.get("price").and_then(|p| Self::parse_string_or_number(p))?;
+            let size = obj.get("size").and_then(|s| Self::parse_string_or_number(s))?;
+            Some((price, size))
+        } else if let Some(arr) = entry.as_array() {
+            // Array format: [price, size]
+            let price = arr.first().and_then(|p| Self::parse_string_or_number(p))?;
+            let size = arr.get(1).and_then(|s| Self::parse_string_or_number(s))?;
+            Some((price, size))
         } else {
             None
         }

@@ -151,6 +151,11 @@ impl KalshiClient {
         Ok(balance / 100.0) // Convert cents to dollars
     }
 
+    /// Get order book from cache
+    pub fn get_orderbook(&self, ticker: &str) -> Option<OrderBook> {
+        self.orderbook_cache.read().get(ticker).cloned()
+    }
+
     /// Get NBA events and markets
     pub async fn get_nba_events_and_markets(&self) -> Result<(Vec<KalshiEvent>, Vec<KalshiMarket>)>
     {

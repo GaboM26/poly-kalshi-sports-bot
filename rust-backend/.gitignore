@@ -37,3 +37,6 @@ Thumbs.db
 *.tmp
 *.bak
 *.orig
+
+# 前端静态文件（构建时复制）
+static/

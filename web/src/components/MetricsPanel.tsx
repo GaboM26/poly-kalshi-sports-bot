@@ -5,31 +5,6 @@ interface MetricsPanelProps {
 }
 
 export function MetricsPanel({ metrics }: MetricsPanelProps) {
-  // 格式化延迟显示
-  const formatLatency = (latencyMs?: number) => {
-    if (latencyMs === undefined || latencyMs === null) return '--';
-    if (latencyMs < 1000) return `${latencyMs}ms`;
-    return `${(latencyMs / 1000).toFixed(1)}s`;
-  };
-
-  // 获取延迟颜色
-  const getLatencyColor = (latencyMs?: number) => {
-    if (latencyMs === undefined || latencyMs === null) return 'text-gray-500';
-    if (latencyMs < 100) return 'text-green-400';
-    if (latencyMs < 500) return 'text-yellow-400';
-    if (latencyMs < 2000) return 'text-orange-400';
-    return 'text-red-400';
-  };
-
-  // 获取延迟背景色
-  const getLatencyBg = (latencyMs?: number) => {
-    if (latencyMs === undefined || latencyMs === null) return 'bg-gray-500/10';
-    if (latencyMs < 100) return 'bg-green-500/10';
-    if (latencyMs < 500) return 'bg-yellow-500/10';
-    if (latencyMs < 2000) return 'bg-orange-500/10';
-    return 'bg-red-500/10';
-  };
-
   if (!metrics) {
     return (
       <div className="p-3 h-full flex flex-col items-center justify-center">

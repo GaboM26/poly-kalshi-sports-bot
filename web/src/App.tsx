@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Header } from './components/Header';
+import { Login } from './components/Login';
 import { OpportunityList } from './components/OpportunityList';
 import { TrackingPanel } from './components/TrackingPanel';
 import { ArbitrageHistory } from './components/ArbitrageHistory';
@@ -8,17 +9,39 @@ import { OrderPanel } from './components/OrderPanel';
 import { OrderForm } from './components/OrderForm';
 import { MetricsPanel } from './components/MetricsPanel';
 import { useWebSocket } from './hooks/useWebSocket';
-import { MatchedMarketData } from './types';
+import { MatchedMarketData, OrderbookDepthResponse } from './types';
 
 function App() {
-  // 登录状态管理 - Rust 后端暂时不需要认证
-  const [currentUsername] = useState<string | null>('Guest'); // 默认用户名
+  // 登录状态管理
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [currentUsername, setCurrentUsername] = useState<string | null>(null);
 
-  // 退出登录（暂时禁用）
-  const handleLogout = () => {
-    // Rust 后端暂时不支持认证
-    console.log('Logout disabled for Rust backend');
+  // 初始化时检查 localStorage 中的 token
+  useEffect(() => {
+    const token = localStorage.getItem('auth_token');
+    const username = localStorage.getItem('username');
+    if (token && username) {
+      setIsAuthenticated(true);
+      setCurrentUsername(username);
+    }
+  }, []);
+
+  // 登录成功处理
+  const handleLoginSuccess = (token: string, username: string) => {
+    localStorage.setItem('auth_token', token);
+    localStorage.setItem('username', username);
+    setIsAuthenticated(true);
+    setCurrentUsername(username);
   };
+
+  // 退出登录
+  const handleLogout = () => {
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('username');
+    setIsAuthenticated(false);
+    setCurrentUsername(null);
+  };
+
   const wsUrl = useMemo(() => {
     const devPorts = ['5175', '5176', '5177', '5173'];
     const isDev = devPorts.includes(window.location.port);
@@ -44,8 +67,48 @@ function App() {
   const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking'>('detail');
   const [leftBottomTab, setLeftBottomTab] = useState<'positions' | 'history'>('positions');
   const [showHistoryExplorer, setShowHistoryExplorer] = useState(false);
+  const [orderbookDepth, setOrderbookDepth] = useState<OrderbookDepthResponse | null>(null);
 
-  // Rust 后端暂时不需要登录验证
+  // 获取订单簿深度
+  const fetchOrderbookDepth = useCallback(async (market: MatchedMarketData) => {
+    try {
+      const params = new URLSearchParams();
+      if (market.kalshi_market_id) {
+        params.append('kalshi_ticker', market.kalshi_market_id);
+      }
+      // Polymarket: Yes 深度用 own token，No 深度用 opponent token
+      if (market.poly_token_id) {
+        params.append('poly_token_id', market.poly_token_id);
+      }
+      if (market.poly_opponent_token_id) {
+        params.append('poly_opponent_token_id', market.poly_opponent_token_id);
+      }
+      const response = await fetch(`${apiBaseUrl}/api/orderbook/depth?${params}`);
+      if (response.ok) {
+        const data = await response.json();
+        setOrderbookDepth(data);
+      }
+    } catch (error) {
+      console.error('获取订单簿深度失败:', error);
+    }
+  }, [apiBaseUrl]);
+
+  // 选中市场变化时获取深度
+  useEffect(() => {
+    if (selectedMarket) {
+      fetchOrderbookDepth(selectedMarket);
+      // 每 3 秒刷新一次深度
+      const interval = setInterval(() => fetchOrderbookDepth(selectedMarket), 3000);
+      return () => clearInterval(interval);
+    } else {
+      setOrderbookDepth(null);
+    }
+  }, [selectedMarket, fetchOrderbookDepth]);
+
+  // 未登录时显示登录页面
+  if (!isAuthenticated) {
+    return <Login onLoginSuccess={handleLoginSuccess} apiBaseUrl={apiBaseUrl} />;
+  }
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
@@ -206,48 +269,94 @@ function App() {
                         )}
                       </div>
 
-                      {/* 价格对比 - 紧凑布局 */}
-                      <div className="bg-[--bg-tertiary] rounded p-2">
-                        <div className="text-[10px] text-[--text-muted] mb-1.5">价格对比</div>
-                        
+                      {/* 价格与深度 - 两平台并排 */}
+                      <div className="grid grid-cols-2 gap-2">
                         {/* Kalshi */}
-                        <div className="mb-1.5 pb-1.5 border-b border-[--border-color]">
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-[10px] text-blue-400 font-medium">Kalshi</span>
-                          </div>
-                          <div className="flex justify-between items-center">
-                            <div className="flex items-center gap-1">
-                              <span className="text-[9px] text-[--text-muted]">Yes</span>
-                              <span className="text-xs text-green-400 font-mono font-semibold">
-                                {(selectedMarket.kalshi_yes_price * 100).toFixed(0)}¢
-                              </span>
+                        <div className="bg-[--bg-tertiary] rounded p-2">
+                          <div className="text-[10px] text-blue-400 font-medium mb-1.5">Kalshi</div>
+                          <div className="space-y-1">
+                            {/* Yes */}
+                            <div className="space-y-0.5">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[9px] text-green-400 font-medium">Yes</span>
+                                <span className="text-xs text-[--text-primary] font-mono font-semibold">
+                                  {(selectedMarket.kalshi_yes_price * 100).toFixed(0)}¢
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between text-[9px]">
+                                <span className="text-cyan-400 font-mono">
+                                  ×{orderbookDepth?.kalshi?.yes?.size?.toFixed(0) ?? '-'}
+                                </span>
+                                <span className="text-yellow-400 font-mono">
+                                  ${orderbookDepth?.kalshi?.yes?.price != null && orderbookDepth?.kalshi?.yes?.size != null 
+                                    ? (orderbookDepth.kalshi.yes.price * orderbookDepth.kalshi.yes.size).toFixed(0) 
+                                    : '-'}
+                                </span>
+                              </div>
                             </div>
-                            <div className="flex items-center gap-1">
-                              <span className="text-[9px] text-[--text-muted]">No</span>
-                              <span className="text-xs text-red-400 font-mono font-semibold">
-                                {(selectedMarket.kalshi_no_price * 100).toFixed(0)}¢
-                              </span>
+                            {/* No */}
+                            <div className="space-y-0.5 pt-1 border-t border-[--border-color]">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[9px] text-red-400 font-medium">No</span>
+                                <span className="text-xs text-[--text-primary] font-mono font-semibold">
+                                  {(selectedMarket.kalshi_no_price * 100).toFixed(0)}¢
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between text-[9px]">
+                                <span className="text-cyan-400 font-mono">
+                                  ×{orderbookDepth?.kalshi?.no?.size?.toFixed(0) ?? '-'}
+                                </span>
+                                <span className="text-yellow-400 font-mono">
+                                  ${orderbookDepth?.kalshi?.no?.price != null && orderbookDepth?.kalshi?.no?.size != null 
+                                    ? (orderbookDepth.kalshi.no.price * orderbookDepth.kalshi.no.size).toFixed(0) 
+                                    : '-'}
+                                </span>
+                              </div>
                             </div>
                           </div>
                         </div>
 
                         {/* Polymarket */}
-                        <div>
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-[10px] text-purple-400 font-medium">Polymarket</span>
-                          </div>
-                          <div className="flex justify-between items-center">
-                            <div className="flex items-center gap-1">
-                              <span className="text-[9px] text-[--text-muted]">Yes</span>
-                              <span className="text-xs text-green-400 font-mono font-semibold">
-                                {(selectedMarket.poly_yes_price * 100).toFixed(0)}¢
-                              </span>
+                        <div className="bg-[--bg-tertiary] rounded p-2">
+                          <div className="text-[10px] text-purple-400 font-medium mb-1.5">Polymarket</div>
+                          <div className="space-y-1">
+                            {/* Yes */}
+                            <div className="space-y-0.5">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[9px] text-green-400 font-medium">Yes</span>
+                                <span className="text-xs text-[--text-primary] font-mono font-semibold">
+                                  {(selectedMarket.poly_yes_price * 100).toFixed(0)}¢
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between text-[9px]">
+                                <span className="text-cyan-400 font-mono">
+                                  ×{orderbookDepth?.polymarket?.yes?.size?.toFixed(0) ?? '-'}
+                                </span>
+                                <span className="text-yellow-400 font-mono">
+                                  ${orderbookDepth?.polymarket?.yes?.price != null && orderbookDepth?.polymarket?.yes?.size != null 
+                                    ? (orderbookDepth.polymarket.yes.price * orderbookDepth.polymarket.yes.size).toFixed(0) 
+                                    : '-'}
+                                </span>
+                              </div>
                             </div>
-                            <div className="flex items-center gap-1">
-                              <span className="text-[9px] text-[--text-muted]">No</span>
-                              <span className="text-xs text-red-400 font-mono font-semibold">
-                                {(selectedMarket.poly_no_price * 100).toFixed(0)}¢
-                              </span>
+                            {/* No */}
+                            <div className="space-y-0.5 pt-1 border-t border-[--border-color]">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[9px] text-red-400 font-medium">No</span>
+                                <span className="text-xs text-[--text-primary] font-mono font-semibold">
+                                  {(selectedMarket.poly_no_price * 100).toFixed(0)}¢
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between text-[9px]">
+                                <span className="text-cyan-400 font-mono">
+                                  ×{orderbookDepth?.polymarket?.no?.size?.toFixed(0) ?? '-'}
+                                </span>
+                                <span className="text-yellow-400 font-mono">
+                                  ${orderbookDepth?.polymarket?.no?.price != null && orderbookDepth?.polymarket?.no?.size != null 
+                                    ? (orderbookDepth.polymarket.no.price * orderbookDepth.polymarket.no.size).toFixed(0) 
+                                    : '-'}
+                                </span>
+                              </div>
                             </div>
                           </div>
                         </div>

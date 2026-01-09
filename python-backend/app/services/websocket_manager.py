@@ -550,12 +550,12 @@ class WebSocketManager:
             coverage = self.get_data_coverage()
             self.log(f"📊 [Polymarket] 消息 #{self.polymarket_update_count} | 数据覆盖: K={coverage['kalshi_coverage']}, P={coverage['polymarket_coverage']}, 完整={coverage['full_coverage']}")
         
-        # 更新 token 价格缓存 - 使用 Ask 价格（买入价格）
+        # 更新 token 价格缓存 - 只使用 Ask 价格（买入价格）
         # 套利需要买入，所以必须使用 Ask 价格
-        yes_price = update.yes_ask if update.yes_ask else update.yes_bid
-        
-        if yes_price is not None:
-            self.poly_token_prices[update.market_id] = yes_price
+        # 不 fallback 到 Bid，如果没有 Ask 就保持之前的缓存值
+        if update.yes_ask is not None:
+            ask_price = update.yes_ask
+            self.poly_token_prices[update.market_id] = ask_price
             
             # 找到使用该 token 的所有配对市场
             if update.market_id in self.market_lookup:
@@ -565,10 +565,10 @@ class WebSocketManager:
                     
                     if update.market_id == own_token:
                         # 自己的 token → 更新 yes_price
-                        mm.poly_yes_price = yes_price
+                        mm.poly_yes_price = ask_price
                     else:
                         # 对手的 token → 更新 no_price (对手的 yes = 自己的 no)
-                        mm.poly_no_price = yes_price
+                        mm.poly_no_price = ask_price
                     
                     self._calculate_and_notify(mm)
             elif self.polymarket_update_count <= 5:
