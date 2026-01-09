@@ -826,6 +826,34 @@ impl WebSocketManager {
         self.storage.clone()
     }
 
+    /// Get Polymarket token ID for a specific team based on side
+    /// 
+    /// # Arguments
+    /// * `event_name` - Event name (e.g., "MEM-LAL")
+    /// * `team_name` - Team name (e.g., "MEM")
+    /// * `side` - "yes" for team wins, "no" for team loses (opponent wins)
+    /// 
+    /// # Returns
+    /// Token ID if found, None otherwise
+    pub fn get_poly_token_for_side(&self, event_name: &str, team_name: &str, side: &str) -> Option<String> {
+        let markets = self.matched_markets.read();
+        
+        markets.iter()
+            .find(|mm| mm.event_name == event_name && mm.team_name == team_name)
+            .and_then(|mm| {
+                if side == "yes" {
+                    // Buy team wins -> use team's own token
+                    mm.polymarket_market.get_token_for_team(team_name)
+                        .map(|s| s.to_string())
+                } else {
+                    // Buy team loses (opponent wins) -> use opponent's token
+                    mm.polymarket_market.get_opponent(team_name)
+                        .and_then(|opponent| mm.polymarket_market.get_token_for_team(opponent))
+                        .map(|s| s.to_string())
+                }
+            })
+    }
+
     /// Get matched markets formatted for frontend
     /// This is the key function that converts internal MatchedMarket to frontend format
     pub fn get_matched_markets_for_frontend(&self) -> Vec<MatchedMarketFrontend> {

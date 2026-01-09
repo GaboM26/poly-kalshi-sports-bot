@@ -21,12 +21,12 @@ use tracing::debug;
 
 use crate::models::{ArbitrageOpportunity, KalshiMarket, PolymarketMarket};
 
-/// Arbitrage calculator
+/// Arbitrage calculator using Fixed Contract Strategy
 pub struct ArbitrageCalculator {
     /// Minimum profit margin to report
     min_profit_margin: f64,
-    /// Default bet amount
-    default_bet_amount: f64,
+    /// Fixed contract count for both platforms (e.g., 10 contracts)
+    fixed_contract_count: f64,
 }
 
 /// Kalshi trading fee rate
@@ -34,10 +34,14 @@ const KALSHI_TRADING_FEE_RATE: f64 = 0.07;
 
 impl ArbitrageCalculator {
     /// Create a new arbitrage calculator
-    pub fn new(min_profit_margin: f64, default_bet_amount: f64) -> Self {
+    /// 
+    /// # Arguments
+    /// * `min_profit_margin` - Minimum profit margin percentage to report (e.g., 0.1 = 0.1%)
+    /// * `fixed_contract_count` - Fixed number of contracts to buy on each platform (e.g., 10)
+    pub fn new(min_profit_margin: f64, fixed_contract_count: f64) -> Self {
         Self {
             min_profit_margin,
-            default_bet_amount,
+            fixed_contract_count,
         }
     }
 
@@ -154,7 +158,13 @@ impl ArbitrageCalculator {
         true
     }
 
-    /// Calculate a single strategy's arbitrage (including Kalshi Trading Fee)
+    /// Calculate a single strategy's arbitrage using Fixed Contract Strategy
+    /// 
+    /// Fixed Contract Strategy:
+    /// - Buy same number of contracts on both platforms (default 10)
+    /// - Guaranteed return = N × $1 (whichever side wins)
+    /// - Total cost = N × kalshi_price + N × poly_price + kalshi_fee
+    /// - Profit = N - total_cost
     #[allow(clippy::too_many_arguments)]
     fn calculate_strategy(
         &self,
@@ -171,35 +181,33 @@ impl ArbitrageCalculator {
         polymarket_yes_price: f64,
         polymarket_no_price: f64,
     ) -> Option<ArbitrageOpportunity> {
-        // Calculate implied probability sum
+        // Basic arbitrage condition: price sum < 1
         let implied_prob_sum = kalshi_price + polymarket_price;
-
-        // If sum >= 1, no arbitrage opportunity
         if implied_prob_sum >= 1.0 {
             return None;
         }
 
-        // Calculate optimal bet amounts
-        let total_bet = self.default_bet_amount;
-        let guaranteed_return = total_bet / implied_prob_sum;
-
-        let kalshi_bet = guaranteed_return * kalshi_price;
-        let polymarket_bet = guaranteed_return * polymarket_price;
-
-        // Calculate Kalshi contract count and trading fee
-        // Contract count = bet amount / contract price
-        let kalshi_contracts = if kalshi_price > 0.0 {
-            kalshi_bet / kalshi_price
-        } else {
-            0.0
-        };
-        let kalshi_fee = self.calculate_kalshi_trading_fee(kalshi_contracts, kalshi_price);
-
-        // Calculate expected profit after fees
-        let gross_profit = guaranteed_return - total_bet;
-        let expected_profit = gross_profit - kalshi_fee;
-
-        // Calculate profit margin after fees
+        // Fixed Contract Strategy: buy same number of contracts on both platforms
+        let fixed_contracts = self.fixed_contract_count;
+        
+        // Calculate actual costs
+        let kalshi_bet = fixed_contracts * kalshi_price;
+        let polymarket_bet = fixed_contracts * polymarket_price;
+        
+        // Calculate Kalshi trading fee: fee = ceil(0.07 × C × P × (1-P))
+        let kalshi_fee = self.calculate_kalshi_trading_fee(fixed_contracts, kalshi_price);
+        
+        // Total investment including fee
+        let total_bet = kalshi_bet + kalshi_fee + polymarket_bet;
+        
+        // Guaranteed return: N contracts × $1 = $N (whichever side wins)
+        let guaranteed_return = fixed_contracts;
+        
+        // Calculate profit
+        let gross_profit = guaranteed_return - (kalshi_bet + polymarket_bet);
+        let expected_profit = guaranteed_return - total_bet;
+        
+        // Calculate profit margin (after fees)
         let profit_margin = if total_bet > 0.0 {
             (expected_profit / total_bet) * 100.0
         } else {
@@ -212,20 +220,20 @@ impl ArbitrageCalculator {
         }
 
         debug!(
-            "💰 Arbitrage opportunity: {} - {}",
+            "💰 Arbitrage (Fixed Contract): {} - {}",
             event_name, team_name
         );
         debug!(
-            "   Kalshi {}: {:.2}, Poly {}: {:.2}",
-            kalshi_side, kalshi_price, polymarket_side, polymarket_price
+            "   Kalshi {}: {:.2}¢, Poly {}: {:.2}¢, Sum: {:.4}",
+            kalshi_side, kalshi_price * 100.0, polymarket_side, polymarket_price * 100.0, implied_prob_sum
         );
         debug!(
-            "   Contracts: {:.0}, Kalshi fee: ${:.2}",
-            kalshi_contracts, kalshi_fee
+            "   Fixed contracts: {:.0}, Kalshi fee: ${:.2}",
+            fixed_contracts, kalshi_fee
         );
         debug!(
-            "   Profit margin: {:.2}%, Expected profit: ${:.2} (gross: ${:.2})",
-            profit_margin, expected_profit, gross_profit
+            "   Total cost: ${:.2}, Return: ${:.0}, Profit: ${:.2} ({:.2}%)",
+            total_bet, guaranteed_return, expected_profit, profit_margin
         );
 
         Some(ArbitrageOpportunity {
@@ -237,7 +245,7 @@ impl ArbitrageCalculator {
             kalshi_bet,
             kalshi_yes_price,
             kalshi_no_price,
-            kalshi_contracts,
+            kalshi_contracts: fixed_contracts,
             kalshi_fee,
             polymarket_market_id: polymarket_market.market_id.clone(),
             polymarket_price,

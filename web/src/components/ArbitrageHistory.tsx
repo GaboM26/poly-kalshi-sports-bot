@@ -30,6 +30,7 @@ interface AutoTradeRecord {
   polymarket_side: string;
   kalshi_contracts: number;
   kalshi_price: number;
+  kalshi_fee: number;
   polymarket_amount: number;
   polymarket_price: number;
   total_amount: number;
@@ -434,6 +435,10 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
                 <div className="flex justify-between">
                   <span className="text-[--text-muted]">价格</span>
                   <span className="text-[--text-primary] tabular-nums">{(selectedAutoTrade.kalshi_price * 100).toFixed(0)}¢</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[--text-muted]">手续费</span>
+                  <span className="text-[--text-primary] tabular-nums">${selectedAutoTrade.kalshi_fee.toFixed(2)}</span>
                 </div>
                 {selectedAutoTrade.kalshi_order_id && (
                   <div className="flex justify-between">

@@ -327,33 +327,49 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
         info!("   持续时间: {}ms, 利润率: {:.2}%", duration_ms, opportunity.profit_margin);
         info!("   原因: {}", reason);
         
-        // Calculate order amounts based on auto_state.max_amount (10U)
-        let total_bet = auto_state.max_amount;
-        let implied_prob_sum = opportunity.kalshi_price + opportunity.polymarket_price;
-        let guaranteed_return = total_bet / implied_prob_sum;
+        // Fixed contract count strategy: both platforms buy same number of contracts
+        // This ensures symmetric hedging and simple calculation
+        let fixed_contracts = 10;  // Fixed 10 contracts on each platform
         
-        // Calculate Kalshi order (contracts)
-        let kalshi_bet = guaranteed_return * opportunity.kalshi_price;
-        let kalshi_contracts = (kalshi_bet / opportunity.kalshi_price).floor() as i32;
+        // Calculate amounts based on fixed contracts
+        let kalshi_contracts = fixed_contracts;
+        let kalshi_bet = fixed_contracts as f64 * opportunity.kalshi_price;
         let kalshi_price_cents = (opportunity.kalshi_price * 100.0).round() as i32;
         
-        // Calculate Polymarket order (amount in USDC)
-        let poly_amount = guaranteed_return * opportunity.polymarket_price;
+        // Calculate Kalshi trading fee: fee = 0.07 × C × P × (1-P), rounded up to cent
+        let kalshi_fee_raw = 0.07 * kalshi_contracts as f64 * opportunity.kalshi_price * (1.0 - opportunity.kalshi_price);
+        let kalshi_fee = (kalshi_fee_raw * 100.0).ceil() / 100.0;
+        
+        // Polymarket: same number of "contracts" (equivalent amount), no trading fee
+        let poly_amount = fixed_contracts as f64 * opportunity.polymarket_price;
+        
+        // Calculate total investment including fees
+        let total_bet = kalshi_bet + kalshi_fee + poly_amount;
+        
+        // Verify total doesn't exceed max_amount
+        if total_bet > auto_state.max_amount {
+            info!("   ⚠️ 总投入 ${:.2} (含手续费 ${:.2}) 超过限额 ${:.2}，跳过此机会", total_bet, kalshi_fee, auto_state.max_amount);
+            continue;
+        }
         
         // Get the correct poly token based on side
-        let poly_token = if opportunity.polymarket_side == "yes" {
-            // Buy team wins -> use own token
-            record.polymarket_market_id.clone()
-        } else {
-            // Buy opponent wins -> need opponent token
-            // For now, use polymarket_market_id as we don't have opponent token in record
-            // This should be improved to get the correct opponent token
-            record.polymarket_market_id.clone()
+        let poly_token = match service.ws_manager.get_poly_token_for_side(
+            &record.event_name,
+            &record.team_name,
+            &opportunity.polymarket_side,
+        ) {
+            Some(token) => token,
+            None => {
+                error!("❌ 无法获取 Polymarket token: {} - {} ({}侧)", 
+                    record.event_name, record.team_name, opportunity.polymarket_side);
+                continue;
+            }
         };
         
-        info!("   📊 订单计算:");
-        info!("      Kalshi: {} 合约 @ {:.2}¢ ({}侧)", kalshi_contracts, kalshi_price_cents, opportunity.kalshi_side);
-        info!("      Polymarket: ${:.4} ({}侧)", poly_amount, opportunity.polymarket_side);
+        info!("   📊 订单计算 (固定 {} 合约):", fixed_contracts);
+        info!("      Kalshi: {} 合约 @ {:.2}¢ = ${:.2} + 手续费 ${:.2} ({}侧)", kalshi_contracts, kalshi_price_cents, kalshi_bet, kalshi_fee, opportunity.kalshi_side);
+        info!("      Polymarket: {} 合约等价 = ${:.4} ({}侧)", fixed_contracts, poly_amount, opportunity.polymarket_side);
+        info!("      总投入: ${:.2} (含手续费) / ${:.2}", total_bet, auto_state.max_amount);
         
         // Mark as auto-traded BEFORE executing (to prevent duplicate orders)
         service.ws_manager.mark_as_auto_traded(&key);
@@ -400,6 +416,7 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
             &opportunity.polymarket_side,
             kalshi_contracts,
             opportunity.kalshi_price,
+            kalshi_fee,
             poly_amount,
             opportunity.polymarket_price,
             total_bet,

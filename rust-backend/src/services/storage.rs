@@ -53,6 +53,7 @@ pub struct AutoTradeRecord {
     pub polymarket_side: String,
     pub kalshi_contracts: i32,
     pub kalshi_price: f64,
+    pub kalshi_fee: f64,
     pub polymarket_amount: f64,
     pub polymarket_price: f64,
     pub total_amount: f64,
@@ -180,6 +181,7 @@ impl ArbitrageStorage {
                 polymarket_side TEXT NOT NULL,
                 kalshi_contracts INTEGER NOT NULL,
                 kalshi_price REAL NOT NULL,
+                kalshi_fee REAL DEFAULT 0,
                 polymarket_amount REAL NOT NULL,
                 polymarket_price REAL NOT NULL,
                 total_amount REAL NOT NULL,
@@ -195,6 +197,12 @@ impl ArbitrageStorage {
             )",
             [],
         )?;
+
+        // Migrate existing auto_trade_history table: add kalshi_fee column if it doesn't exist
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN kalshi_fee REAL DEFAULT 0",
+            [],
+        );
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_auto_trade_created_at ON auto_trade_history(created_at)",
@@ -765,6 +773,7 @@ impl ArbitrageStorage {
         polymarket_side: &str,
         kalshi_contracts: i32,
         kalshi_price: f64,
+        kalshi_fee: f64,
         polymarket_amount: f64,
         polymarket_price: f64,
         total_amount: f64,
@@ -781,12 +790,12 @@ impl ArbitrageStorage {
         conn.execute(
             "INSERT INTO auto_trade_history (
                 event_name, team_name, kalshi_market_id, polymarket_market_id,
-                kalshi_side, polymarket_side, kalshi_contracts, kalshi_price,
+                kalshi_side, polymarket_side, kalshi_contracts, kalshi_price, kalshi_fee,
                 polymarket_amount, polymarket_price, total_amount, profit_margin,
                 duration_ms, kalshi_success, polymarket_success,
                 kalshi_order_id, polymarket_order_id, kalshi_error, polymarket_error,
                 created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
             params![
                 event_name,
                 team_name,
@@ -796,6 +805,7 @@ impl ArbitrageStorage {
                 polymarket_side,
                 kalshi_contracts,
                 kalshi_price,
+                kalshi_fee,
                 polymarket_amount,
                 polymarket_price,
                 total_amount,
@@ -825,7 +835,7 @@ impl ArbitrageStorage {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id, event_name, team_name, kalshi_market_id, polymarket_market_id,
-                    kalshi_side, polymarket_side, kalshi_contracts, kalshi_price,
+                    kalshi_side, polymarket_side, kalshi_contracts, kalshi_price, kalshi_fee,
                     polymarket_amount, polymarket_price, total_amount, profit_margin,
                     duration_ms, kalshi_success, polymarket_success,
                     kalshi_order_id, polymarket_order_id, kalshi_error, polymarket_error,
@@ -847,18 +857,19 @@ impl ArbitrageStorage {
                     polymarket_side: row.get(6)?,
                     kalshi_contracts: row.get(7)?,
                     kalshi_price: row.get(8)?,
-                    polymarket_amount: row.get(9)?,
-                    polymarket_price: row.get(10)?,
-                    total_amount: row.get(11)?,
-                    profit_margin: row.get(12)?,
-                    duration_ms: row.get(13)?,
-                    kalshi_success: row.get::<_, i32>(14)? != 0,
-                    polymarket_success: row.get::<_, i32>(15)? != 0,
-                    kalshi_order_id: row.get(16)?,
-                    polymarket_order_id: row.get(17)?,
-                    kalshi_error: row.get(18)?,
-                    polymarket_error: row.get(19)?,
-                    created_at: row.get(20)?,
+                    kalshi_fee: row.get(9)?,
+                    polymarket_amount: row.get(10)?,
+                    polymarket_price: row.get(11)?,
+                    total_amount: row.get(12)?,
+                    profit_margin: row.get(13)?,
+                    duration_ms: row.get(14)?,
+                    kalshi_success: row.get::<_, i32>(15)? != 0,
+                    polymarket_success: row.get::<_, i32>(16)? != 0,
+                    kalshi_order_id: row.get(17)?,
+                    polymarket_order_id: row.get(18)?,
+                    kalshi_error: row.get(19)?,
+                    polymarket_error: row.get(20)?,
+                    created_at: row.get(21)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
