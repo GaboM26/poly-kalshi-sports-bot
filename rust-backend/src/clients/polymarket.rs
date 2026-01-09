@@ -65,6 +65,8 @@ pub struct PolymarketClient {
     clob: Option<Arc<ClobClient>>,
     /// Order book cache: token_id -> PolyOrderBook
     orderbook_cache: Arc<RwLock<HashMap<String, PolyOrderBook>>>,
+    /// Channel sender for dynamic subscriptions
+    subscribe_tx: Arc<RwLock<Option<mpsc::Sender<Vec<String>>>>>,
 }
 
 impl PolymarketClient {
@@ -75,6 +77,7 @@ impl PolymarketClient {
             http: Client::new(),
             clob: None,
             orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
+            subscribe_tx: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -491,6 +494,33 @@ impl PolymarketClient {
         Ok(serde_json::to_value(response).unwrap_or(serde_json::json!({"success": true})))
     }
 
+    /// Subscribe to additional tokens dynamically (hot subscription)
+    ///
+    /// This can be called after the WebSocket connection is established
+    /// to add new token subscriptions.
+    pub async fn subscribe_tokens(&self, token_ids: Vec<String>) -> Result<bool> {
+        if token_ids.is_empty() {
+            return Ok(true);
+        }
+
+        let tx = self.subscribe_tx.read().clone();
+        if let Some(tx) = tx {
+            match tx.send(token_ids.clone()).await {
+                Ok(_) => {
+                    info!("🔌 [Polymarket] 发送热订阅请求: {} 个 token", token_ids.len());
+                    Ok(true)
+                }
+                Err(e) => {
+                    warn!("⚠️ [Polymarket] 热订阅请求发送失败: {}", e);
+                    Ok(false)
+                }
+            }
+        } else {
+            warn!("⚠️ [Polymarket] WebSocket 未连接，无法热订阅");
+            Ok(false)
+        }
+    }
+
     /// Connect to WebSocket for real-time price updates
     pub async fn connect_websocket(
         &self,
@@ -505,7 +535,11 @@ impl PolymarketClient {
 
         let (mut write, mut read) = ws_stream.split();
 
-        // Subscribe to markets - 使用正确的格式（与 Python 版本一致）
+        // Create channel for dynamic subscriptions
+        let (sub_tx, mut sub_rx) = mpsc::channel::<Vec<String>>(100);
+        *self.subscribe_tx.write() = Some(sub_tx);
+
+        // Subscribe to initial markets - 使用正确的格式（与 Python 版本一致）
         let subscribe_msg = json!({
             "assets_ids": token_ids,
             "type": "market"
@@ -519,30 +553,56 @@ impl PolymarketClient {
 
         let orderbook_cache = self.orderbook_cache.clone();
 
-        // Process messages
-        while let Some(msg) = read.next().await {
-            match msg {
-                Ok(Message::Text(text)) => {
-                    // Parse message and update orderbook cache
-                    let updates = Self::parse_ws_message(&text, &orderbook_cache);
-                    for update in updates {
-                        if price_tx.send(update).await.is_err() {
-                            warn!("价格更新通道已关闭");
-                            return Ok(());
+        // Process messages with dynamic subscription support
+        loop {
+            tokio::select! {
+                // Handle incoming WebSocket messages
+                msg = read.next() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            // Parse message and update orderbook cache
+                            let updates = Self::parse_ws_message(&text, &orderbook_cache);
+                            for update in updates {
+                                if price_tx.send(update).await.is_err() {
+                                    warn!("价格更新通道已关闭");
+                                    break;
+                                }
+                            }
                         }
+                        Some(Ok(Message::Close(_))) => {
+                            info!("Polymarket WebSocket 已关闭");
+                            break;
+                        }
+                        Some(Err(e)) => {
+                            error!("Polymarket WebSocket 错误: {}", e);
+                            break;
+                        }
+                        None => {
+                            info!("Polymarket WebSocket 流结束");
+                            break;
+                        }
+                        _ => {}
                     }
                 }
-                Ok(Message::Close(_)) => {
-                    info!("Polymarket WebSocket 已关闭");
-                    break;
+                // Handle dynamic subscription requests
+                Some(new_tokens) = sub_rx.recv() => {
+                    info!("🔌 [Polymarket] 处理热订阅: {} 个新 token", new_tokens.len());
+                    let subscribe_msg = json!({
+                        "assets_ids": new_tokens,
+                        "type": "market"
+                    });
+
+                    if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
+                        error!("❌ [Polymarket] 热订阅发送失败: {}", e);
+                    } else {
+                        info!("✅ [Polymarket] 热订阅完成: {} 个 token", new_tokens.len());
+                    }
                 }
-                Err(e) => {
-                    error!("Polymarket WebSocket 错误: {}", e);
-                    break;
-                }
-                _ => {}
             }
         }
+
+        // Clear subscription channel on disconnect
+        *self.subscribe_tx.write() = None;
 
         Ok(())
     }

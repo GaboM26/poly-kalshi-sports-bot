@@ -423,6 +423,19 @@ pub struct MatchedMarketsListData {
     pub opportunities_count: usize,
 }
 
+/// Market scan statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanStats {
+    /// Number of scans performed
+    pub scan_count: u64,
+    /// Number of new markets found in this scan
+    pub new_markets_found: usize,
+    /// Total matched markets after this scan
+    pub total_matched_markets: usize,
+    /// Timestamp of this scan
+    pub timestamp: DateTime<Utc>,
+}
+
 /// WebSocket message types for frontend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -441,6 +454,8 @@ pub enum WsMessage {
     },
     #[serde(rename = "metrics")]
     Metrics { data: MetricsReport },
+    #[serde(rename = "scan_stats")]
+    ScanStats { data: ScanStats },
     #[serde(rename = "log")]
     Log { level: String, message: String },
     #[serde(rename = "price_update")]

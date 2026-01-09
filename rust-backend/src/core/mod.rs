@@ -6,4 +6,4 @@ pub mod calculator;
 pub mod matcher;
 
 pub use calculator::ArbitrageCalculator;
-pub use matcher::EventMatcher;
+pub use matcher::{EventMatcher, SubscriptionInfo};

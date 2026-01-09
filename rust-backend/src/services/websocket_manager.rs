@@ -22,7 +22,7 @@ use tracing::{debug, info};
 use crate::core::{ArbitrageCalculator, EventMatcher};
 use crate::models::{
     ArbitrageOpportunity, ArbitrageTrackingRecord, MatchedMarket, MatchedMarketFrontend,
-    Platform, PriceUpdate, SystemStats,
+    Platform, PriceUpdate, ScanStats, SystemStats,
 };
 use crate::services::storage::ArbitrageStorage;
 use crate::services::metrics::{PerformanceMetrics, Operation};
@@ -50,6 +50,8 @@ pub struct WebSocketManager {
     opportunities: Arc<RwLock<Vec<ArbitrageOpportunity>>>,
     /// Opportunity broadcast channel
     opportunity_tx: broadcast::Sender<ArbitrageOpportunity>,
+    /// Scan stats broadcast channel
+    scan_stats_tx: broadcast::Sender<ScanStats>,
     /// Connection status
     kalshi_connected: Arc<RwLock<bool>>,
     polymarket_connected: Arc<RwLock<bool>>,
@@ -73,6 +75,7 @@ impl WebSocketManager {
         metrics: Arc<PerformanceMetrics>,
     ) -> Self {
         let (opportunity_tx, _) = broadcast::channel(100);
+        let (scan_stats_tx, _) = broadcast::channel(100);
 
         Self {
             matched_markets: Arc::new(RwLock::new(Vec::new())),
@@ -84,6 +87,7 @@ impl WebSocketManager {
             active_tracking: Arc::new(RwLock::new(HashMap::new())),
             opportunities: Arc::new(RwLock::new(Vec::new())),
             opportunity_tx,
+            scan_stats_tx,
             kalshi_connected: Arc::new(RwLock::new(false)),
             polymarket_connected: Arc::new(RwLock::new(false)),
             kalshi_update_count: Arc::new(RwLock::new(0)),
@@ -105,6 +109,16 @@ impl WebSocketManager {
         self.opportunity_tx.subscribe()
     }
 
+    /// Subscribe to scan stats updates
+    pub fn subscribe_scan_stats(&self) -> broadcast::Receiver<ScanStats> {
+        self.scan_stats_tx.subscribe()
+    }
+
+    /// Broadcast scan statistics to all subscribers
+    pub fn broadcast_scan_stats(&self, stats: ScanStats) {
+        let _ = self.scan_stats_tx.send(stats);
+    }
+
     /// Set matched markets and build lookup tables
     pub fn set_matched_markets(&self, markets: Vec<MatchedMarket>) {
         let matcher = EventMatcher::new(24);
@@ -117,6 +131,45 @@ impl WebSocketManager {
             "WebSocket 管理器已配置 {} 个匹配的市场",
             self.matched_markets.read().len()
         );
+    }
+
+    /// Add new subscriptions dynamically (hot subscription)
+    ///
+    /// This method updates internal state with new matched markets.
+    /// The actual WebSocket subscription is handled by the caller through
+    /// the subscription channels.
+    ///
+    /// Returns the number of markets added
+    pub fn add_matched_markets(&self, new_markets: Vec<MatchedMarket>, new_lookup: std::collections::HashMap<String, Vec<usize>>) -> usize {
+        if new_markets.is_empty() {
+            return 0;
+        }
+
+        let old_count = self.matched_markets.read().len();
+        
+        // Add new markets
+        {
+            let mut markets = self.matched_markets.write();
+            let offset = markets.len();
+            markets.extend(new_markets.clone());
+            
+            // Merge lookup with offset adjustment
+            let mut lookup = self.market_lookup.write();
+            for (key, indices) in new_lookup {
+                let adjusted_indices: Vec<usize> = indices.iter().map(|&i| i + offset).collect();
+                lookup.entry(key).or_default().extend(adjusted_indices);
+            }
+        }
+
+        let new_count = self.matched_markets.read().len();
+        let added = new_count - old_count;
+        
+        info!(
+            "📊 市场数据已更新: {} → {} 个配对市场 (+{})",
+            old_count, new_count, added
+        );
+
+        added
     }
 
     /// Get subscription info for WebSocket connections

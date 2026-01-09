@@ -98,9 +98,10 @@ export function useWebSocket(url: string) {
             const marketsData = message.data as MatchedMarketData[];
             
             // 检测价格变化，用于高亮动画
+            // 使用更唯一的 key：kalshi_market_id + polymarket_market_id
             const newPricesMap = new Map<string, { k_yes: number; k_no: number; p_yes: number; p_no: number; changed: boolean }>();
             marketsData.forEach((m) => {
-              const key = `${m.event_name}_${m.team_name}`;
+              const key = `${m.kalshi_market_id}_${m.polymarket_market_id}`;
               const prev = prevPricesRef.current.get(key);
               const changed = prev ? (
                 prev.k_yes !== m.kalshi_yes_price ||

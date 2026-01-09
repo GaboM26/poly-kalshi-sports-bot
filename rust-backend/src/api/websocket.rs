@@ -67,9 +67,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     }
 
-    // Subscribe to opportunity updates
+    // Subscribe to opportunity updates and scan stats
     let service = state.service.read().await;
     let mut opportunity_rx = service.ws_manager.subscribe();
+    let mut scan_stats_rx = service.ws_manager.subscribe_scan_stats();
     drop(service);
 
     // Clone state and tx for periodic updates task
@@ -109,6 +110,21 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
             let msg = WsMessage::Opportunity { data: opportunity };
             if let Ok(json) = serde_json::to_string(&msg) {
                 if tx_opp.send(json).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    // Clone tx for scan stats updates task
+    let tx_scan = tx.clone();
+
+    // Spawn task to forward scan stats updates
+    let scan_stats_task = tokio::spawn(async move {
+        while let Ok(scan_stats) = scan_stats_rx.recv().await {
+            let msg = WsMessage::ScanStats { data: scan_stats };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                if tx_scan.send(json).await.is_err() {
                     break;
                 }
             }
@@ -172,6 +188,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     // Cleanup: abort all other tasks
     periodic_task.abort();
     opportunity_task.abort();
+    scan_stats_task.abort();
     metrics_task.abort();
     send_task.abort();
 

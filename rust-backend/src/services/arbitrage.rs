@@ -2,16 +2,17 @@
 //!
 //! Orchestrates market data fetching, matching, and arbitrage scanning.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::clients::{KalshiClient, PolymarketClient};
 use crate::config::Config;
-use crate::core::{ArbitrageCalculator, EventMatcher};
+use crate::core::{ArbitrageCalculator, EventMatcher, SubscriptionInfo};
 use crate::models::{ArbitrageOpportunity, MatchedEvent, MatchedMarket, PriceUpdate, SystemStats};
 use crate::services::{ArbitrageStorage, WebSocketManager, PerformanceMetrics, Operation};
 
@@ -238,6 +239,110 @@ impl ArbitrageService {
     /// Get arbitrage history
     pub fn get_arbitrage_history(&self, limit: usize) -> Result<Vec<crate::models::ArbitrageTrackingRecord>> {
         self.storage.get_history(limit)
+    }
+
+    /// Scan for new markets and return incremental subscription info
+    ///
+    /// This method fetches fresh market data from both platforms, runs matching,
+    /// and returns only the NEW matched markets that weren't in the previous set.
+    ///
+    /// Returns: (new_matched_markets, new_subscription_info)
+    pub async fn scan_for_new_markets(&mut self) -> Result<(Vec<MatchedMarket>, SubscriptionInfo)> {
+        info!("============================================================");
+        info!("🔄 开始扫描新市场...");
+        info!("============================================================");
+
+        // 1. Save old matched market IDs
+        let old_matched_ids: HashSet<String> = self
+            .matched_markets
+            .iter()
+            .map(|mm| format!("{}_{}", mm.kalshi_market.market_id, mm.team_name))
+            .collect();
+
+        let old_count = self.matched_markets.len();
+        info!("   扫描前状态: {} 个已匹配市场", old_count);
+
+        // 2. Fetch fresh market data
+        let (kalshi_events, kalshi_markets) = match self
+            .kalshi_client
+            .get_nba_events_and_markets()
+            .await
+        {
+            Ok(data) => data,
+            Err(e) => {
+                error!("❌ 获取 Kalshi 市场数据失败: {}", e);
+                return Ok((Vec::new(), SubscriptionInfo::empty()));
+            }
+        };
+
+        let (polymarket_events, polymarket_markets) = match self
+            .polymarket_client
+            .get_nba_events_and_markets()
+            .await
+        {
+            Ok(data) => data,
+            Err(e) => {
+                error!("❌ 获取 Polymarket 市场数据失败: {}", e);
+                return Ok((Vec::new(), SubscriptionInfo::empty()));
+            }
+        };
+
+        info!(
+            "   扫描后状态: Kalshi {} 事件/{} 市场, Polymarket {} 事件/{} 市场",
+            kalshi_events.len(),
+            kalshi_markets.len(),
+            polymarket_events.len(),
+            polymarket_markets.len()
+        );
+
+        // 3. Re-run matching
+        let match_start = Instant::now();
+        let (matched_events, matched_markets) = self.matcher.match_events_and_markets(
+            &kalshi_events,
+            &kalshi_markets,
+            &polymarket_events,
+            &polymarket_markets,
+        );
+        self.metrics.record(Operation::MarketMatch, match_start.elapsed());
+
+        // 4. Find new matched markets
+        let mut new_matched_markets = Vec::new();
+        for mm in &matched_markets {
+            let key = format!("{}_{}", mm.kalshi_market.market_id, mm.team_name);
+            if !old_matched_ids.contains(&key) {
+                new_matched_markets.push(mm.clone());
+            }
+        }
+
+        // 5. Update internal state
+        self.matched_events = matched_events;
+        self.matched_markets = matched_markets;
+
+        if new_matched_markets.is_empty() {
+            info!("   ✅ 没有发现新的匹配市场");
+            info!("============================================================");
+            return Ok((Vec::new(), SubscriptionInfo::empty()));
+        }
+
+        info!("   🆕 发现 {} 个新匹配市场:", new_matched_markets.len());
+        for (i, mm) in new_matched_markets.iter().enumerate().take(5) {
+            info!("      {}. {} ({})", i + 1, mm.event_name, mm.team_name);
+        }
+        if new_matched_markets.len() > 5 {
+            info!("      ... 还有 {} 个新市场", new_matched_markets.len() - 5);
+        }
+
+        // 6. Generate subscription info for new markets only
+        let new_sub_info = self.matcher.get_subscription_info(&new_matched_markets);
+
+        info!(
+            "   📡 新订阅需求: Kalshi {} 个市场, Polymarket {} 个 token",
+            new_sub_info.kalshi_tickers.len(),
+            new_sub_info.polymarket_token_ids.len()
+        );
+        info!("============================================================");
+
+        Ok((new_matched_markets, new_sub_info))
     }
 
     /// Search history records with filters

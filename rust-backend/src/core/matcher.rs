@@ -33,6 +33,22 @@ pub struct SubscriptionInfo {
     pub market_lookup: HashMap<String, Vec<usize>>,
 }
 
+impl SubscriptionInfo {
+    /// Create an empty subscription info
+    pub fn empty() -> Self {
+        Self {
+            kalshi_tickers: Vec::new(),
+            polymarket_token_ids: Vec::new(),
+            market_lookup: HashMap::new(),
+        }
+    }
+    
+    /// Check if there are any subscriptions
+    pub fn is_empty(&self) -> bool {
+        self.kalshi_tickers.is_empty() && self.polymarket_token_ids.is_empty()
+    }
+}
+
 impl EventMatcher {
     /// Create a new event matcher
     pub fn new(time_tolerance_hours: i64) -> Self {

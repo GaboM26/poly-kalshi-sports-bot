@@ -23,12 +23,11 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
   const [lastResult, setLastResult] = useState<{ key: string; success: boolean; message: string } | null>(null);
   
   // 执行套利
-  const handleExecute = async (market: MatchedMarketData, e: React.MouseEvent) => {
+  const handleExecute = async (market: MatchedMarketData, executionKey: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!market.has_opportunity || !apiBaseUrl) return;
     
-    const key = `${market.event_name}_${market.team_name}`;
-    setExecutingKey(key);
+    setExecutingKey(executionKey);
     setLastResult(null);
     
     try {
@@ -65,15 +64,15 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
       const result = await executeArbitrage(apiBaseUrl, request);
       
       if (result.success) {
-        setLastResult({ key, success: true, message: '套利执行成功！' });
+        setLastResult({ key: executionKey, success: true, message: '套利执行成功！' });
       } else {
         const errors = [];
         if (!result.kalshi.success) errors.push(`K: ${result.kalshi.error}`);
         if (!result.polymarket.success) errors.push(`P: ${result.polymarket.error}`);
-        setLastResult({ key, success: false, message: errors.join('; ') });
+        setLastResult({ key: executionKey, success: false, message: errors.join('; ') });
       }
     } catch (err) {
-      setLastResult({ key, success: false, message: err instanceof Error ? err.message : '执行失败' });
+      setLastResult({ key: executionKey, success: false, message: err instanceof Error ? err.message : '执行失败' });
     } finally {
       setExecutingKey(null);
     }
@@ -83,7 +82,8 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
     const newFlashing = new Set<string>();
     
     matchedMarkets.forEach((m) => {
-      const key = `${m.event_name}_${m.team_name}`;
+      // 使用更唯一的 key：kalshi_market_id + polymarket_market_id
+      const key = `${m.kalshi_market_id}_${m.polymarket_market_id}`;
       const prev = prevPricesRef.current.get(key);
       
       if (prev) {
@@ -205,13 +205,16 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
           </thead>
           <tbody>
             {sortedMarkets.map((market) => {
-              const key = `${market.event_name}_${market.team_name}`;
-              const kalshiFlashing = flashingCells.has(`${key}_kalshi`);
-              const polyFlashing = flashingCells.has(`${key}_poly`);
+              // 使用唯一的 key：kalshi_market_id + polymarket_market_id
+              const uniqueKey = `${market.kalshi_market_id}_${market.polymarket_market_id}`;
+              // 用于执行状态跟踪的 key（保持使用 event_name + team_name 以便用户识别）
+              const executionKey = `${market.event_name}_${market.team_name}`;
+              const kalshiFlashing = flashingCells.has(`${uniqueKey}_kalshi`);
+              const polyFlashing = flashingCells.has(`${uniqueKey}_poly`);
               
               return (
                 <tr
-                  key={key}
+                  key={uniqueKey}
                   onClick={() => onSelectMarket?.(market)}
                   className={`cursor-pointer border-b border-[--border-color] hover:bg-[--bg-secondary] transition-colors ${market.has_opportunity ? 'bg-[rgba(16,185,129,0.05)]' : ''}`}
                 >
@@ -275,17 +278,17 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                     {market.has_opportunity ? (
                       <div className="flex flex-col items-center gap-0.5">
                         <button
-                          onClick={(e) => handleExecute(market, e)}
-                          disabled={executingKey === key || !apiBaseUrl}
+                          onClick={(e) => handleExecute(market, executionKey, e)}
+                          disabled={executingKey === executionKey || !apiBaseUrl}
                           className={`px-1.5 py-0.5 text-[9px] font-medium rounded transition-colors ${
-                            executingKey === key
+                            executingKey === executionKey
                               ? 'bg-gray-500/30 text-gray-400 cursor-wait'
                               : 'bg-[--accent-green]/20 text-[--accent-green] hover:bg-[--accent-green]/30'
                           }`}
                         >
-                          {executingKey === key ? '...' : '执行'}
+                          {executingKey === executionKey ? '...' : '执行'}
                         </button>
-                        {lastResult?.key === key && (
+                        {lastResult?.key === executionKey && (
                           <span className={`text-[9px] leading-none ${lastResult.success ? 'text-green-400' : 'text-red-400'}`}>
                             {lastResult.success ? '✓' : '✗'}
                           </span>

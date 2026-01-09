@@ -41,6 +41,8 @@ pub struct KalshiClient {
     signing_key: Arc<BlindedSigningKey<Sha256>>,
     /// Order book cache: market_ticker -> { "yes": [[price, qty], ...], "no": [[price, qty], ...] }
     orderbook_cache: Arc<RwLock<HashMap<String, OrderBook>>>,
+    /// Channel sender for dynamic subscriptions
+    subscribe_tx: Arc<RwLock<Option<mpsc::Sender<Vec<String>>>>>,
 }
 
 /// Order book structure
@@ -64,6 +66,7 @@ impl KalshiClient {
             http: Client::new(),
             signing_key,
             orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
+            subscribe_tx: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -327,6 +330,33 @@ impl KalshiClient {
         serde_json::from_str(&body).with_context(|| format!("Failed to parse response: {}", body))
     }
 
+    /// Subscribe to additional markets dynamically (hot subscription)
+    ///
+    /// This can be called after the WebSocket connection is established
+    /// to add new market subscriptions.
+    pub async fn subscribe_markets(&self, tickers: Vec<String>) -> Result<bool> {
+        if tickers.is_empty() {
+            return Ok(true);
+        }
+
+        let tx = self.subscribe_tx.read().clone();
+        if let Some(tx) = tx {
+            match tx.send(tickers.clone()).await {
+                Ok(_) => {
+                    info!("🔌 [Kalshi] 发送热订阅请求: {} 个市场", tickers.len());
+                    Ok(true)
+                }
+                Err(e) => {
+                    warn!("⚠️ [Kalshi] 热订阅请求发送失败: {}", e);
+                    Ok(false)
+                }
+            }
+        } else {
+            warn!("⚠️ [Kalshi] WebSocket 未连接，无法热订阅");
+            Ok(false)
+        }
+    }
+
     /// Connect to WebSocket for real-time updates
     pub async fn connect_websocket(
         &self,
@@ -360,16 +390,22 @@ impl KalshiClient {
 
         let (mut write, mut read) = ws_stream.split();
 
-        // Subscribe to order books - 逐个订阅（与 Python 版本一致）
-        for (idx, ticker) in tickers.iter().enumerate() {
+        // Create channel for dynamic subscriptions
+        let (sub_tx, mut sub_rx) = mpsc::channel::<Vec<String>>(100);
+        *self.subscribe_tx.write() = Some(sub_tx);
+
+        // Subscribe to initial order books - 逐个订阅（与 Python 版本一致）
+        let mut next_msg_id = 1;
+        for ticker in tickers.iter() {
             let subscribe_msg = json!({
-                "id": idx + 1,
+                "id": next_msg_id,
                 "cmd": "subscribe",
                 "params": {
                     "channels": ["orderbook_delta"],
                     "market_ticker": ticker  // 单个 ticker，不是数组
                 }
             });
+            next_msg_id += 1;
 
             write
                 .send(Message::Text(subscribe_msg.to_string()))
@@ -380,30 +416,60 @@ impl KalshiClient {
 
         let orderbook_cache = self.orderbook_cache.clone();
 
-        // Process messages
-        while let Some(msg) = read.next().await {
-            match msg {
-                Ok(Message::Text(text)) => {
-                    if let Some(update) =
-                        Self::parse_ws_message(&text, &orderbook_cache)
-                    {
-                        if price_tx.send(update).await.is_err() {
-                            warn!("价格更新通道已关闭");
+        // Process messages with dynamic subscription support
+        loop {
+            tokio::select! {
+                // Handle incoming WebSocket messages
+                msg = read.next() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Some(update) = Self::parse_ws_message(&text, &orderbook_cache) {
+                                if price_tx.send(update).await.is_err() {
+                                    warn!("价格更新通道已关闭");
+                                    break;
+                                }
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) => {
+                            info!("Kalshi WebSocket 已关闭");
                             break;
                         }
+                        Some(Err(e)) => {
+                            error!("Kalshi WebSocket 错误: {}", e);
+                            break;
+                        }
+                        None => {
+                            info!("Kalshi WebSocket 流结束");
+                            break;
+                        }
+                        _ => {}
                     }
                 }
-                Ok(Message::Close(_)) => {
-                    info!("Kalshi WebSocket 已关闭");
-                    break;
+                // Handle dynamic subscription requests
+                Some(new_tickers) = sub_rx.recv() => {
+                    info!("🔌 [Kalshi] 处理热订阅: {} 个新市场", new_tickers.len());
+                    for ticker in new_tickers.iter() {
+                        let subscribe_msg = json!({
+                            "id": next_msg_id,
+                            "cmd": "subscribe",
+                            "params": {
+                                "channels": ["orderbook_delta"],
+                                "market_ticker": ticker
+                            }
+                        });
+                        next_msg_id += 1;
+
+                        if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
+                            error!("❌ [Kalshi] 热订阅发送失败: {}", e);
+                        }
+                    }
+                    info!("✅ [Kalshi] 热订阅完成: {} 个市场", new_tickers.len());
                 }
-                Err(e) => {
-                    error!("Kalshi WebSocket 错误: {}", e);
-                    break;
-                }
-                _ => {}
             }
         }
+
+        // Clear subscription channel on disconnect
+        *self.subscribe_tx.write() = None;
 
         Ok(())
     }
