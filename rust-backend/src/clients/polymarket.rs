@@ -86,6 +86,13 @@ struct PositionData {
     trade_count: u32,
 }
 
+/// Subscription command for Polymarket WebSocket
+#[derive(Debug, Clone)]
+pub enum PolyWsCommand {
+    Subscribe(Vec<String>),
+    Unsubscribe(Vec<String>),
+}
+
 /// Polymarket API client
 #[derive(Clone)]
 pub struct PolymarketClient {
@@ -95,8 +102,8 @@ pub struct PolymarketClient {
     clob: Option<Arc<ClobClient>>,
     /// Order book cache: token_id -> PolyOrderBook
     orderbook_cache: Arc<RwLock<HashMap<String, PolyOrderBook>>>,
-    /// Channel sender for dynamic subscriptions
-    subscribe_tx: Arc<RwLock<Option<mpsc::Sender<Vec<String>>>>>,
+    /// Channel sender for dynamic subscriptions/unsubscriptions
+    command_tx: Arc<RwLock<Option<mpsc::Sender<PolyWsCommand>>>>,
 }
 
 impl PolymarketClient {
@@ -107,7 +114,7 @@ impl PolymarketClient {
             http: Client::new(),
             clob: None,
             orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
-            subscribe_tx: Arc::new(RwLock::new(None)),
+            command_tx: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -534,9 +541,9 @@ impl PolymarketClient {
             return Ok(true);
         }
 
-        let tx = self.subscribe_tx.read().clone();
+        let tx = self.command_tx.read().clone();
         if let Some(tx) = tx {
-            match tx.send(token_ids.clone()).await {
+            match tx.send(PolyWsCommand::Subscribe(token_ids.clone())).await {
                 Ok(_) => {
                     info!("🔌 [Polymarket] 发送热订阅请求: {} 个 token", token_ids.len());
                     Ok(true)
@@ -548,6 +555,34 @@ impl PolymarketClient {
             }
         } else {
             warn!("⚠️ [Polymarket] WebSocket 未连接，无法热订阅");
+            Ok(false)
+        }
+    }
+
+    /// Unsubscribe from tokens dynamically
+    ///
+    /// This can be called after the WebSocket connection is established
+    /// to remove token subscriptions for ended games.
+    /// Uses the operation: "unsubscribe" field as per Polymarket API.
+    pub async fn unsubscribe_tokens(&self, token_ids: Vec<String>) -> Result<bool> {
+        if token_ids.is_empty() {
+            return Ok(true);
+        }
+
+        let tx = self.command_tx.read().clone();
+        if let Some(tx) = tx {
+            match tx.send(PolyWsCommand::Unsubscribe(token_ids.clone())).await {
+                Ok(_) => {
+                    info!("🔌 [Polymarket] 发送取消订阅请求: {} 个 token", token_ids.len());
+                    Ok(true)
+                }
+                Err(e) => {
+                    warn!("⚠️ [Polymarket] 取消订阅请求发送失败: {}", e);
+                    Ok(false)
+                }
+            }
+        } else {
+            warn!("⚠️ [Polymarket] WebSocket 未连接，无法取消订阅");
             Ok(false)
         }
     }
@@ -566,9 +601,9 @@ impl PolymarketClient {
 
         let (mut write, mut read) = ws_stream.split();
 
-        // Create channel for dynamic subscriptions
-        let (sub_tx, mut sub_rx) = mpsc::channel::<Vec<String>>(100);
-        *self.subscribe_tx.write() = Some(sub_tx);
+        // Create channel for dynamic subscriptions/unsubscriptions
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<PolyWsCommand>(100);
+        *self.command_tx.write() = Some(cmd_tx);
 
         // Subscribe to initial markets - 使用正确的格式（与 Python 版本一致）
         let subscribe_msg = json!({
@@ -584,7 +619,7 @@ impl PolymarketClient {
 
         let orderbook_cache = self.orderbook_cache.clone();
 
-        // Process messages with dynamic subscription support
+        // Process messages with dynamic subscription/unsubscription support
         loop {
             tokio::select! {
                 // Handle incoming WebSocket messages
@@ -615,25 +650,49 @@ impl PolymarketClient {
                         _ => {}
                     }
                 }
-                // Handle dynamic subscription requests
-                Some(new_tokens) = sub_rx.recv() => {
-                    info!("🔌 [Polymarket] 处理热订阅: {} 个新 token", new_tokens.len());
-                    let subscribe_msg = json!({
-                        "assets_ids": new_tokens,
-                        "type": "market"
-                    });
+                // Handle dynamic subscription/unsubscription requests
+                Some(command) = cmd_rx.recv() => {
+                    match command {
+                        PolyWsCommand::Subscribe(new_tokens) => {
+                            info!("🔌 [Polymarket] 处理热订阅: {} 个新 token", new_tokens.len());
+                            let subscribe_msg = json!({
+                                "assets_ids": new_tokens,
+                                "type": "market"
+                            });
 
-                    if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
-                        error!("❌ [Polymarket] 热订阅发送失败: {}", e);
-                    } else {
-                        info!("✅ [Polymarket] 热订阅完成: {} 个 token", new_tokens.len());
+                            if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
+                                error!("❌ [Polymarket] 热订阅发送失败: {}", e);
+                            } else {
+                                info!("✅ [Polymarket] 热订阅完成: {} 个 token", new_tokens.len());
+                            }
+                        }
+                        PolyWsCommand::Unsubscribe(tokens_to_unsub) => {
+                            info!("🔌 [Polymarket] 处理取消订阅: {} 个 token", tokens_to_unsub.len());
+                            // Use the operation: "unsubscribe" field as per Polymarket API
+                            let unsubscribe_msg = json!({
+                                "assets_ids": tokens_to_unsub,
+                                "type": "market",
+                                "operation": "unsubscribe"
+                            });
+
+                            if let Err(e) = write.send(Message::Text(unsubscribe_msg.to_string())).await {
+                                error!("❌ [Polymarket] 取消订阅发送失败: {}", e);
+                            } else {
+                                // Also remove from orderbook cache
+                                let mut cache = orderbook_cache.write();
+                                for token in &tokens_to_unsub {
+                                    cache.remove(token);
+                                }
+                                info!("✅ [Polymarket] 取消订阅完成: {} 个 token", tokens_to_unsub.len());
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // Clear subscription channel on disconnect
-        *self.subscribe_tx.write() = None;
+        // Clear command channel on disconnect
+        *self.command_tx.write() = None;
 
         Ok(())
     }

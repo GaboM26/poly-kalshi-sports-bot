@@ -198,6 +198,24 @@ pub async fn create_app(config: Config) -> Result<Router> {
         }
     });
 
+    // Spawn ended market cleanup task (every 60 seconds)
+    let state_for_cleanup = state.clone();
+    tokio::spawn(async move {
+        info!("🧹 已结束比赛清理任务启动，间隔 60 秒");
+        
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        
+        // Wait for initial data to be populated
+        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+        
+        loop {
+            interval.tick().await;
+            
+            // Check and clean up ended markets
+            cleanup_ended_markets(&state_for_cleanup).await;
+        }
+    });
+
     // Build router
     let app = Router::new()
         // Health check
@@ -457,4 +475,72 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
         // Only process one opportunity per cycle to avoid overwhelming the system
         break;
     }
+}
+
+/// Clean up ended markets by unsubscribing from WebSocket feeds
+/// 
+/// This function:
+/// 1. Checks all markets for extreme prices (Kalshi 99/2, Poly 100/0)
+/// 2. If extreme prices persist for 20+ minutes, marks market as ended
+/// 3. Unsubscribes from WebSocket feeds for ended markets
+/// 4. Removes ended markets from internal caches
+async fn cleanup_ended_markets(state: &Arc<AppState>) {
+    let service = state.service.read().await;
+    
+    // Get detection counts for logging
+    let detecting_count = service.ws_manager.get_ending_detection_count();
+    let ended_count = service.ws_manager.get_confirmed_ended_count();
+    
+    if detecting_count > 0 {
+        info!(
+            "🔍 [清理] 正在监控 {} 个潜在已结束市场，已确认 {} 个",
+            detecting_count, ended_count
+        );
+    }
+    
+    // Remove ended markets and get subscription IDs to unsubscribe
+    let (kalshi_to_unsub, poly_to_unsub) = service.ws_manager.remove_ended_markets();
+    
+    if kalshi_to_unsub.is_empty() && poly_to_unsub.is_empty() {
+        return;
+    }
+    
+    // Unsubscribe from Kalshi markets
+    if !kalshi_to_unsub.is_empty() {
+        match service.kalshi_client.unsubscribe_markets(kalshi_to_unsub.clone()).await {
+            Ok(success) => {
+                if success {
+                    info!("✅ [清理] Kalshi 取消订阅成功: {} 个市场", kalshi_to_unsub.len());
+                } else {
+                    warn!("⚠️ [清理] Kalshi 取消订阅部分失败");
+                }
+            }
+            Err(e) => {
+                error!("❌ [清理] Kalshi 取消订阅失败: {}", e);
+            }
+        }
+    }
+    
+    // Unsubscribe from Polymarket tokens
+    if !poly_to_unsub.is_empty() {
+        match service.polymarket_client.unsubscribe_tokens(poly_to_unsub.clone()).await {
+            Ok(success) => {
+                if success {
+                    info!("✅ [清理] Polymarket 取消订阅成功: {} 个 token", poly_to_unsub.len());
+                } else {
+                    warn!("⚠️ [清理] Polymarket 取消订阅部分失败");
+                }
+            }
+            Err(e) => {
+                error!("❌ [清理] Polymarket 取消订阅失败: {}", e);
+            }
+        }
+    }
+    
+    // Log summary
+    let remaining_markets = service.ws_manager.get_matched_markets_for_frontend().len();
+    info!(
+        "✅ [清理] 完成，剩余 {} 个活跃市场",
+        remaining_markets
+    );
 }

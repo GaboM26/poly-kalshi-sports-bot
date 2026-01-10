@@ -33,6 +33,13 @@ use crate::models::{KalshiEvent, KalshiMarket, Platform, PriceUpdate};
 
 const KALSHI_WS_URL: &str = "wss://api.elections.kalshi.com/trade-api/ws/v2";
 
+/// Subscription command for Kalshi WebSocket
+#[derive(Debug, Clone)]
+pub enum KalshiWsCommand {
+    Subscribe(Vec<String>),
+    Unsubscribe(Vec<String>),
+}
+
 /// Kalshi API client
 #[derive(Clone)]
 pub struct KalshiClient {
@@ -41,8 +48,8 @@ pub struct KalshiClient {
     signing_key: Arc<BlindedSigningKey<Sha256>>,
     /// Order book cache: market_ticker -> { "yes": [[price, qty], ...], "no": [[price, qty], ...] }
     orderbook_cache: Arc<RwLock<HashMap<String, OrderBook>>>,
-    /// Channel sender for dynamic subscriptions
-    subscribe_tx: Arc<RwLock<Option<mpsc::Sender<Vec<String>>>>>,
+    /// Channel sender for dynamic subscriptions/unsubscriptions
+    command_tx: Arc<RwLock<Option<mpsc::Sender<KalshiWsCommand>>>>,
 }
 
 /// Order book structure
@@ -104,7 +111,7 @@ impl KalshiClient {
             http: Client::new(),
             signing_key,
             orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
-            subscribe_tx: Arc::new(RwLock::new(None)),
+            command_tx: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -377,9 +384,9 @@ impl KalshiClient {
             return Ok(true);
         }
 
-        let tx = self.subscribe_tx.read().clone();
+        let tx = self.command_tx.read().clone();
         if let Some(tx) = tx {
-            match tx.send(tickers.clone()).await {
+            match tx.send(KalshiWsCommand::Subscribe(tickers.clone())).await {
                 Ok(_) => {
                     info!("🔌 [Kalshi] 发送热订阅请求: {} 个市场", tickers.len());
                     Ok(true)
@@ -391,6 +398,33 @@ impl KalshiClient {
             }
         } else {
             warn!("⚠️ [Kalshi] WebSocket 未连接，无法热订阅");
+            Ok(false)
+        }
+    }
+
+    /// Unsubscribe from markets dynamically
+    ///
+    /// This can be called after the WebSocket connection is established
+    /// to remove market subscriptions for ended games.
+    pub async fn unsubscribe_markets(&self, tickers: Vec<String>) -> Result<bool> {
+        if tickers.is_empty() {
+            return Ok(true);
+        }
+
+        let tx = self.command_tx.read().clone();
+        if let Some(tx) = tx {
+            match tx.send(KalshiWsCommand::Unsubscribe(tickers.clone())).await {
+                Ok(_) => {
+                    info!("🔌 [Kalshi] 发送取消订阅请求: {} 个市场", tickers.len());
+                    Ok(true)
+                }
+                Err(e) => {
+                    warn!("⚠️ [Kalshi] 取消订阅请求发送失败: {}", e);
+                    Ok(false)
+                }
+            }
+        } else {
+            warn!("⚠️ [Kalshi] WebSocket 未连接，无法取消订阅");
             Ok(false)
         }
     }
@@ -428,9 +462,9 @@ impl KalshiClient {
 
         let (mut write, mut read) = ws_stream.split();
 
-        // Create channel for dynamic subscriptions
-        let (sub_tx, mut sub_rx) = mpsc::channel::<Vec<String>>(100);
-        *self.subscribe_tx.write() = Some(sub_tx);
+        // Create channel for dynamic subscriptions/unsubscriptions
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<KalshiWsCommand>(100);
+        *self.command_tx.write() = Some(cmd_tx);
 
         // Subscribe to initial order books - 逐个订阅（与 Python 版本一致）
         let mut next_msg_id = 1;
@@ -454,7 +488,7 @@ impl KalshiClient {
 
         let orderbook_cache = self.orderbook_cache.clone();
 
-        // Process messages with dynamic subscription support
+        // Process messages with dynamic subscription/unsubscription support
         loop {
             tokio::select! {
                 // Handle incoming WebSocket messages
@@ -483,31 +517,57 @@ impl KalshiClient {
                         _ => {}
                     }
                 }
-                // Handle dynamic subscription requests
-                Some(new_tickers) = sub_rx.recv() => {
-                    info!("🔌 [Kalshi] 处理热订阅: {} 个新市场", new_tickers.len());
-                    for ticker in new_tickers.iter() {
-                        let subscribe_msg = json!({
-                            "id": next_msg_id,
-                            "cmd": "subscribe",
-                            "params": {
-                                "channels": ["orderbook_delta"],
-                                "market_ticker": ticker
-                            }
-                        });
-                        next_msg_id += 1;
+                // Handle dynamic subscription/unsubscription requests
+                Some(command) = cmd_rx.recv() => {
+                    match command {
+                        KalshiWsCommand::Subscribe(new_tickers) => {
+                            info!("🔌 [Kalshi] 处理热订阅: {} 个新市场", new_tickers.len());
+                            for ticker in new_tickers.iter() {
+                                let subscribe_msg = json!({
+                                    "id": next_msg_id,
+                                    "cmd": "subscribe",
+                                    "params": {
+                                        "channels": ["orderbook_delta"],
+                                        "market_ticker": ticker
+                                    }
+                                });
+                                next_msg_id += 1;
 
-                        if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
-                            error!("❌ [Kalshi] 热订阅发送失败: {}", e);
+                                if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
+                                    error!("❌ [Kalshi] 热订阅发送失败: {}", e);
+                                }
+                            }
+                            info!("✅ [Kalshi] 热订阅完成: {} 个市场", new_tickers.len());
+                        }
+                        KalshiWsCommand::Unsubscribe(tickers_to_unsub) => {
+                            info!("🔌 [Kalshi] 处理取消订阅: {} 个市场", tickers_to_unsub.len());
+                            for ticker in tickers_to_unsub.iter() {
+                                let unsubscribe_msg = json!({
+                                    "id": next_msg_id,
+                                    "cmd": "unsubscribe",
+                                    "params": {
+                                        "channels": ["orderbook_delta"],
+                                        "market_ticker": ticker
+                                    }
+                                });
+                                next_msg_id += 1;
+
+                                if let Err(e) = write.send(Message::Text(unsubscribe_msg.to_string())).await {
+                                    error!("❌ [Kalshi] 取消订阅发送失败: {}", e);
+                                }
+                                
+                                // Also remove from orderbook cache
+                                orderbook_cache.write().remove(ticker);
+                            }
+                            info!("✅ [Kalshi] 取消订阅完成: {} 个市场", tickers_to_unsub.len());
                         }
                     }
-                    info!("✅ [Kalshi] 热订阅完成: {} 个市场", new_tickers.len());
                 }
             }
         }
 
-        // Clear subscription channel on disconnect
-        *self.subscribe_tx.write() = None;
+        // Clear command channel on disconnect
+        *self.command_tx.write() = None;
 
         Ok(())
     }

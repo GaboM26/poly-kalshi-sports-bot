@@ -28,6 +28,17 @@ use crate::models::{
 use crate::services::storage::{ArbitrageStorage, AutoTradeState};
 use crate::services::metrics::{PerformanceMetrics, Operation};
 
+/// Extreme price threshold for Kalshi (99¢ = 0.99)
+const EXTREME_PRICE_THRESHOLD_KALSHI_HIGH: f64 = 0.99;
+/// Extreme price threshold for Kalshi low side (2¢ = 0.02)
+const EXTREME_PRICE_THRESHOLD_KALSHI_LOW: f64 = 0.02;
+/// Extreme price threshold for Polymarket high (100¢ = 1.00)
+const EXTREME_PRICE_THRESHOLD_POLY_HIGH: f64 = 1.00;
+/// Extreme price threshold for Polymarket low (0¢ = 0.00)
+const EXTREME_PRICE_THRESHOLD_POLY_LOW: f64 = 0.00;
+/// Duration in minutes for extreme price to be considered ended
+const ENDED_DETECTION_DURATION_MINS: i64 = 20;
+
 /// WebSocket manager for real-time price updates
 pub struct WebSocketManager {
     /// Matched markets to monitor
@@ -70,6 +81,11 @@ pub struct WebSocketManager {
     tracking_threshold: f64,
     /// Set of opportunity IDs that have been auto-traded (to prevent duplicates)
     auto_traded_opportunities: Arc<RwLock<std::collections::HashSet<String>>>,
+    /// Extreme price detection: market_key -> first_detected_time
+    /// Used to track when a market first showed extreme prices (game ended)
+    ended_market_detection: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
+    /// Set of market keys that have been confirmed as ended
+    confirmed_ended_markets: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
 impl WebSocketManager {
@@ -107,6 +123,8 @@ impl WebSocketManager {
             polymarket_client: None,
             tracking_threshold,
             auto_traded_opportunities: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            ended_market_detection: Arc::new(RwLock::new(HashMap::new())),
+            confirmed_ended_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
     }
 
@@ -854,13 +872,271 @@ impl WebSocketManager {
             })
     }
 
+    // ==================== Ended Market Detection Methods ====================
+
+    /// Check if a market shows extreme prices indicating the game has ended
+    /// 
+    /// Extreme prices are:
+    /// - Kalshi: Yes >= 99¢ and No <= 2¢ (or reversed)
+    /// - Polymarket: Yes >= 100¢ and No <= 0¢ (or reversed)
+    /// 
+    /// Returns true if market has shown extreme prices for >= 20 minutes
+    pub fn check_market_ended(&self, idx: usize) -> bool {
+        let markets = self.matched_markets.read();
+        if idx >= markets.len() {
+            return false;
+        }
+        let mm = &markets[idx];
+        let market_key = format!("{}_{}", mm.event_name, mm.team_name);
+        
+        // Check if already confirmed as ended
+        if self.confirmed_ended_markets.read().contains(&market_key) {
+            return true;
+        }
+
+        // Get Kalshi prices
+        let kalshi_prices = self.kalshi_prices.read();
+        let (k_yes_ask, k_no_ask) = match kalshi_prices.get(&mm.kalshi_market.market_id) {
+            Some((_, ya, _, na)) => (*ya, *na),
+            None => return false, // No price data yet
+        };
+
+        // Get Polymarket prices
+        let p_yes = mm.poly_yes_price;
+        let p_no = mm.poly_no_price;
+
+        drop(kalshi_prices);
+        drop(markets);
+
+        // Check if prices are extreme
+        let kalshi_extreme = self.is_kalshi_price_extreme(k_yes_ask, k_no_ask);
+        let poly_extreme = self.is_poly_price_extreme(p_yes, p_no);
+
+        if kalshi_extreme && poly_extreme {
+            // Both platforms show extreme prices - check/update detection time
+            let now = Utc::now();
+            let mut detection = self.ended_market_detection.write();
+            
+            if let Some(first_detected) = detection.get(&market_key) {
+                // Check if 20 minutes have passed
+                let duration = now.signed_duration_since(*first_detected);
+                if duration.num_minutes() >= ENDED_DETECTION_DURATION_MINS {
+                    // Confirmed ended!
+                    drop(detection);
+                    self.confirmed_ended_markets.write().insert(market_key.clone());
+                    info!(
+                        "🏁 比赛已结束: {} (极端价格持续 {} 分钟)",
+                        market_key, duration.num_minutes()
+                    );
+                    return true;
+                }
+            } else {
+                // First time detecting extreme prices
+                detection.insert(market_key.clone(), now);
+                debug!(
+                    "⏱️ 检测到极端价格: {} (Kalshi: {:.0}¢/{:.0}¢, Poly: {:.0}¢/{:.0}¢)",
+                    market_key, k_yes_ask * 100.0, k_no_ask * 100.0, p_yes * 100.0, p_no * 100.0
+                );
+            }
+        } else {
+            // Prices are not extreme anymore - clear detection
+            let mut detection = self.ended_market_detection.write();
+            if detection.remove(&market_key).is_some() {
+                debug!("🔄 极端价格恢复正常: {}", market_key);
+            }
+        }
+
+        false
+    }
+
+    /// Check if Kalshi prices are extreme (99/2 or 2/99)
+    fn is_kalshi_price_extreme(&self, yes_ask: f64, no_ask: f64) -> bool {
+        // Pattern 1: Yes is very high (99+), No is very low (2-)
+        let pattern1 = yes_ask >= EXTREME_PRICE_THRESHOLD_KALSHI_HIGH 
+            && no_ask <= EXTREME_PRICE_THRESHOLD_KALSHI_LOW;
+        // Pattern 2: Yes is very low (2-), No is very high (99+)
+        let pattern2 = yes_ask <= EXTREME_PRICE_THRESHOLD_KALSHI_LOW 
+            && no_ask >= EXTREME_PRICE_THRESHOLD_KALSHI_HIGH;
+        
+        pattern1 || pattern2
+    }
+
+    /// Check if Polymarket prices are extreme (100/0 or 0/100)
+    fn is_poly_price_extreme(&self, yes_price: f64, no_price: f64) -> bool {
+        // Pattern 1: Yes is 100%, No is 0%
+        let pattern1 = yes_price >= EXTREME_PRICE_THRESHOLD_POLY_HIGH 
+            && no_price <= EXTREME_PRICE_THRESHOLD_POLY_LOW;
+        // Pattern 2: Yes is 0%, No is 100%
+        let pattern2 = yes_price <= EXTREME_PRICE_THRESHOLD_POLY_LOW 
+            && no_price >= EXTREME_PRICE_THRESHOLD_POLY_HIGH;
+        
+        pattern1 || pattern2
+    }
+
+    /// Check if a market key is confirmed as ended
+    pub fn is_market_ended(&self, market_key: &str) -> bool {
+        self.confirmed_ended_markets.read().contains(market_key)
+    }
+
+    /// Remove ended markets and return subscription IDs to unsubscribe
+    /// 
+    /// This method:
+    /// 1. Checks all markets for extreme prices
+    /// 2. Identifies markets that have been ended for 20+ minutes
+    /// 3. Removes them from internal caches
+    /// 4. Returns the Kalshi tickers and Polymarket token IDs to unsubscribe
+    /// 
+    /// Returns: (kalshi_tickers_to_unsub, poly_tokens_to_unsub)
+    pub fn remove_ended_markets(&self) -> (Vec<String>, Vec<String>) {
+        let mut kalshi_to_unsub = Vec::new();
+        let mut poly_to_unsub = Vec::new();
+        let mut indices_to_remove = Vec::new();
+        let mut market_keys_to_remove = Vec::new();
+
+        // First pass: identify ended markets
+        {
+            let markets = self.matched_markets.read();
+            for (idx, mm) in markets.iter().enumerate() {
+                let market_key = format!("{}_{}", mm.event_name, mm.team_name);
+                
+                // Check if this market has ended
+                if self.check_market_ended(idx) {
+                    indices_to_remove.push(idx);
+                    market_keys_to_remove.push(market_key.clone());
+                    
+                    // Collect subscription IDs to unsubscribe
+                    kalshi_to_unsub.push(mm.kalshi_market.market_id.clone());
+                    
+                    // Get both Polymarket tokens (own and opponent)
+                    if let Some(token) = mm.polymarket_market.get_token_for_team(&mm.team_name) {
+                        poly_to_unsub.push(token.to_string());
+                    }
+                    if let Some(opponent) = mm.polymarket_market.get_opponent(&mm.team_name) {
+                        if let Some(token) = mm.polymarket_market.get_token_for_team(opponent) {
+                            poly_to_unsub.push(token.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        if indices_to_remove.is_empty() {
+            return (kalshi_to_unsub, poly_to_unsub);
+        }
+
+        info!(
+            "🧹 清理已结束的市场: {} 个 (Kalshi: {} 个, Poly: {} 个 token)",
+            indices_to_remove.len(),
+            kalshi_to_unsub.len(),
+            poly_to_unsub.len()
+        );
+
+        // Remove from matched_markets (in reverse order to maintain indices)
+        {
+            let mut markets = self.matched_markets.write();
+            for &idx in indices_to_remove.iter().rev() {
+                if idx < markets.len() {
+                    let removed = markets.remove(idx);
+                    info!("   移除: {} - {}", removed.event_name, removed.team_name);
+                }
+            }
+        }
+
+        // Clean up market_lookup
+        {
+            let mut lookup = self.market_lookup.write();
+            // Remove entries for unsubscribed tickers/tokens
+            for ticker in &kalshi_to_unsub {
+                lookup.remove(ticker);
+            }
+            for token in &poly_to_unsub {
+                lookup.remove(token);
+            }
+            
+            // Rebuild indices for remaining markets (since we removed some)
+            // This is necessary because indices shifted after removal
+            let markets = self.matched_markets.read();
+            let matcher = EventMatcher::new(24);
+            let new_sub_info = matcher.get_subscription_info(&markets);
+            drop(markets);
+            *lookup = new_sub_info.market_lookup;
+        }
+
+        // Clean up price caches
+        {
+            let mut kalshi_prices = self.kalshi_prices.write();
+            for ticker in &kalshi_to_unsub {
+                kalshi_prices.remove(ticker);
+            }
+        }
+        {
+            let mut poly_prices = self.poly_token_prices.write();
+            for token in &poly_to_unsub {
+                poly_prices.remove(token);
+            }
+        }
+
+        // Clean up opportunities list
+        {
+            let mut opps = self.opportunities.write();
+            opps.retain(|o| {
+                let key = format!("{}_{}", o.event_name, o.team_name);
+                !market_keys_to_remove.contains(&key)
+            });
+        }
+
+        // Clean up active tracking
+        {
+            let mut tracking = self.active_tracking.write();
+            for key in &market_keys_to_remove {
+                if tracking.remove(key).is_some() {
+                    // End tracking in storage
+                    self.storage.track_end(key);
+                }
+            }
+        }
+
+        // Clean up detection cache (already in confirmed_ended_markets)
+        {
+            let mut detection = self.ended_market_detection.write();
+            for key in &market_keys_to_remove {
+                detection.remove(key);
+            }
+        }
+
+        // Deduplicate the unsubscribe lists
+        kalshi_to_unsub.sort();
+        kalshi_to_unsub.dedup();
+        poly_to_unsub.sort();
+        poly_to_unsub.dedup();
+
+        info!(
+            "✅ 清理完成，剩余 {} 个活跃市场",
+            self.matched_markets.read().len()
+        );
+
+        (kalshi_to_unsub, poly_to_unsub)
+    }
+
+    /// Get count of markets currently being monitored for ending
+    pub fn get_ending_detection_count(&self) -> usize {
+        self.ended_market_detection.read().len()
+    }
+
+    /// Get count of confirmed ended markets
+    pub fn get_confirmed_ended_count(&self) -> usize {
+        self.confirmed_ended_markets.read().len()
+    }
+
     /// Get matched markets formatted for frontend
     /// This is the key function that converts internal MatchedMarket to frontend format
+    /// Filters out markets that have ended (confirmed ended or showing extreme prices)
     pub fn get_matched_markets_for_frontend(&self) -> Vec<MatchedMarketFrontend> {
         let markets = self.matched_markets.read();
         let kalshi_prices = self.kalshi_prices.read();
         let poly_prices = self.poly_token_prices.read();
         let opportunities = self.opportunities.read();
+        let confirmed_ended = self.confirmed_ended_markets.read();
 
         // Build opportunity lookup map
         let opp_map: HashMap<String, &ArbitrageOpportunity> = opportunities
@@ -870,8 +1146,13 @@ impl WebSocketManager {
 
         markets
             .iter()
-            .map(|mm| {
+            .filter_map(|mm| {
                 let key = format!("{}_{}", mm.event_name, mm.team_name);
+
+                // Skip if confirmed ended
+                if confirmed_ended.contains(&key) {
+                    return None;
+                }
 
                 // Check Kalshi ready status and get prices
                 let k_prices = kalshi_prices.get(&mm.kalshi_market.market_id);
@@ -894,6 +1175,16 @@ impl WebSocketManager {
                 // Get Polymarket prices
                 let p_yes = mm.poly_yes_price;
                 let p_no = mm.poly_no_price;
+
+                // Filter out markets showing extreme prices (game likely ended/started)
+                // Even if not yet confirmed (20 min), don't show to users
+                if kalshi_ready && poly_ready {
+                    let kalshi_extreme = self.is_kalshi_price_extreme(k_yes, k_no);
+                    let poly_extreme = self.is_poly_price_extreme(p_yes, p_no);
+                    if kalshi_extreme && poly_extreme {
+                        return None;
+                    }
+                }
 
                 // Get opportunity info if exists
                 let opportunity = opp_map.get(&key);
@@ -922,7 +1213,7 @@ impl WebSocketManager {
                     .start_time
                     .map(|t| t.to_rfc3339());
 
-                MatchedMarketFrontend {
+                Some(MatchedMarketFrontend {
                     event_name: mm.event_name.clone(),
                     team_name: mm.team_name.clone(),
                     kalshi_market_id: mm.kalshi_market.market_id.clone(),
@@ -945,7 +1236,7 @@ impl WebSocketManager {
                     kalshi_contracts,
                     kalshi_fee,
                     arbitrage_type,
-                }
+                })
             })
             .collect()
     }
