@@ -332,17 +332,18 @@ impl ClobClient {
         let neg_risk = self.get_neg_risk(&order_args.token_id).await?;
 
         // Calculate market price from order book
+        // Use Fak (Fill and Kill) mode - fill as much as possible, cancel the rest
         let order_book = self.get_order_book(&order_args.token_id).await?;
         let price = match order_args.side {
             Side::Buy => builder.calculate_buy_market_price(
                 &order_book,
                 order_args.amount,
-                OrderType::Fok,
+                OrderType::Fak,
             )?,
             Side::Sell => builder.calculate_sell_market_price(
                 &order_book,
                 order_args.amount,
-                OrderType::Fok,
+                OrderType::Fak,
             )?,
         };
 

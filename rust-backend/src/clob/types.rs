@@ -33,8 +33,10 @@ impl std::fmt::Display for Side {
 pub enum OrderType {
     /// Good Till Cancelled
     Gtc,
-    /// Fill Or Kill
+    /// Fill Or Kill - must fill completely or cancel entirely
     Fok,
+    /// Fill And Kill - fill as much as possible, cancel the rest immediately
+    Fak,
     /// Good Till Date
     Gtd,
 }
@@ -44,6 +46,7 @@ impl std::fmt::Display for OrderType {
         match self {
             OrderType::Gtc => write!(f, "GTC"),
             OrderType::Fok => write!(f, "FOK"),
+            OrderType::Fak => write!(f, "FAK"),
             OrderType::Gtd => write!(f, "GTD"),
         }
     }

@@ -385,6 +385,7 @@ impl PolymarketClient {
     }
 
     /// Place a market order
+    /// Uses FAK (Fill and Kill) mode - fills as much as possible, cancels the rest immediately
     pub async fn place_market_order(
         &self,
         token_id: &str,
@@ -408,13 +409,13 @@ impl PolymarketClient {
             side: order_side,
             fee_rate_bps: None,
             nonce: None,
-            slippage: Some(0.005), // 0.5% slippage
+            slippage: Some(0.02), // 2% slippage for better fill rate
         };
 
         let signed_order = clob.as_ref().create_market_order(&order_args).await?;
         let response = clob
             .as_ref()
-            .post_order(&signed_order, crate::clob::OrderType::Fok)
+            .post_order(&signed_order, crate::clob::OrderType::Fak)
             .await?;
 
         Ok(serde_json::to_value(response)?)
