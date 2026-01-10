@@ -134,21 +134,31 @@ impl WebSocketManager {
         self.polymarket_client = Some(polymarket);
     }
 
-    /// Get Polymarket ask depth for a token
-    fn get_poly_ask_depth(&self, token_id: &str, max_amount: f64) -> f64 {
+    /// Get Polymarket best ask depth and size for a token
+    /// Returns (depth_usd, size) where depth_usd = price * size
+    fn get_poly_ask_depth_and_size(&self, token_id: &str) -> (f64, f64) {
         if let Some(client) = &self.polymarket_client {
             if let Some(book) = client.get_orderbook(token_id) {
-                return book.ask_depth(max_amount);
+                // 获取 best ask 的 (price, size)
+                if let Some((price, size)) = book.best_ask() {
+                    return (price * size, size);
+                }
             }
         }
-        0.0
+        (0.0, 0.0)
     }
 
-    /// Get Kalshi ask depth for a market and side
-    fn get_kalshi_ask_depth(&self, ticker: &str, side: &str, max_contracts: i32) -> i32 {
+    /// Get Kalshi best ask depth for a market and side (real depth in contracts)
+    fn get_kalshi_ask_depth(&self, ticker: &str, side: &str) -> i32 {
         if let Some(client) = &self.kalshi_client {
             if let Some(book) = client.get_orderbook(ticker) {
-                return book.ask_depth_for_side(side, max_contracts);
+                // yes_ask 对应 no 的 best_bid，no_ask 对应 yes 的 best_bid
+                let qty = match side.to_lowercase().as_str() {
+                    "yes" => book.no.last().map(|(_, qty)| *qty),
+                    "no" => book.yes.last().map(|(_, qty)| *qty),
+                    _ => None,
+                };
+                return qty.unwrap_or(0);
             }
         }
         0
@@ -452,9 +462,11 @@ impl WebSocketManager {
             };
             
             if let Some(token_id) = poly_token_for_depth {
-                opp.poly_ask_depth = self.get_poly_ask_depth(token_id, 10.0);
+                let (depth, size) = self.get_poly_ask_depth_and_size(token_id);
+                opp.poly_ask_depth = depth;
+                opp.poly_ask_size = size;
             }
-            opp.kalshi_ask_depth = self.get_kalshi_ask_depth(&kalshi_ticker, &opp.kalshi_side, 10);
+            opp.kalshi_ask_depth = self.get_kalshi_ask_depth(&kalshi_ticker, &opp.kalshi_side);
 
             // Broadcast opportunity
             let _ = self.opportunity_tx.send(opp.clone());
@@ -510,6 +522,7 @@ impl WebSocketManager {
                 polymarket_side: opp.polymarket_side.clone(),
                 update_count: 1,
                 poly_ask_depth: opp.poly_ask_depth,
+                poly_ask_size: opp.poly_ask_size,
                 kalshi_ask_depth: opp.kalshi_ask_depth,
                 duration_ms: 0,  // Will be calculated on track_end
                 kalshi_ask_price: opp.kalshi_price,
@@ -517,9 +530,9 @@ impl WebSocketManager {
             };
 
             info!(
-                "📈 开始跟踪: {} {} - {:.2}% (poly_depth: {:.2}, kalshi_depth: {})",
+                "📈 开始跟踪: {} {} - {:.2}% (poly_depth: ${:.2}, poly_size: {:.0}, kalshi_depth: {})",
                 opp.event_name, opp.team_name, opp.profit_margin,
-                opp.poly_ask_depth, opp.kalshi_ask_depth
+                opp.poly_ask_depth, opp.poly_ask_size, opp.kalshi_ask_depth
             );
 
             self.storage.track_start(record.clone());
@@ -870,6 +883,120 @@ impl WebSocketManager {
                         .map(|s| s.to_string())
                 }
             })
+    }
+
+    /// Validate orderbook depth and price before auto-trade execution
+    /// 
+    /// Retrieves current orderbook data from local cache and validates:
+    /// 1. Kalshi depth is sufficient for required contracts
+    /// 2. Polymarket depth is sufficient for required amount
+    /// 3. Current prices still support arbitrage (sum < 1)
+    /// 
+    /// # Arguments
+    /// * `kalshi_ticker` - Kalshi market ticker
+    /// * `kalshi_side` - "yes" or "no" for Kalshi
+    /// * `poly_token` - Polymarket token ID
+    /// * `required_contracts` - Number of contracts to trade
+    /// 
+    /// # Returns
+    /// (valid, kalshi_depth, poly_depth, kalshi_price, poly_price, reason)
+    pub fn validate_auto_trade_depth(
+        &self,
+        kalshi_ticker: &str,
+        kalshi_side: &str,
+        poly_token: &str,
+        required_contracts: i32,
+    ) -> (bool, i32, f64, f64, f64, String) {
+        // Get Kalshi orderbook from local cache
+        let kalshi_book = match &self.kalshi_client {
+            Some(client) => client.get_orderbook(kalshi_ticker),
+            None => {
+                return (false, 0, 0.0, 0.0, 0.0, "Kalshi client 未初始化".to_string());
+            }
+        };
+
+        // Get Polymarket orderbook from local cache
+        let poly_book = match &self.polymarket_client {
+            Some(client) => client.get_orderbook(poly_token),
+            None => {
+                return (false, 0, 0.0, 0.0, 0.0, "Polymarket client 未初始化".to_string());
+            }
+        };
+
+        // Validate Kalshi orderbook exists
+        let kalshi_book = match kalshi_book {
+            Some(book) => book,
+            None => {
+                return (false, 0, 0.0, 0.0, 0.0, format!("Kalshi 订单簿不存在: {}", kalshi_ticker));
+            }
+        };
+
+        // Validate Polymarket orderbook exists
+        let poly_book = match poly_book {
+            Some(book) => book,
+            None => {
+                return (false, 0, 0.0, 0.0, 0.0, format!("Polymarket 订单簿不存在: {}", poly_token));
+            }
+        };
+
+        // Get Kalshi depth for the specified side
+        let kalshi_depth = kalshi_book.ask_depth_for_side(kalshi_side, required_contracts);
+
+        // Get Kalshi current ask price from local price cache
+        let kalshi_price = {
+            let prices = self.kalshi_prices.read();
+            match prices.get(kalshi_ticker) {
+                Some((_, yes_ask, _, no_ask)) => {
+                    if kalshi_side == "yes" { *yes_ask } else { *no_ask }
+                }
+                None => {
+                    return (false, kalshi_depth, 0.0, 0.0, 0.0, 
+                        format!("Kalshi 价格缓存不存在: {}", kalshi_ticker));
+                }
+            }
+        };
+
+        // Get Polymarket best ask price and calculate required amount
+        let (poly_price, poly_size) = match poly_book.best_ask() {
+            Some((price, size)) => (price, size),
+            None => {
+                return (false, kalshi_depth, 0.0, kalshi_price, 0.0, 
+                    "Polymarket 无可用 ask".to_string());
+            }
+        };
+
+        // Calculate required Polymarket amount (contracts * price)
+        let required_poly_amount = required_contracts as f64 * poly_price;
+        
+        // Calculate available Polymarket depth (price * size at best ask)
+        let poly_depth = poly_price * poly_size;
+
+        // Check Kalshi depth
+        if kalshi_depth < required_contracts {
+            return (false, kalshi_depth, poly_depth, kalshi_price, poly_price,
+                format!("Kalshi 深度不足: 需要 {} 合约, 可用 {} 合约", 
+                    required_contracts, kalshi_depth));
+        }
+
+        // Check Polymarket depth
+        if poly_depth < required_poly_amount {
+            return (false, kalshi_depth, poly_depth, kalshi_price, poly_price,
+                format!("Polymarket 深度不足: 需要 ${:.2}, 可用 ${:.2}", 
+                    required_poly_amount, poly_depth));
+        }
+
+        // Check arbitrage condition still valid
+        let price_sum = kalshi_price + poly_price;
+        if price_sum >= 1.0 {
+            return (false, kalshi_depth, poly_depth, kalshi_price, poly_price,
+                format!("套利条件已消失: K={:.4} + P={:.4} = {:.4} >= 1", 
+                    kalshi_price, poly_price, price_sum));
+        }
+
+        // All checks passed
+        (true, kalshi_depth, poly_depth, kalshi_price, poly_price, 
+            format!("验证通过: K深度={}, P深度=${:.2}, 价格和={:.4}", 
+                kalshi_depth, poly_depth, price_sum))
     }
 
     // ==================== Ended Market Detection Methods ====================

@@ -42,6 +42,8 @@ interface AutoTradeRecord {
   polymarket_order_id?: string;
   kalshi_error?: string;
   polymarket_error?: string;
+  status: string; // "executed" | "partial" | "skipped"
+  skip_reason?: string;
   created_at: string;
 }
 
@@ -123,12 +125,16 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
 
   // 获取下单状态样式
   const getTradeStatus = (record: AutoTradeRecord) => {
-    if (record.kalshi_success && record.polymarket_success) {
-      return { text: '成功', color: 'text-green-400', bg: 'bg-green-500/20' };
-    } else if (!record.kalshi_success && !record.polymarket_success) {
-      return { text: '失败', color: 'text-red-400', bg: 'bg-red-500/20' };
+    // 优先检查 status 字段
+    if (record.status === 'skipped') {
+      return { text: '已跳过', color: 'text-gray-400', bg: 'bg-gray-500/20', icon: '⏭️' };
+    }
+    if (record.status === 'executed' || (record.kalshi_success && record.polymarket_success)) {
+      return { text: '成功', color: 'text-green-400', bg: 'bg-green-500/20', icon: '✅' };
+    } else if (record.status === 'partial' || (record.kalshi_success !== record.polymarket_success)) {
+      return { text: '部分成功', color: 'text-yellow-400', bg: 'bg-yellow-500/20', icon: '⚠️' };
     } else {
-      return { text: '部分成功', color: 'text-yellow-400', bg: 'bg-yellow-500/20' };
+      return { text: '失败', color: 'text-red-400', bg: 'bg-red-500/20', icon: '❌' };
     }
   };
 
@@ -187,6 +193,7 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
               <div className="space-y-1.5">
                 {autoTradeRecords.map((record) => {
                   const status = getTradeStatus(record);
+                  const isSkipped = record.status === 'skipped';
                   return (
                     <div
                       key={record.id}
@@ -203,14 +210,20 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
                             {record.profit_margin.toFixed(2)}%
                           </span>
                           <span className={`text-[10px] px-1.5 py-0.5 rounded ${status.bg} ${status.color} font-semibold`}>
-                            {status.text}
+                            {status.icon} {status.text}
                           </span>
                         </div>
                       </div>
                       <div className="flex justify-between items-center text-[10px] text-[--text-muted] mt-1">
-                        <span>
-                          K:{record.kalshi_contracts}合约 P:${record.polymarket_amount.toFixed(2)}
-                        </span>
+                        {isSkipped ? (
+                          <span className="text-gray-400 truncate max-w-[180px]" title={record.skip_reason}>
+                            {record.skip_reason || '未知原因'}
+                          </span>
+                        ) : (
+                          <span>
+                            K:{record.kalshi_contracts}合约 P:${record.polymarket_amount.toFixed(2)}
+                          </span>
+                        )}
                         <span>{formatTime(record.created_at)}</span>
                       </div>
                     </div>
@@ -404,7 +417,7 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
               <div className={`rounded p-2.5 ${getTradeStatus(selectedAutoTrade).bg}`}>
                 <div className="text-[10px] text-[--text-muted] mb-1">下单状态</div>
                 <div className={`text-lg font-bold ${getTradeStatus(selectedAutoTrade).color}`}>
-                  {getTradeStatus(selectedAutoTrade).text}
+                  {getTradeStatus(selectedAutoTrade).icon} {getTradeStatus(selectedAutoTrade).text}
                 </div>
               </div>
               <div className="bg-[--bg-tertiary] rounded p-2.5">
@@ -414,6 +427,14 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
                 </div>
               </div>
             </div>
+
+            {/* 跳过原因（如果有） */}
+            {selectedAutoTrade.status === 'skipped' && selectedAutoTrade.skip_reason && (
+              <div className="mb-4 p-3 bg-gray-500/10 border border-gray-500/30 rounded">
+                <div className="text-[10px] text-gray-400 mb-1">⚠️ 跳过原因</div>
+                <div className="text-sm text-gray-300">{selectedAutoTrade.skip_reason}</div>
+              </div>
+            )}
 
             {/* Kalshi 订单详情 */}
             <div className="mb-3 p-2.5 bg-[--bg-tertiary] rounded">

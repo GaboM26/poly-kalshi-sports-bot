@@ -65,6 +65,10 @@ pub struct AutoTradeRecord {
     pub polymarket_order_id: Option<String>,
     pub kalshi_error: Option<String>,
     pub polymarket_error: Option<String>,
+    /// Status: "executed", "skipped", "partial"
+    pub status: String,
+    /// Reason for skipping (if status is "skipped")
+    pub skip_reason: Option<String>,
     pub created_at: String,
 }
 
@@ -106,6 +110,7 @@ impl ArbitrageStorage {
                 polymarket_side TEXT NOT NULL,
                 update_count INTEGER DEFAULT 0,
                 poly_ask_depth REAL DEFAULT 0,
+                poly_ask_size REAL DEFAULT 0,
                 kalshi_ask_depth INTEGER DEFAULT 0,
                 duration_ms INTEGER DEFAULT 0,
                 kalshi_ask_price REAL DEFAULT 0,
@@ -122,6 +127,10 @@ impl ArbitrageStorage {
         // Migrate existing tables: add new columns if they don't exist
         let _ = conn.execute(
             "ALTER TABLE arbitrage_tracking ADD COLUMN poly_ask_depth REAL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE arbitrage_tracking ADD COLUMN poly_ask_size REAL DEFAULT 0",
             [],
         );
         let _ = conn.execute(
@@ -169,7 +178,7 @@ impl ArbitrageStorage {
             [],
         )?;
 
-        // Create auto_trade_history table for recording executed trades
+        // Create auto_trade_history table for recording executed and skipped trades
         conn.execute(
             "CREATE TABLE IF NOT EXISTS auto_trade_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -193,14 +202,24 @@ impl ArbitrageStorage {
                 polymarket_order_id TEXT,
                 kalshi_error TEXT,
                 polymarket_error TEXT,
+                status TEXT DEFAULT 'executed',
+                skip_reason TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )",
             [],
         )?;
 
-        // Migrate existing auto_trade_history table: add kalshi_fee column if it doesn't exist
+        // Migrate existing auto_trade_history table: add new columns if they don't exist
         let _ = conn.execute(
             "ALTER TABLE auto_trade_history ADD COLUMN kalshi_fee REAL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN status TEXT DEFAULT 'executed'",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN skip_reason TEXT",
             [],
         );
 
@@ -239,9 +258,9 @@ impl ArbitrageStorage {
                     (id, event_name, team_name, kalshi_market_id, polymarket_market_id, 
                      start_time, initial_profit_margin, max_profit_margin, 
                      kalshi_side, polymarket_side, update_count,
-                     poly_ask_depth, kalshi_ask_depth, duration_ms,
+                     poly_ask_depth, poly_ask_size, kalshi_ask_depth, duration_ms,
                      kalshi_ask_price, polymarket_ask_price)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                     params![
                         record.id,
                         record.event_name,
@@ -255,6 +274,7 @@ impl ArbitrageStorage {
                         record.polymarket_side,
                         record.update_count,
                         record.poly_ask_depth,
+                        record.poly_ask_size,
                         record.kalshi_ask_depth,
                         record.duration_ms,
                         record.kalshi_ask_price,
@@ -324,7 +344,7 @@ impl ArbitrageStorage {
             "SELECT id, event_name, team_name, kalshi_market_id, polymarket_market_id,
                     start_time, end_time, initial_profit_margin, max_profit_margin,
                     kalshi_side, polymarket_side, update_count,
-                    poly_ask_depth, kalshi_ask_depth, duration_ms,
+                    poly_ask_depth, poly_ask_size, kalshi_ask_depth, duration_ms,
                     kalshi_ask_price, polymarket_ask_price
              FROM arbitrage_tracking
              ORDER BY start_time DESC
@@ -352,10 +372,11 @@ impl ArbitrageStorage {
                     polymarket_side: row.get(10)?,
                     update_count: row.get(11)?,
                     poly_ask_depth: row.get(12).unwrap_or(0.0),
-                    kalshi_ask_depth: row.get(13).unwrap_or(0),
-                    duration_ms: row.get(14).unwrap_or(0),
-                    kalshi_ask_price: row.get(15).unwrap_or(0.0),
-                    polymarket_ask_price: row.get(16).unwrap_or(0.0),
+                    poly_ask_size: row.get(13).unwrap_or(0.0),
+                    kalshi_ask_depth: row.get(14).unwrap_or(0),
+                    duration_ms: row.get(15).unwrap_or(0),
+                    kalshi_ask_price: row.get(16).unwrap_or(0.0),
+                    polymarket_ask_price: row.get(17).unwrap_or(0.0),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -448,7 +469,8 @@ impl ArbitrageStorage {
             "SELECT id, event_name, team_name, kalshi_market_id, polymarket_market_id,
                     start_time, end_time, initial_profit_margin, max_profit_margin,
                     kalshi_side, polymarket_side, update_count,
-                    poly_ask_depth, kalshi_ask_depth, duration_ms
+                    poly_ask_depth, poly_ask_size, kalshi_ask_depth, duration_ms,
+                    kalshi_ask_price, polymarket_ask_price
              FROM arbitrage_tracking
              WHERE {}
              ORDER BY {}
@@ -465,9 +487,12 @@ impl ArbitrageStorage {
             .query_map(&params_refs[..], |row| {
                 let start_time: String = row.get(5)?;
                 let end_time: Option<String> = row.get(6)?;
-                let duration_ms: i64 = row.get(14).unwrap_or(0);
                 let poly_depth: f64 = row.get(12).unwrap_or(0.0);
-                let kalshi_depth: i32 = row.get(13).unwrap_or(0);
+                let poly_size: f64 = row.get(13).unwrap_or(0.0);
+                let kalshi_depth: i32 = row.get(14).unwrap_or(0);
+                let duration_ms: i64 = row.get(15).unwrap_or(0);
+                let kalshi_ask_price: f64 = row.get(16).unwrap_or(0.0);
+                let polymarket_ask_price: f64 = row.get(17).unwrap_or(0.0);
 
                 Ok(serde_json::json!({
                     "id": row.get::<_, String>(0)?,
@@ -475,13 +500,18 @@ impl ArbitrageStorage {
                     "team_name": row.get::<_, String>(2)?,
                     "kalshi_market_id": row.get::<_, String>(3)?,
                     "polymarket_market_id": row.get::<_, String>(4)?,
+                    "kalshi_side": row.get::<_, String>(9)?,
+                    "polymarket_side": row.get::<_, String>(10)?,
                     "start_time": start_time,
                     "end_time": end_time,
                     "duration_ms": duration_ms,
                     "duration_seconds": duration_ms / 1000,
                     "max_profit_margin": row.get::<_, f64>(8)?,
                     "poly_ask_depth": poly_depth,
+                    "poly_ask_size": poly_size,
                     "kalshi_ask_depth": kalshi_depth,
+                    "kalshi_ask_price": kalshi_ask_price,
+                    "polymarket_ask_price": polymarket_ask_price,
                 }))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -787,6 +817,14 @@ impl ArbitrageStorage {
         polymarket_error: Option<&str>,
     ) -> Result<i64> {
         let conn = self.conn.lock();
+        
+        // Determine status based on success flags
+        let status = if kalshi_success && polymarket_success {
+            "executed"
+        } else {
+            "partial"
+        };
+        
         conn.execute(
             "INSERT INTO auto_trade_history (
                 event_name, team_name, kalshi_market_id, polymarket_market_id,
@@ -794,8 +832,8 @@ impl ArbitrageStorage {
                 polymarket_amount, polymarket_price, total_amount, profit_margin,
                 duration_ms, kalshi_success, polymarket_success,
                 kalshi_order_id, polymarket_order_id, kalshi_error, polymarket_error,
-                created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                status, skip_reason, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 event_name,
                 team_name,
@@ -817,16 +855,83 @@ impl ArbitrageStorage {
                 polymarket_order_id,
                 kalshi_error,
                 polymarket_error,
+                status,
+                Option::<String>::None, // skip_reason is None for executed orders
                 Utc::now().to_rfc3339(),
             ],
         )?;
         
         let id = conn.last_insert_rowid();
-        info!("📝 自动下单记录已保存: ID={}, 事件={}, 状态=K:{}/P:{}", 
-            id, event_name, 
+        info!("📝 自动下单记录已保存: ID={}, 事件={}, 状态={}, K:{}/P:{}", 
+            id, event_name, status,
             if kalshi_success { "成功" } else { "失败" },
             if polymarket_success { "成功" } else { "失败" }
         );
+        Ok(id)
+    }
+
+    /// Save a skipped auto-trade record (for debugging/analysis)
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_skipped_auto_trade_record(
+        &self,
+        event_name: &str,
+        team_name: &str,
+        kalshi_market_id: &str,
+        polymarket_market_id: &str,
+        kalshi_side: &str,
+        polymarket_side: &str,
+        kalshi_contracts: i32,
+        kalshi_price: f64,
+        polymarket_price: f64,
+        profit_margin: f64,
+        duration_ms: i64,
+        skip_reason: &str,
+    ) -> Result<i64> {
+        let conn = self.conn.lock();
+        
+        // Calculate estimated amounts for reference
+        let kalshi_fee = (0.07 * kalshi_contracts as f64 * kalshi_price * (1.0 - kalshi_price) * 100.0).ceil() / 100.0;
+        let polymarket_amount = kalshi_contracts as f64 * polymarket_price;
+        let total_amount = kalshi_contracts as f64 * kalshi_price + kalshi_fee + polymarket_amount;
+        
+        conn.execute(
+            "INSERT INTO auto_trade_history (
+                event_name, team_name, kalshi_market_id, polymarket_market_id,
+                kalshi_side, polymarket_side, kalshi_contracts, kalshi_price, kalshi_fee,
+                polymarket_amount, polymarket_price, total_amount, profit_margin,
+                duration_ms, kalshi_success, polymarket_success,
+                kalshi_order_id, polymarket_order_id, kalshi_error, polymarket_error,
+                status, skip_reason, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+            params![
+                event_name,
+                team_name,
+                kalshi_market_id,
+                polymarket_market_id,
+                kalshi_side,
+                polymarket_side,
+                kalshi_contracts,
+                kalshi_price,
+                kalshi_fee,
+                polymarket_amount,
+                polymarket_price,
+                total_amount,
+                profit_margin,
+                duration_ms,
+                0, // kalshi_success = false (not executed)
+                0, // polymarket_success = false (not executed)
+                Option::<String>::None, // no order_id
+                Option::<String>::None,
+                Option::<String>::None, // no error (just skipped)
+                Option::<String>::None,
+                "skipped",
+                Some(skip_reason),
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        
+        let id = conn.last_insert_rowid();
+        info!("📝 自动下单跳过记录: ID={}, 事件={}, 原因={}", id, event_name, skip_reason);
         Ok(id)
     }
 
@@ -839,7 +944,7 @@ impl ArbitrageStorage {
                     polymarket_amount, polymarket_price, total_amount, profit_margin,
                     duration_ms, kalshi_success, polymarket_success,
                     kalshi_order_id, polymarket_order_id, kalshi_error, polymarket_error,
-                    created_at
+                    status, skip_reason, created_at
              FROM auto_trade_history
              ORDER BY created_at DESC
              LIMIT ?1",
@@ -869,7 +974,9 @@ impl ArbitrageStorage {
                     polymarket_order_id: row.get(18)?,
                     kalshi_error: row.get(19)?,
                     polymarket_error: row.get(20)?,
-                    created_at: row.get(21)?,
+                    status: row.get::<_, Option<String>>(21)?.unwrap_or_else(|| "executed".to_string()),
+                    skip_reason: row.get(22)?,
+                    created_at: row.get(23)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

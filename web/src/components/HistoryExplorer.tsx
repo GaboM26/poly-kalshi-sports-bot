@@ -23,7 +23,8 @@ interface HistoryRecord {
   max_profit_time?: string;
   profit_history?: ProfitHistoryEntry[];
   // 深度信息
-  poly_ask_depth?: number;  // Polymarket ask 深度 (USD)
+  poly_ask_depth?: number;  // Polymarket ask 深度 (USD = price * size)
+  poly_ask_size?: number;   // Polymarket ask 数量 (代币数)
   kalshi_ask_depth?: number;  // Kalshi ask 深度 (contracts)
   // 价格信息
   kalshi_ask_price?: number;  // Kalshi ask 价格
@@ -415,18 +416,30 @@ export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
                           </span>
                         </td>
                         <td className="px-4 py-3 text-right">
-                          <span className={`text-sm tabular-nums ${
-                            (record.poly_ask_depth || 0) >= 10 ? 'text-[--accent-green]' : 'text-[--accent-red]'
-                          }`}>
-                            {record.poly_ask_depth ? `$${record.poly_ask_depth.toFixed(1)}` : '-'}
-                          </span>
+                          <div className="flex flex-col items-end">
+                            <span className="text-cyan-400 font-mono text-xs">
+                              ×{record.poly_ask_size?.toFixed(0) ?? '-'}
+                            </span>
+                            <span className={`text-xs tabular-nums ${
+                              (record.poly_ask_depth || 0) >= 10 ? 'text-yellow-400' : 'text-[--accent-red]'
+                            }`}>
+                              ${record.poly_ask_depth?.toFixed(0) ?? '-'}
+                            </span>
+                          </div>
                         </td>
                         <td className="px-4 py-3 text-right">
-                          <span className={`text-sm tabular-nums ${
-                            (record.kalshi_ask_depth || 0) >= 10 ? 'text-[--accent-green]' : 'text-[--accent-red]'
-                          }`}>
-                            {record.kalshi_ask_depth ? `${record.kalshi_ask_depth}` : '-'}
-                          </span>
+                          <div className="flex flex-col items-end">
+                            <span className="text-cyan-400 font-mono text-xs">
+                              ×{record.kalshi_ask_depth ?? '-'}
+                            </span>
+                            <span className={`text-xs tabular-nums ${
+                              (record.kalshi_ask_depth || 0) >= 10 ? 'text-yellow-400' : 'text-[--accent-red]'
+                            }`}>
+                              ${record.kalshi_ask_depth && record.kalshi_ask_price 
+                                ? (record.kalshi_ask_depth * record.kalshi_ask_price).toFixed(0) 
+                                : '-'}
+                            </span>
+                          </div>
                         </td>
                         <td className="px-4 py-3">
                           <span className="text-xs text-[--text-muted]">
@@ -688,21 +701,37 @@ export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
             <div className="grid grid-cols-2 gap-4 mb-4">
               <div className="bg-[--bg-tertiary] rounded p-3">
                 <div className="text-xs text-[--text-muted] mb-1">Polymarket 深度</div>
-                <div className={`text-lg font-bold tabular-nums ${
-                  (selectedRecord.poly_ask_depth || 0) >= 10 ? 'text-[--accent-green]' : 'text-[--accent-red]'
-                }`}>
-                  {selectedRecord.poly_ask_depth ? `$${selectedRecord.poly_ask_depth.toFixed(2)}` : '-'}
+                <div className="flex items-baseline gap-2">
+                  <span className="text-cyan-400 font-mono text-lg">
+                    ×{selectedRecord.poly_ask_size?.toFixed(0) ?? '-'}
+                  </span>
+                  <span className={`text-lg font-bold tabular-nums ${
+                    (selectedRecord.poly_ask_depth || 0) >= 10 ? 'text-yellow-400' : 'text-[--accent-red]'
+                  }`}>
+                    ${selectedRecord.poly_ask_depth?.toFixed(0) ?? '-'}
+                  </span>
                 </div>
-                <div className="text-xs text-[--text-muted] mt-1">USD 可用买入深度</div>
+                <div className="text-xs text-[--text-muted] mt-1">
+                  代币数量 × 价格 = USD
+                </div>
               </div>
               <div className="bg-[--bg-tertiary] rounded p-3">
                 <div className="text-xs text-[--text-muted] mb-1">Kalshi 深度</div>
-                <div className={`text-lg font-bold tabular-nums ${
-                  (selectedRecord.kalshi_ask_depth || 0) >= 10 ? 'text-[--accent-green]' : 'text-[--accent-red]'
-                }`}>
-                  {selectedRecord.kalshi_ask_depth ?? '-'}
+                <div className="flex items-baseline gap-2">
+                  <span className="text-cyan-400 font-mono text-lg">
+                    ×{selectedRecord.kalshi_ask_depth ?? '-'}
+                  </span>
+                  <span className={`text-lg font-bold tabular-nums ${
+                    (selectedRecord.kalshi_ask_depth || 0) >= 10 ? 'text-yellow-400' : 'text-[--accent-red]'
+                  }`}>
+                    ${selectedRecord.kalshi_ask_depth && selectedRecord.kalshi_ask_price 
+                      ? (selectedRecord.kalshi_ask_depth * selectedRecord.kalshi_ask_price).toFixed(0) 
+                      : '-'}
+                  </span>
                 </div>
-                <div className="text-xs text-[--text-muted] mt-1">合约数量</div>
+                <div className="text-xs text-[--text-muted] mt-1">
+                  合约数量 × 价格 = USD
+                </div>
               </div>
             </div>
 

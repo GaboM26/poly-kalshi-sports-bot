@@ -305,9 +305,12 @@ pub struct ArbitrageOpportunity {
     pub start_time: Option<DateTime<Utc>>,
 
     // Depth info for liquidity tracking
-    /// Polymarket ask 侧深度 (USD)
+    /// Polymarket ask 侧深度 (USD = price * size)
     #[serde(default)]
     pub poly_ask_depth: f64,
+    /// Polymarket ask 侧数量 (代币数)
+    #[serde(default)]
+    pub poly_ask_size: f64,
     /// Kalshi ask 侧深度 (contracts)
     #[serde(default)]
     pub kalshi_ask_depth: i32,
@@ -348,9 +351,12 @@ pub struct ArbitrageTrackingRecord {
     pub polymarket_side: String,
     #[serde(default)]
     pub update_count: u64,
-    /// Polymarket ask 侧深度 (USD)
+    /// Polymarket ask 侧深度 (USD = price * size)
     #[serde(default)]
     pub poly_ask_depth: f64,
+    /// Polymarket ask 侧数量 (代币数)
+    #[serde(default)]
+    pub poly_ask_size: f64,
     /// Kalshi ask 侧深度 (contracts)
     #[serde(default)]
     pub kalshi_ask_depth: i32,

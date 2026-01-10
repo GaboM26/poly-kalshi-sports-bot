@@ -183,12 +183,12 @@ pub async fn create_app(config: Config) -> Result<Router> {
         }
     });
 
-    // Spawn auto-trade checker (every 1 second)
+    // Spawn auto-trade checker (every 200ms for faster response)
     let state_for_auto_trade = state.clone();
     tokio::spawn(async move {
-        info!("🤖 自动下单检查任务启动，间隔 1 秒");
+        info!("🤖 自动下单检查任务启动，间隔 200ms");
         
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(200));
         
         loop {
             interval.tick().await;
@@ -352,7 +352,6 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
         // Calculate amounts based on fixed contracts
         let kalshi_contracts = fixed_contracts;
         let kalshi_bet = fixed_contracts as f64 * opportunity.kalshi_price;
-        let kalshi_price_cents = (opportunity.kalshi_price * 100.0).round() as i32;
         
         // Calculate Kalshi trading fee: fee = 0.07 × C × P × (1-P), rounded up to cent
         let kalshi_fee_raw = 0.07 * kalshi_contracts as f64 * opportunity.kalshi_price * (1.0 - opportunity.kalshi_price);
@@ -366,7 +365,16 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
         
         // Verify total doesn't exceed max_amount
         if total_bet > auto_state.max_amount {
-            info!("   ⚠️ 总投入 ${:.2} (含手续费 ${:.2}) 超过限额 ${:.2}，跳过此机会", total_bet, kalshi_fee, auto_state.max_amount);
+            let skip_reason = format!("总投入 ${:.2} 超过限额 ${:.2}", total_bet, auto_state.max_amount);
+            info!("   ⚠️ {}", skip_reason);
+            let storage = service.ws_manager.get_storage();
+            let _ = storage.save_skipped_auto_trade_record(
+                &record.event_name, &record.team_name,
+                &record.kalshi_market_id, &record.polymarket_market_id,
+                &opportunity.kalshi_side, &opportunity.polymarket_side,
+                fixed_contracts, opportunity.kalshi_price, opportunity.polymarket_price,
+                opportunity.profit_margin, duration_ms, &skip_reason,
+            );
             continue;
         }
         
@@ -378,13 +386,71 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
         ) {
             Some(token) => token,
             None => {
-                error!("❌ 无法获取 Polymarket token: {} - {} ({}侧)", 
-                    record.event_name, record.team_name, opportunity.polymarket_side);
+                let skip_reason = format!("无法获取 Polymarket token ({}侧)", opportunity.polymarket_side);
+                error!("❌ {}: {} - {}", skip_reason, record.event_name, record.team_name);
+                let storage = service.ws_manager.get_storage();
+                let _ = storage.save_skipped_auto_trade_record(
+                    &record.event_name, &record.team_name,
+                    &record.kalshi_market_id, &record.polymarket_market_id,
+                    &opportunity.kalshi_side, &opportunity.polymarket_side,
+                    fixed_contracts, opportunity.kalshi_price, opportunity.polymarket_price,
+                    opportunity.profit_margin, duration_ms, &skip_reason,
+                );
                 continue;
             }
         };
         
-        info!("   📊 订单计算 (固定 {} 合约):", fixed_contracts);
+        // === Pre-order depth and price validation from local orderbook cache ===
+        let (depth_valid, kalshi_depth, poly_depth, current_k_price, current_p_price, validation_reason) = 
+            service.ws_manager.validate_auto_trade_depth(
+                &record.kalshi_market_id,
+                &opportunity.kalshi_side,
+                &poly_token,
+                fixed_contracts,
+            );
+        
+        if !depth_valid {
+            info!("   ⚠️ [深度/价格检查] 跳过下单: {}", validation_reason);
+            let storage = service.ws_manager.get_storage();
+            let _ = storage.save_skipped_auto_trade_record(
+                &record.event_name, &record.team_name,
+                &record.kalshi_market_id, &record.polymarket_market_id,
+                &opportunity.kalshi_side, &opportunity.polymarket_side,
+                fixed_contracts, opportunity.kalshi_price, opportunity.polymarket_price,
+                opportunity.profit_margin, duration_ms, &validation_reason,
+            );
+            continue;
+        }
+        
+        info!("   ✅ [深度/价格检查] {}", validation_reason);
+        info!("      Kalshi 深度: {} 合约, Poly 深度: ${:.2}", kalshi_depth, poly_depth);
+        info!("      当前价格: K={:.4}, P={:.4}, 价格和={:.4}", 
+            current_k_price, current_p_price, current_k_price + current_p_price);
+        
+        // Recalculate amounts using current prices from local orderbook
+        let kalshi_price_cents = (current_k_price * 100.0).round() as i32;
+        let kalshi_bet = fixed_contracts as f64 * current_k_price;
+        let kalshi_fee_raw = 0.07 * kalshi_contracts as f64 * current_k_price * (1.0 - current_k_price);
+        let kalshi_fee = (kalshi_fee_raw * 100.0).ceil() / 100.0;
+        let poly_amount = fixed_contracts as f64 * current_p_price;
+        let total_bet = kalshi_bet + kalshi_fee + poly_amount;
+        
+        // Re-verify total doesn't exceed max_amount with updated prices
+        if total_bet > auto_state.max_amount {
+            let skip_reason = format!("更新价格后总投入 ${:.2} 超过限额 ${:.2}", total_bet, auto_state.max_amount);
+            info!("   ⚠️ {}", skip_reason);
+            let storage = service.ws_manager.get_storage();
+            let _ = storage.save_skipped_auto_trade_record(
+                &record.event_name, &record.team_name,
+                &record.kalshi_market_id, &record.polymarket_market_id,
+                &opportunity.kalshi_side, &opportunity.polymarket_side,
+                fixed_contracts, current_k_price, current_p_price,
+                opportunity.profit_margin, duration_ms, &skip_reason,
+            );
+            continue;
+        }
+        
+        info!("   📊 订单计算 (固定 {} 合约, 使用最新价格):", fixed_contracts);
         info!("      Kalshi: {} 合约 @ {:.2}¢ = ${:.2} + 手续费 ${:.2} ({}侧)", kalshi_contracts, kalshi_price_cents, kalshi_bet, kalshi_fee, opportunity.kalshi_side);
         info!("      Polymarket: {} 合约等价 = ${:.4} ({}侧)", fixed_contracts, poly_amount, opportunity.polymarket_side);
         info!("      总投入: ${:.2} (含手续费) / ${:.2}", total_bet, auto_state.max_amount);
@@ -423,7 +489,15 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
             Err(e) => (None, Some(e.to_string())),
         };
         
-        // Save trade record to database
+        // Save trade record to database (using current validated prices)
+        // Calculate actual profit margin based on current prices
+        let actual_profit_margin = if total_bet > 0.0 {
+            let expected_profit = fixed_contracts as f64 - total_bet;
+            (expected_profit / total_bet) * 100.0
+        } else {
+            0.0
+        };
+        
         let storage = service.ws_manager.get_storage();
         if let Err(e) = storage.save_auto_trade_record(
             &record.event_name,
@@ -433,12 +507,12 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
             &opportunity.kalshi_side,
             &opportunity.polymarket_side,
             kalshi_contracts,
-            opportunity.kalshi_price,
+            current_k_price,  // Use current validated price
             kalshi_fee,
             poly_amount,
-            opportunity.polymarket_price,
+            current_p_price,  // Use current validated price
             total_bet,
-            opportunity.profit_margin,
+            actual_profit_margin,  // Use recalculated profit margin
             duration_ms,
             kalshi_success,
             poly_success,

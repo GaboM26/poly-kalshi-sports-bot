@@ -32,14 +32,14 @@ async fn main() -> Result<()> {
         .with_thread_names(false)
         .with_filter(EnvFilter::new("polytaoli=info,tower_http=warn"));
 
-    // 文件日志层 - 记录所有 debug 及以上级别
+    // 文件日志层 - 记录 info 及以上级别
     let file_layer = fmt::layer()
         .with_writer(non_blocking_file)
         .with_ansi(false)
         .with_target(true)
         .with_thread_ids(true)
         .with_line_number(true)
-        .with_filter(EnvFilter::new("polytaoli=debug,tower_http=debug"));
+        .with_filter(EnvFilter::new("polytaoli=info,tower_http=warn"));
 
     // 组合日志层
     tracing_subscriber::registry()

@@ -657,7 +657,8 @@ impl PolymarketClient {
                             info!("🔌 [Polymarket] 处理热订阅: {} 个新 token", new_tokens.len());
                             let subscribe_msg = json!({
                                 "assets_ids": new_tokens,
-                                "type": "market"
+                                "type": "market",
+                                "operation": "subscribe"
                             });
 
                             if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
