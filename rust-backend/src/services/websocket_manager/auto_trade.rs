@@ -2,8 +2,10 @@
 //!
 //! Handles auto-trade eligibility checks, market exclusion, and depth validation.
 
+use chrono::NaiveDate;
 use tracing::info;
 
+use crate::models::generate_market_key;
 use crate::services::storage::AutoTradeState;
 use super::WebSocketManager;
 
@@ -36,13 +38,24 @@ impl WebSocketManager {
     }
 
     /// Update auto-trade settings
+    #[allow(clippy::too_many_arguments)]
     pub fn update_auto_trade_settings(
         &self,
         max_amount: Option<f64>,
         min_duration_ms: Option<i64>,
         max_trade_count: Option<i32>,
+        flexible_mode: Option<bool>,
+        max_contracts: Option<i32>,
+        min_contracts: Option<i32>,
     ) -> anyhow::Result<()> {
-        self.storage.update_auto_trade_settings(max_amount, min_duration_ms, max_trade_count)?;
+        self.storage.update_auto_trade_settings(
+            max_amount, 
+            min_duration_ms, 
+            max_trade_count,
+            flexible_mode,
+            max_contracts,
+            min_contracts,
+        )?;
         Ok(())
     }
 
@@ -110,12 +123,10 @@ impl WebSocketManager {
     }
     
     /// Exclude a market from auto-trade
-    pub fn exclude_market(&self, event_name: &str, team_name: &str) -> bool {
-        let normalized_event = event_name.to_uppercase();
-        let normalized_team = team_name.to_uppercase();
-        let key = format!("{}_{}", normalized_event, normalized_team);
+    pub fn exclude_market(&self, event_name: &str, team_name: &str, game_date: Option<NaiveDate>) -> bool {
+        let key = generate_market_key(event_name, game_date, team_name);
         
-        match self.storage.exclude_market(event_name, team_name) {
+        match self.storage.exclude_market(event_name, team_name, game_date) {
             Ok(inserted) => {
                 if inserted {
                     self.excluded_markets.write().insert(key);
@@ -130,12 +141,10 @@ impl WebSocketManager {
     }
     
     /// Remove a market from exclusion list
-    pub fn unexclude_market(&self, event_name: &str, team_name: &str) -> bool {
-        let normalized_event = event_name.to_uppercase();
-        let normalized_team = team_name.to_uppercase();
-        let key = format!("{}_{}", normalized_event, normalized_team);
+    pub fn unexclude_market(&self, event_name: &str, team_name: &str, game_date: Option<NaiveDate>) -> bool {
+        let key = generate_market_key(event_name, game_date, team_name);
         
-        match self.storage.unexclude_market(event_name, team_name) {
+        match self.storage.unexclude_market(event_name, team_name, game_date) {
             Ok(removed) => {
                 if removed {
                     self.excluded_markets.write().remove(&key);
@@ -155,10 +164,8 @@ impl WebSocketManager {
     }
     
     /// Check if a market is excluded
-    pub fn is_market_excluded(&self, event_name: &str, team_name: &str) -> bool {
-        let normalized_event = event_name.to_uppercase();
-        let normalized_team = team_name.to_uppercase();
-        let key = format!("{}_{}", normalized_event, normalized_team);
+    pub fn is_market_excluded(&self, event_name: &str, team_name: &str, game_date: Option<NaiveDate>) -> bool {
+        let key = generate_market_key(event_name, game_date, team_name);
         self.excluded_markets.read().contains(&key)
     }
 

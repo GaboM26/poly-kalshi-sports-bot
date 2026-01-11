@@ -23,6 +23,7 @@ use crate::clob::{ApiCreds, ClobClient, MarketOrderArgs, Side, SignatureType};
 use crate::config::PolymarketConfig;
 use crate::core::normalize_team_name;
 use crate::models::{Platform, PolymarketEvent, PolymarketMarket, PriceUpdate};
+use crate::utils;
 
 /// Polymarket order book structure (price, size)
 #[derive(Debug, Clone, Default)]
@@ -400,10 +401,63 @@ impl PolymarketClient {
         side: &str,
         amount: f64,
     ) -> Result<Value> {
+        let token_short = &token_id[..20.min(token_id.len())];
+        info!("════════════════════════════════════════════════════════════");
+        info!("🎯 [Poly下单开始] token={}..., side={}, amount={:.4}", token_short, side, amount);
+        info!("════════════════════════════════════════════════════════════");
+        
         let clob = self
             .clob
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
+
+        // Step 1: Pre-order validation - check orderbook
+        info!("📊 [Step 1] 获取订单簿状态...");
+        match clob.as_ref().get_order_book(token_id).await {
+            Ok(orderbook) => {
+                let best_bid = orderbook.bids.last().map(|(p, s)| format!("{:.4}@{:.2}", s, p));
+                let best_ask = orderbook.asks.first().map(|(p, s)| format!("{:.4}@{:.2}", s, p));
+                let bid_depth: f64 = orderbook.bids.iter().map(|(p, s)| p * s).sum();
+                let ask_depth: f64 = orderbook.asks.iter().map(|(p, s)| p * s).sum();
+                info!("   ✅ 订单簿有效: best_bid={:?}, best_ask={:?}", best_bid, best_ask);
+                info!("   📈 深度: bid_depth=${:.2}, ask_depth=${:.2}, bid_levels={}, ask_levels={}", 
+                    bid_depth, ask_depth, orderbook.bids.len(), orderbook.asks.len());
+            }
+            Err(e) => {
+                tracing::error!("   ❌ 订单簿获取失败: {}", e);
+                // Write to debug log
+                Self::write_debug_log("place_market_order:orderbook_failed", serde_json::json!({
+                    "token_id": token_id,
+                    "side": side,
+                    "amount": amount,
+                    "error": e.to_string(),
+                }));
+            }
+        }
+        
+        // Step 2: Get tick size and neg_risk
+        info!("📏 [Step 2] 获取tick_size和neg_risk...");
+        let tick_size = match clob.as_ref().get_tick_size(token_id).await {
+            Ok(ts) => {
+                info!("   ✅ tick_size={}", ts);
+                ts
+            }
+            Err(e) => {
+                tracing::error!("   ❌ tick_size获取失败: {}", e);
+                0.01 // default
+            }
+        };
+        
+        let neg_risk = match clob.as_ref().get_neg_risk(token_id).await {
+            Ok(nr) => {
+                info!("   ✅ neg_risk={}", nr);
+                nr
+            }
+            Err(e) => {
+                tracing::error!("   ❌ neg_risk获取失败: {}", e);
+                false // default
+            }
+        };
 
         let order_side = if side.to_lowercase() == "buy" {
             Side::Buy
@@ -411,6 +465,8 @@ impl PolymarketClient {
             Side::Sell
         };
 
+        // Step 3: Create order args
+        info!("📝 [Step 3] 构建订单参数...");
         let order_args = MarketOrderArgs {
             token_id: token_id.to_string(),
             amount,
@@ -419,14 +475,83 @@ impl PolymarketClient {
             nonce: None,
             slippage: Some(0.02), // 2% slippage for better fill rate
         };
-
-        let signed_order = clob.as_ref().create_market_order(&order_args).await?;
-        let response = clob
+        info!("   token_id: {}", token_id);
+        info!("   amount: {:.4}", amount);
+        info!("   side: {:?}", order_side);
+        info!("   slippage: 2%");
+        
+        // Step 4: Create signed order
+        info!("🔐 [Step 4] 创建并签名订单...");
+        let signed_order = match clob.as_ref().create_market_order(&order_args).await {
+            Ok(order) => {
+                info!("   ✅ 订单创建成功:");
+                info!("      maker_amount: {}", order.maker_amount);
+                info!("      taker_amount: {}", order.taker_amount);
+                info!("      salt: {}", order.salt);
+                info!("      signature: {}...", &order.signature[..20.min(order.signature.len())]);
+                order
+            }
+            Err(e) => {
+                tracing::error!("   ❌ 订单创建失败: {}", e);
+                Self::write_debug_log("place_market_order:create_failed", serde_json::json!({
+                    "token_id": token_id,
+                    "side": side,
+                    "amount": amount,
+                    "tick_size": tick_size,
+                    "neg_risk": neg_risk,
+                    "error": e.to_string(),
+                }));
+                return Err(e);
+            }
+        };
+        
+        // Step 5: Post order
+        info!("📤 [Step 5] 提交订单到Polymarket...");
+        let response = match clob
             .as_ref()
             .post_order(&signed_order, crate::clob::OrderType::Fak)
-            .await?;
+            .await
+        {
+            Ok(resp) => {
+                info!("   ✅ 订单提交成功!");
+                info!("════════════════════════════════════════════════════════════");
+                resp
+            }
+            Err(e) => {
+                tracing::error!("   ❌ 订单提交失败: {}", e);
+                info!("════════════════════════════════════════════════════════════");
+                
+                // Write comprehensive debug log for failed orders
+                Self::write_debug_log("place_market_order:post_failed", serde_json::json!({
+                    "token_id": token_id,
+                    "side": side,
+                    "amount": amount,
+                    "tick_size": tick_size,
+                    "neg_risk": neg_risk,
+                    "signed_order": {
+                        "maker_amount": signed_order.maker_amount,
+                        "taker_amount": signed_order.taker_amount,
+                        "salt": signed_order.salt,
+                        "maker": signed_order.maker,
+                        "signer": signed_order.signer,
+                        "signature_type": signed_order.signature_type,
+                    },
+                    "error": e.to_string(),
+                }));
+                return Err(e);
+            }
+        };
 
         Ok(serde_json::to_value(response)?)
+    }
+    
+    /// Write debug log to file
+    fn write_debug_log(location: &str, data: serde_json::Value) {
+        utils::write_debug_log(
+            &format!("polymarket.rs:{}", location),
+            "Polymarket操作",
+            data
+        );
     }
 
     /// Get open orders

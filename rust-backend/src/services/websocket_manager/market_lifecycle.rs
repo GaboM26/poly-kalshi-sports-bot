@@ -21,7 +21,7 @@ impl WebSocketManager {
             return false;
         }
         let mm = &markets[idx];
-        let market_key = format!("{}_{}", mm.event_name, mm.team_name);
+        let market_key = mm.market_key();
         
         if self.confirmed_ended_markets.read().contains(&market_key) {
             return true;
@@ -109,11 +109,11 @@ impl WebSocketManager {
         {
             let markets = self.matched_markets.read();
             for (idx, mm) in markets.iter().enumerate() {
-                let market_key = format!("{}_{}", mm.event_name, mm.team_name);
+                let market_key = mm.market_key();
                 
                 if self.check_market_ended(idx) {
                     indices_to_remove.push(idx);
-                    market_keys_to_remove.push(market_key.clone());
+                    market_keys_to_remove.push(market_key);
                     
                     kalshi_to_unsub.push(mm.kalshi_market.market_id.clone());
                     
@@ -182,7 +182,7 @@ impl WebSocketManager {
         {
             let mut opps = self.opportunities.write();
             opps.retain(|o| {
-                let key = format!("{}_{}", o.event_name, o.team_name);
+                let key = o.market_key();
                 !market_keys_to_remove.contains(&key)
             });
         }

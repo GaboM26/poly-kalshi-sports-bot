@@ -10,6 +10,7 @@ use tracing::{debug, info};
 use super::config::{get_contract_config, to_token_decimals, ContractConfig};
 use super::signer::Signer;
 use super::types::{OrderArgs, Side, SignatureType, SignedOrder, OrderBookSummary, OrderType, MarketOrderArgs};
+use crate::utils;
 
 /// Rounding configuration for different tick sizes
 #[derive(Debug, Clone, Copy)]
@@ -338,7 +339,8 @@ impl OrderBuilder {
                     "nonce_salt": data.nonce
                 }
             });
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
+            let path = utils::get_debug_log_path();
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
                 let _ = writeln!(f, "{}", debug_log.to_string());
             }
         }

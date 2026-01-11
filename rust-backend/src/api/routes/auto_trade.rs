@@ -22,6 +22,12 @@ pub struct AutoTradeStatusResponse {
     pub remaining: i32,
     pub max_amount: f64,
     pub min_duration_ms: i64,
+    /// 是否启用灵活下单模式
+    pub flexible_mode: bool,
+    /// 单次最大合同数
+    pub max_contracts: i32,
+    /// 最低合同数（深度低于此值不下单）
+    pub min_contracts: i32,
     pub last_trade_time: Option<String>,
 }
 
@@ -37,6 +43,9 @@ pub async fn get_auto_trade_status(State(state): State<Arc<AppState>>) -> impl I
         remaining: auto_state.max_trade_count - auto_state.trade_count,
         max_amount: auto_state.max_amount,
         min_duration_ms: auto_state.min_duration_ms,
+        flexible_mode: auto_state.flexible_mode,
+        max_contracts: auto_state.max_contracts,
+        min_contracts: auto_state.min_contracts,
         last_trade_time: auto_state.last_trade_time,
     })
 }
@@ -113,6 +122,12 @@ pub struct AutoTradeSettingsRequest {
     pub max_amount: Option<f64>,
     pub min_duration_ms: Option<i64>,
     pub max_trade_count: Option<i32>,
+    /// 是否启用灵活下单模式
+    pub flexible_mode: Option<bool>,
+    /// 单次最大合同数
+    pub max_contracts: Option<i32>,
+    /// 最低合同数（深度低于此值不下单）
+    pub min_contracts: Option<i32>,
 }
 
 /// Update auto-trade settings
@@ -126,6 +141,9 @@ pub async fn update_auto_trade_settings(
         req.max_amount,
         req.min_duration_ms,
         req.max_trade_count,
+        req.flexible_mode,
+        req.max_contracts,
+        req.min_contracts,
     ) {
         Ok(_) => Json(serde_json::json!({
             "success": true,
@@ -185,6 +203,13 @@ pub async fn get_auto_trade_history(
 pub struct MarketExclusionRequest {
     pub event_name: String,
     pub team_name: String,
+    /// Game date in YYYY-MM-DD format (optional for backwards compatibility)
+    pub game_date: Option<String>,
+}
+
+/// Parse game_date string to NaiveDate
+fn parse_game_date(game_date: Option<&str>) -> Option<chrono::NaiveDate> {
+    game_date.and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
 }
 
 /// Get list of excluded markets
@@ -204,13 +229,15 @@ pub async fn exclude_market(
     Json(req): Json<MarketExclusionRequest>,
 ) -> impl IntoResponse {
     let service = state.service.read().await;
-    let inserted = service.ws_manager.exclude_market(&req.event_name, &req.team_name);
+    let game_date = parse_game_date(req.game_date.as_deref());
+    let inserted = service.ws_manager.exclude_market(&req.event_name, &req.team_name, game_date);
     
     Json(serde_json::json!({
         "success": true,
         "message": if inserted { "市场已排除" } else { "市场已在排除列表中" },
         "event_name": req.event_name,
-        "team_name": req.team_name
+        "team_name": req.team_name,
+        "game_date": req.game_date
     }))
 }
 
@@ -220,12 +247,14 @@ pub async fn unexclude_market(
     Json(req): Json<MarketExclusionRequest>,
 ) -> impl IntoResponse {
     let service = state.service.read().await;
-    let removed = service.ws_manager.unexclude_market(&req.event_name, &req.team_name);
+    let game_date = parse_game_date(req.game_date.as_deref());
+    let removed = service.ws_manager.unexclude_market(&req.event_name, &req.team_name, game_date);
     
     Json(serde_json::json!({
         "success": true,
         "message": if removed { "市场已取消排除" } else { "市场不在排除列表中" },
         "event_name": req.event_name,
-        "team_name": req.team_name
+        "team_name": req.team_name,
+        "game_date": req.game_date
     }))
 }

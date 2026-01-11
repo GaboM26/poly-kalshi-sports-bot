@@ -11,7 +11,7 @@ use super::WebSocketManager;
 impl WebSocketManager {
     /// Track a high-profit opportunity
     pub(crate) fn track_opportunity(&self, opp: &ArbitrageOpportunity) {
-        let key = format!("{}_{}", opp.event_name, opp.team_name);
+        let key = opp.market_key();
 
         let mut tracking = self.active_tracking.write();
 
@@ -28,6 +28,7 @@ impl WebSocketManager {
                 id: key.clone(),
                 event_name: opp.event_name.clone(),
                 team_name: opp.team_name.clone(),
+                game_date: opp.game_date,
                 kalshi_market_id: opp.kalshi_market_id.clone(),
                 polymarket_market_id: opp.polymarket_market_id.clone(),
                 start_time: Utc::now(),
@@ -117,7 +118,7 @@ impl WebSocketManager {
     pub fn get_opportunity_by_key(&self, key: &str) -> Option<ArbitrageOpportunity> {
         let opps = self.opportunities.read();
         opps.iter()
-            .find(|o| format!("{}_{}", o.event_name, o.team_name) == key)
+            .find(|o| o.market_key() == key)
             .cloned()
     }
 }

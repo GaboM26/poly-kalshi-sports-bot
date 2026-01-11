@@ -25,8 +25,8 @@ use tracing::{debug, info};
 use crate::clients::{KalshiClient, PolymarketClient};
 use crate::core::{ArbitrageCalculator, EventMatcher};
 use crate::models::{
-    ArbitrageOpportunity, ArbitrageTrackingRecord, MatchedMarket, MatchedMarketFrontend,
-    Platform, PriceUpdate, ScanStats, SystemStats,
+    generate_market_key, ArbitrageOpportunity, ArbitrageTrackingRecord, MatchedMarket,
+    MatchedMarketFrontend, Platform, PriceUpdate, ScanStats, SystemStats,
 };
 use crate::services::storage::{ArbitrageStorage, AutoTradeState};
 use crate::services::metrics::{PerformanceMetrics, Operation};
@@ -204,19 +204,119 @@ impl WebSocketManager {
     }
 
     /// Add new subscriptions dynamically (hot subscription)
+    /// Also updates token_ids for existing markets if they have changed
+    /// Returns (newly_added_count, tokens_to_subscribe, tokens_to_unsubscribe)
     pub fn add_matched_markets(&self, new_markets: Vec<MatchedMarket>, new_lookup: std::collections::HashMap<String, Vec<usize>>) -> usize {
         if new_markets.is_empty() {
             return 0;
         }
 
         let old_count = self.matched_markets.read().len();
+        let mut actually_added = 0;
+        let mut tokens_updated = 0;
+        
+        // Track old tokens that need to be removed from lookup
+        let mut old_tokens_to_remove: Vec<(String, usize)> = Vec::new();
+        // Track new tokens that need to be added to lookup
+        let mut new_tokens_to_add: Vec<(String, usize)> = Vec::new();
         
         {
             let mut markets = self.matched_markets.write();
-            let offset = markets.len();
-            markets.extend(new_markets.clone());
+            
+            for new_mm in &new_markets {
+                let new_key = new_mm.market_key();
+                
+                // Check if market already exists
+                let existing_idx = markets.iter().position(|m| m.market_key() == new_key);
+                
+                if let Some(idx) = existing_idx {
+                    let existing = &mut markets[idx];
+                    
+                    // Check if token_ids have changed
+                    let new_token_a = new_mm.polymarket_market.token_id_a.as_ref();
+                    let old_token_a = existing.polymarket_market.token_id_a.as_ref();
+                    let new_token_b = new_mm.polymarket_market.token_id_b.as_ref();
+                    let old_token_b = existing.polymarket_market.token_id_b.as_ref();
+                    
+                    if new_token_a != old_token_a || new_token_b != old_token_b {
+                        info!("🔄 Token更新: {} token_a: {:?} -> {:?}, token_b: {:?} -> {:?}", 
+                            new_key,
+                            old_token_a.map(|s| &s[..8.min(s.len())]),
+                            new_token_a.map(|s| &s[..8.min(s.len())]),
+                            old_token_b.map(|s| &s[..8.min(s.len())]),
+                            new_token_b.map(|s| &s[..8.min(s.len())])
+                        );
+                        
+                        // Track old tokens for removal from lookup
+                        if let Some(old_a) = old_token_a {
+                            old_tokens_to_remove.push((old_a.clone(), idx));
+                        }
+                        if let Some(old_b) = old_token_b {
+                            old_tokens_to_remove.push((old_b.clone(), idx));
+                        }
+                        
+                        // Track new tokens for addition to lookup
+                        if let Some(new_a) = new_token_a {
+                            new_tokens_to_add.push((new_a.clone(), idx));
+                        }
+                        if let Some(new_b) = new_token_b {
+                            new_tokens_to_add.push((new_b.clone(), idx));
+                        }
+                        
+                        // Update the market's token_ids
+                        existing.polymarket_market.token_id_a = new_mm.polymarket_market.token_id_a.clone();
+                        existing.polymarket_market.token_id_b = new_mm.polymarket_market.token_id_b.clone();
+                        tokens_updated += 1;
+                    }
+                } else {
+                    // New market, add it
+                    markets.push(new_mm.clone());
+                    actually_added += 1;
+                }
+            }
+        }
+        
+        // Update market_lookup for token changes and clear stale price cache
+        if !old_tokens_to_remove.is_empty() || !new_tokens_to_add.is_empty() {
+            // Collect old tokens for price cache cleanup
+            let old_token_ids: Vec<String> = old_tokens_to_remove.iter()
+                .map(|(token, _)| token.clone())
+                .collect();
             
             let mut lookup = self.market_lookup.write();
+            
+            // Remove old token mappings
+            for (old_token, idx) in old_tokens_to_remove {
+                if let Some(indices) = lookup.get_mut(&old_token) {
+                    indices.retain(|&i| i != idx);
+                    if indices.is_empty() {
+                        lookup.remove(&old_token);
+                    }
+                }
+            }
+            
+            // Add new token mappings
+            for (new_token, idx) in new_tokens_to_add {
+                lookup.entry(new_token).or_default().push(idx);
+            }
+            
+            // Clear stale prices for old tokens (prevent using outdated data)
+            if !old_token_ids.is_empty() {
+                let mut prices = self.poly_token_prices.write();
+                for old_token in &old_token_ids {
+                    if prices.remove(old_token).is_some() {
+                        debug!("🗑️ 已清除旧token价格缓存: {}...", &old_token[..8.min(old_token.len())]);
+                    }
+                }
+            }
+            
+            info!("🔗 市场查找表已更新 (token映射同步)");
+        }
+        
+        // Update lookup with correct indices for new markets
+        if actually_added > 0 {
+            let mut lookup = self.market_lookup.write();
+            let offset = old_count;
             for (key, indices) in new_lookup {
                 let adjusted_indices: Vec<usize> = indices.iter().map(|&i| i + offset).collect();
                 lookup.entry(key).or_default().extend(adjusted_indices);
@@ -224,14 +324,15 @@ impl WebSocketManager {
         }
 
         let new_count = self.matched_markets.read().len();
-        let added = new_count - old_count;
         
-        info!(
-            "📊 市场数据已更新: {} → {} 个配对市场 (+{})",
-            old_count, new_count, added
-        );
+        if actually_added > 0 || tokens_updated > 0 {
+            info!(
+                "📊 市场数据已更新: {} → {} 个配对市场 (新增: {}, Token更新: {})",
+                old_count, new_count, actually_added, tokens_updated
+            );
+        }
 
-        added
+        actually_added
     }
 
     /// Get subscription info for WebSocket connections
@@ -358,7 +459,7 @@ impl WebSocketManager {
                                 if let Ok(mut file) = std::fs::OpenOptions::new()
                                     .create(true)
                                     .append(true)
-                                    .open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log")
+                                    .open(&crate::utils::get_debug_log_path())
                                 {
                                     let _ = writeln!(file, "{}", debug_log);
                                 }
@@ -500,7 +601,7 @@ impl WebSocketManager {
             let markets = self.matched_markets.read();
             if idx < markets.len() {
                 let mm = &markets[idx];
-                let key = format!("{}_{}", mm.event_name, mm.team_name);
+                let key = mm.market_key();
                 drop(markets);
                 self.maybe_end_tracking(&key);
             }
@@ -513,10 +614,8 @@ impl WebSocketManager {
     pub(crate) fn update_opportunities(&self, opp: ArbitrageOpportunity) {
         let mut opps = self.opportunities.write();
 
-        let key = format!("{}_{}", opp.event_name, opp.team_name);
-        if let Some(pos) = opps.iter().position(|o| {
-            format!("{}_{}", o.event_name, o.team_name) == key
-        }) {
+        let key = opp.market_key();
+        if let Some(pos) = opps.iter().position(|o| o.market_key() == key) {
             opps[pos] = opp;
         } else {
             opps.push(opp);
@@ -680,44 +779,71 @@ impl WebSocketManager {
     pub fn get_poly_token_for_side(&self, event_name: &str, team_name: &str, side: &str) -> Option<String> {
         let markets = self.matched_markets.read();
         
-        markets.iter()
-            .find(|mm| mm.event_name == event_name && mm.team_name == team_name)
-            .and_then(|mm| {
-                {
-                    use std::io::Write;
-                    let debug_log = serde_json::json!({
-                        "timestamp": chrono::Utc::now().to_rfc3339(),
-                        "hypothesisId": "TOKEN_MAPPING",
-                        "location": "websocket_manager.rs:get_poly_token_for_side",
-                        "message": "下单时Token选择",
-                        "data": {
-                            "event_name": event_name,
-                            "team_name": team_name,
-                            "requested_side": side,
-                            "poly_team_a": &mm.polymarket_market.team_a,
-                            "poly_team_b": &mm.polymarket_market.team_b,
-                            "poly_token_id_a": &mm.polymarket_market.token_id_a,
-                            "poly_token_id_b": &mm.polymarket_market.token_id_b,
-                        }
-                    });
-                    if let Ok(mut file) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log")
-                    {
-                        let _ = writeln!(file, "{}", debug_log);
-                    }
+        let mm = markets.iter()
+            .find(|mm| mm.event_name == event_name && mm.team_name == team_name)?;
+        
+        // === DETAILED TOKEN MAPPING LOGGING ===
+        info!("🔍 [Token映射] 查找 Poly Token:");
+        info!("   输入: event={}, team={}, side={}", event_name, team_name, side);
+        info!("   Poly市场结构:");
+        info!("      team_a: {:?}", mm.polymarket_market.team_a);
+        info!("      team_b: {:?}", mm.polymarket_market.team_b);
+        let token_a_short = mm.polymarket_market.token_id_a.as_ref()
+            .map(|t| format!("{}...", &t[..20.min(t.len())]));
+        let token_b_short = mm.polymarket_market.token_id_b.as_ref()
+            .map(|t| format!("{}...", &t[..20.min(t.len())]));
+        info!("      token_id_a: {:?}", token_a_short);
+        info!("      token_id_b: {:?}", token_b_short);
+        
+        // Determine which token to use based on side
+        let selected_token = if side == "yes" {
+            // YES side = buy the team to win = use that team's token
+            let token = mm.polymarket_market.get_token_for_team(team_name)
+                .map(|s| s.to_string());
+            info!("   YES侧: 获取 {} 的 token", team_name);
+            info!("   结果: {:?}", token.as_ref().map(|t| format!("{}...", &t[..20.min(t.len())])));
+            token
+        } else {
+            // NO side = buy opponent to win = use opponent's token  
+            let opponent = mm.polymarket_market.get_opponent(team_name);
+            info!("   NO侧: 获取对手方的token");
+            info!("      对手: {:?}", opponent);
+            let token = opponent
+                .and_then(|opp| mm.polymarket_market.get_token_for_team(opp))
+                .map(|s| s.to_string());
+            info!("      结果: {:?}", token.as_ref().map(|t| format!("{}...", &t[..20.min(t.len())])));
+            token
+        };
+        
+        // Write to debug log
+        {
+            use std::io::Write;
+            let debug_log = serde_json::json!({
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "hypothesisId": "TOKEN_MAPPING",
+                "location": "websocket_manager.rs:get_poly_token_for_side",
+                "message": "下单时Token选择",
+                "data": {
+                    "event_name": event_name,
+                    "team_name": team_name,
+                    "requested_side": side,
+                    "poly_team_a": &mm.polymarket_market.team_a,
+                    "poly_team_b": &mm.polymarket_market.team_b,
+                    "poly_token_id_a": &mm.polymarket_market.token_id_a,
+                    "poly_token_id_b": &mm.polymarket_market.token_id_b,
+                    "selected_token": &selected_token,
                 }
-                
-                if side == "yes" {
-                    mm.polymarket_market.get_token_for_team(team_name)
-                        .map(|s| s.to_string())
-                } else {
-                    mm.polymarket_market.get_opponent(team_name)
-                        .and_then(|opp| mm.polymarket_market.get_token_for_team(opp))
-                        .map(|s| s.to_string())
-                }
-            })
+            });
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log")
+            {
+                let _ = writeln!(file, "{}", debug_log);
+            }
+        }
+        
+        selected_token
     }
 
     /// Get matched markets formatted for frontend
@@ -730,13 +856,13 @@ impl WebSocketManager {
 
         let opp_map: HashMap<String, &ArbitrageOpportunity> = opportunities
             .iter()
-            .map(|o| (format!("{}_{}", o.event_name, o.team_name), o))
+            .map(|o| (o.market_key(), o))
             .collect();
 
         markets
             .iter()
             .filter_map(|mm| {
-                let key = format!("{}_{}", mm.event_name, mm.team_name);
+                let key = mm.market_key();
 
                 if confirmed_ended.contains(&key) {
                     return None;
@@ -797,6 +923,7 @@ impl WebSocketManager {
                 Some(MatchedMarketFrontend {
                     event_name: mm.event_name.clone(),
                     team_name: mm.team_name.clone(),
+                    game_date: mm.game_date.map(|d| d.format("%Y-%m-%d").to_string()),
                     kalshi_market_id: mm.kalshi_market.market_id.clone(),
                     polymarket_market_id: mm.polymarket_market.market_id.clone(),
                     poly_token_id: own_token.map(|s| s.to_string()),

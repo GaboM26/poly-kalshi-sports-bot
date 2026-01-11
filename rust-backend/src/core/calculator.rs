@@ -16,7 +16,7 @@
 //! - C = number of contracts traded
 //! - round_up = round up to next cent
 
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use tracing::debug;
 
 use crate::models::{ArbitrageOpportunity, KalshiMarket, PolymarketMarket};
@@ -85,6 +85,8 @@ impl ArbitrageCalculator {
         polymarket_yes_price: f64,
         polymarket_no_price: f64,
     ) -> Option<ArbitrageOpportunity> {
+        // Extract game_date from kalshi_market start_time
+        let game_date = kalshi_market.start_time.map(|t| t.date_naive());
         // Validate prices
         if !self.validate_prices(
             kalshi_yes_price,
@@ -102,6 +104,7 @@ impl ArbitrageCalculator {
         if let Some(opp1) = self.calculate_strategy(
             event_name,
             team_name,
+            game_date,
             kalshi_market,
             kalshi_yes_price,
             "yes",
@@ -126,6 +129,7 @@ impl ArbitrageCalculator {
         if let Some(opp2) = self.calculate_strategy(
             event_name,
             team_name,
+            game_date,
             kalshi_market,
             kalshi_no_price,
             "no",
@@ -170,6 +174,7 @@ impl ArbitrageCalculator {
         &self,
         event_name: &str,
         team_name: &str,
+        game_date: Option<NaiveDate>,
         kalshi_market: &KalshiMarket,
         kalshi_price: f64,
         kalshi_side: &str,
@@ -239,6 +244,7 @@ impl ArbitrageCalculator {
         Some(ArbitrageOpportunity {
             event_name: event_name.to_string(),
             team_name: team_name.to_string(),
+            game_date,
             kalshi_market_id: kalshi_market.market_id.clone(),
             kalshi_price,
             kalshi_side: kalshi_side.to_string(),

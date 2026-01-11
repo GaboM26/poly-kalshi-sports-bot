@@ -20,6 +20,7 @@ use super::headers::{create_level_1_headers, create_level_2_headers, to_header_m
 use super::order_builder::OrderBuilder;
 use super::signer::Signer;
 use super::types::*;
+use crate::utils;
 
 /// Authentication level
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +211,105 @@ impl ClobClient {
         self.tick_sizes.write().insert(token_id.to_string(), tick_size);
 
         Ok(tick_size)
+    }
+
+    /// Validate a token_id by checking if it exists and has valid market data
+    /// Returns detailed validation result for debugging
+    pub async fn validate_token_id(&self, token_id: &str) -> TokenValidationResult {
+        let token_short = &token_id[..16.min(token_id.len())];
+        info!("🔍 [Token验证] 开始验证 token_id: {}...", token_short);
+        
+        // 1. Try to get orderbook
+        let orderbook_result = match self.get_order_book(token_id).await {
+            Ok(ob) => {
+                let has_bids = !ob.bids.is_empty();
+                let has_asks = !ob.asks.is_empty();
+                let best_bid = ob.bids.last().map(|(p, _)| *p);
+                let best_ask = ob.asks.first().map(|(p, _)| *p);
+                info!(
+                    "✅ [Token验证] Orderbook有效: has_bids={}, has_asks={}, best_bid={:?}, best_ask={:?}",
+                    has_bids, has_asks, best_bid, best_ask
+                );
+                Some(OrderbookValidation {
+                    valid: true,
+                    has_bids,
+                    has_asks,
+                    best_bid,
+                    best_ask,
+                    error: None,
+                })
+            }
+            Err(e) => {
+                let error_msg = format!("{}", e);
+                tracing::error!("❌ [Token验证] Orderbook获取失败: {}", error_msg);
+                Some(OrderbookValidation {
+                    valid: false,
+                    has_bids: false,
+                    has_asks: false,
+                    best_bid: None,
+                    best_ask: None,
+                    error: Some(error_msg),
+                })
+            }
+        };
+        
+        // 2. Try to get tick size (this also validates token exists)
+        let tick_size_result = match self.get_tick_size(token_id).await {
+            Ok(ts) => {
+                info!("✅ [Token验证] Tick size有效: {}", ts);
+                Some(ts)
+            }
+            Err(e) => {
+                tracing::error!("❌ [Token验证] Tick size获取失败: {}", e);
+                None
+            }
+        };
+        
+        // 3. Try to get midpoint price
+        let midpoint_result = match self.get_midpoint(token_id).await {
+            Ok(mid) => {
+                let mid_price = mid.get("mid").and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok());
+                info!("✅ [Token验证] Midpoint有效: {:?}", mid_price);
+                mid_price
+            }
+            Err(e) => {
+                tracing::error!("❌ [Token验证] Midpoint获取失败: {}", e);
+                None
+            }
+        };
+        
+        let is_valid = orderbook_result.as_ref().map(|o| o.valid).unwrap_or(false) 
+            && tick_size_result.is_some();
+        
+        let result = TokenValidationResult {
+            token_id: token_id.to_string(),
+            is_valid,
+            orderbook: orderbook_result,
+            tick_size: tick_size_result,
+            midpoint: midpoint_result,
+        };
+        
+        // Write to debug log
+        utils::write_debug_log(
+            "client.rs:validate_token_id",
+            "Token验证结果",
+            serde_json::json!({
+                "token_id": token_id,
+                "is_valid": result.is_valid,
+                "has_orderbook": result.orderbook.as_ref().map(|o| o.valid),
+                "has_tick_size": result.tick_size.is_some(),
+                "midpoint": result.midpoint,
+                "orderbook_error": result.orderbook.as_ref().and_then(|o| o.error.clone()),
+            })
+        );
+        
+        if result.is_valid {
+            info!("✅ [Token验证] Token有效: {}...", token_short);
+        } else {
+            tracing::error!("❌ [Token验证] Token无效: {}...", token_short);
+        }
+        
+        result
     }
 
     /// Get neg_risk flag for a token
@@ -437,7 +537,8 @@ impl ClobClient {
                     "full_body": &body_str
                 }
             });
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
+            let path = utils::get_debug_log_path();
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
                 let _ = writeln!(f, "{}", debug_log.to_string());
             }
         }
@@ -453,26 +554,84 @@ impl ClobClient {
         );
 
         let url = format!("{}{}", self.host, endpoints::POST_ORDER);
-        let response: Value = self.post_with_headers(&url, &headers, Some(&body_str)).await?;
+        
+        // Try to post order and catch specific errors for debugging
+        let response_result = self.post_with_headers(&url, &headers, Some(&body_str)).await;
+        
+        match response_result {
+            Ok(response) => {
+                // Log response for debugging
+                info!(
+                    "📥 [Poly订单响应] success={}, order_id={}, status={}",
+                    response.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
+                    response.get("orderID").and_then(|v| v.as_str()).unwrap_or("N/A"),
+                    response.get("status").and_then(|v| v.as_str()).unwrap_or("N/A")
+                );
+                
+                // 🔍 输出完整响应（用于调试）
+                info!("🔍 [Poly完整响应] {}", serde_json::to_string(&response).unwrap_or_default());
+                
+                if let Some(error_msg) = response.get("errorMsg").and_then(|v| v.as_str()) {
+                    if !error_msg.is_empty() {
+                        info!("📥 [Poly订单错误] errorMsg={}", error_msg);
+                    }
+                }
 
-        // Log response for debugging
-        info!(
-            "📥 [Poly订单响应] success={}, order_id={}, status={}",
-            response.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
-            response.get("orderID").and_then(|v| v.as_str()).unwrap_or("N/A"),
-            response.get("status").and_then(|v| v.as_str()).unwrap_or("N/A")
-        );
-        
-        // 🔍 输出完整响应（用于调试）
-        info!("🔍 [Poly完整响应] {}", serde_json::to_string(&response).unwrap_or_default());
-        
-        if let Some(error_msg) = response.get("errorMsg").and_then(|v| v.as_str()) {
-            if !error_msg.is_empty() {
-                info!("📥 [Poly订单错误] errorMsg={}", error_msg);
+                Ok(serde_json::from_value(response)?)
+            }
+            Err(e) => {
+                let error_str = format!("{}", e);
+                
+                // Check if this is an "Invalid order payload" error - validate token_id
+                if error_str.contains("Invalid order payload") || error_str.contains("market not found") {
+                    tracing::error!(
+                        "❌ [Poly下单失败] 检测到无效订单错误，开始验证token_id: {}...",
+                        &order.token_id[..16.min(order.token_id.len())]
+                    );
+                    
+                    // Validate the token_id via API
+                    let validation = self.validate_token_id(&order.token_id).await;
+                    
+                    // Log validation result
+                    if validation.is_valid {
+                        tracing::error!(
+                            "⚠️ [Token验证结果] Token有效但下单失败，可能是其他问题 (签名/金额/时间戳等)"
+                        );
+                    } else {
+                        tracing::error!(
+                            "❌ [Token验证结果] Token无效! orderbook={:?}, tick_size={:?}, midpoint={:?}",
+                            validation.orderbook.as_ref().map(|o| o.valid),
+                            validation.tick_size,
+                            validation.midpoint
+                        );
+                    }
+                    
+                    // Write detailed validation to debug log
+                    {
+                        use std::io::Write;
+                        let debug_log = serde_json::json!({
+                            "timestamp": chrono::Utc::now().to_rfc3339(),
+                            "location": "client.rs:post_order:error_validation",
+                            "message": "下单失败后Token验证",
+                            "data": {
+                                "error": &error_str,
+                                "token_id": &order.token_id,
+                                "validation_result": validation,
+                                "order_side": &order.side,
+                                "maker_amount": &order.maker_amount,
+                                "taker_amount": &order.taker_amount,
+                            }
+                        });
+                        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
+                            let _ = writeln!(f, "{}", debug_log.to_string());
+                        }
+                    }
+                }
+                
+                // Re-return the original error
+                Err(e)
             }
         }
-
-        Ok(serde_json::from_value(response)?)
     }
 
     /// Cancel an order

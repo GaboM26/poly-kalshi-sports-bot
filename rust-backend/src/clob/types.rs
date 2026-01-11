@@ -263,3 +263,35 @@ pub struct Trade {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub maker_address: Option<String>,
 }
+
+/// Result of token validation check
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenValidationResult {
+    /// The token ID that was validated
+    pub token_id: String,
+    /// Whether the token is valid
+    pub is_valid: bool,
+    /// Orderbook validation result
+    pub orderbook: Option<OrderbookValidation>,
+    /// Tick size if available
+    pub tick_size: Option<f64>,
+    /// Midpoint price if available
+    pub midpoint: Option<f64>,
+}
+
+/// Orderbook validation details
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderbookValidation {
+    /// Whether orderbook request succeeded
+    pub valid: bool,
+    /// Whether orderbook has bids
+    pub has_bids: bool,
+    /// Whether orderbook has asks
+    pub has_asks: bool,
+    /// Best bid price
+    pub best_bid: Option<f64>,
+    /// Best ask price
+    pub best_ask: Option<f64>,
+    /// Error message if failed
+    pub error: Option<String>,
+}

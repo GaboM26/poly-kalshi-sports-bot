@@ -43,12 +43,22 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
     fetchExcludedMarkets();
   }, [fetchExcludedMarkets]);
   
+  // Generate market key including game_date for accurate identification
+  const getMarketKey = (market: MatchedMarketData): string => {
+    const eventName = market.event_name.toUpperCase();
+    const teamName = market.team_name.toUpperCase();
+    if (market.game_date) {
+      return `${eventName}_${market.game_date}_${teamName}`;
+    }
+    return `${eventName}_${teamName}`;
+  };
+  
   // 排除/取消排除市场
   const handleToggleExclude = async (market: MatchedMarketData, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!apiBaseUrl) return;
     
-    const key = `${market.event_name}_${market.team_name}`;
+    const key = getMarketKey(market);
     const isExcluded = excludedMarkets.has(key);
     
     setExcludingKey(key);
@@ -60,7 +70,8 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           event_name: market.event_name,
-          team_name: market.team_name
+          team_name: market.team_name,
+          game_date: market.game_date || null
         })
       });
       
@@ -268,8 +279,8 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
             {sortedMarkets.map((market) => {
               // 使用唯一的 key：kalshi_market_id + polymarket_market_id
               const uniqueKey = `${market.kalshi_market_id}_${market.polymarket_market_id}`;
-              // 用于执行状态跟踪的 key（保持使用 event_name + team_name 以便用户识别）
-              const executionKey = `${market.event_name}_${market.team_name}`;
+              // 用于执行状态和排除检查的 key（包含日期以区分不同日期的比赛）
+              const marketKey = getMarketKey(market);
               const kalshiFlashing = flashingCells.has(`${uniqueKey}_kalshi`);
               const polyFlashing = flashingCells.has(`${uniqueKey}_poly`);
               
@@ -278,7 +289,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                   key={uniqueKey}
                   onClick={() => onSelectMarket?.(market)}
                   className={`cursor-pointer border-b border-[--border-color] hover:bg-[--bg-secondary] transition-colors ${
-                    excludedMarkets.has(executionKey) 
+                    excludedMarkets.has(marketKey) 
                       ? 'bg-[rgba(239,68,68,0.05)] opacity-60' 
                       : market.has_opportunity 
                         ? 'bg-[rgba(16,185,129,0.05)]' 
@@ -287,9 +298,16 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                 >
                   {/* Event */}
                   <td className="py-1 px-2">
-                    <span className="text-[--text-primary] font-medium truncate max-w-[100px] block" title={market.event_name}>
-                      {market.event_name}
-                    </span>
+                    <div className="flex flex-col">
+                      <span className="text-[--text-primary] font-medium truncate max-w-[100px] block" title={market.event_name}>
+                        {market.event_name}
+                      </span>
+                      {market.game_date && (
+                        <span className="text-[9px] text-[--text-muted]" title={`比赛日期: ${market.game_date}`}>
+                          {market.game_date}
+                        </span>
+                      )}
+                    </div>
                   </td>
 
                   {/* Team */}
@@ -346,17 +364,17 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                       {market.has_opportunity ? (
                         <div className="flex flex-col items-center gap-0.5">
                           <button
-                            onClick={(e) => handleExecute(market, executionKey, e)}
-                            disabled={executingKey === executionKey || !apiBaseUrl}
+                            onClick={(e) => handleExecute(market, marketKey, e)}
+                            disabled={executingKey === marketKey || !apiBaseUrl}
                             className={`px-1.5 py-0.5 text-[9px] font-medium rounded transition-colors ${
-                              executingKey === executionKey
+                              executingKey === marketKey
                                 ? 'bg-gray-500/30 text-gray-400 cursor-wait'
                                 : 'bg-[--accent-green]/20 text-[--accent-green] hover:bg-[--accent-green]/30'
                             }`}
                           >
-                            {executingKey === executionKey ? '...' : '执行'}
+                            {executingKey === marketKey ? '...' : '执行'}
                           </button>
-                          {lastResult?.key === executionKey && (
+                          {lastResult?.key === marketKey && (
                             <span className={`text-[9px] leading-none ${lastResult.success ? 'text-green-400' : 'text-red-400'}`}>
                               {lastResult.success ? '✓' : '✗'}
                             </span>
@@ -366,17 +384,17 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                       {/* 排除按钮 */}
                       <button
                         onClick={(e) => handleToggleExclude(market, e)}
-                        disabled={excludingKey === executionKey || !apiBaseUrl}
-                        title={excludedMarkets.has(executionKey) ? '取消排除' : '排除此市场'}
+                        disabled={excludingKey === marketKey || !apiBaseUrl}
+                        title={excludedMarkets.has(marketKey) ? '取消排除' : '排除此市场'}
                         className={`px-1 py-0.5 text-[9px] font-medium rounded transition-colors ${
-                          excludingKey === executionKey
+                          excludingKey === marketKey
                             ? 'bg-gray-500/30 text-gray-400 cursor-wait'
-                            : excludedMarkets.has(executionKey)
+                            : excludedMarkets.has(marketKey)
                               ? 'bg-orange-500/20 text-orange-400 hover:bg-orange-500/30'
                               : 'bg-gray-500/20 text-gray-400 hover:bg-red-500/20 hover:text-red-400'
                         }`}
                       >
-                        {excludingKey === executionKey ? '...' : excludedMarkets.has(executionKey) ? '🚫' : '⊘'}
+                        {excludingKey === marketKey ? '...' : excludedMarkets.has(marketKey) ? '🚫' : '⊘'}
                       </button>
                     </div>
                   </td>

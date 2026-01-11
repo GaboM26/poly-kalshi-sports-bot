@@ -50,6 +50,7 @@ impl ArbitrageStorage {
                     id: row.get(0)?,
                     event_name: row.get(1)?,
                     team_name: row.get(2)?,
+                    game_date: None,  // Not stored in old records
                     kalshi_market_id: row.get(3)?,
                     polymarket_market_id: row.get(4)?,
                     start_time: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)

@@ -67,6 +67,7 @@ export interface MetricsReport {
 export interface MatchedMarketData {
   event_name: string;
   team_name: string;
+  game_date?: string;               // Game date in YYYY-MM-DD format
   kalshi_market_id: string;
   polymarket_market_id: string;
   poly_token_id?: string;           // Polymarket token_id for Yes orderbook

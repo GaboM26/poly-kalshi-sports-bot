@@ -40,6 +40,8 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
   const [autoTradeLoading, setAutoTradeLoading] = useState(false);
   const [durationInput, setDurationInput] = useState('500');
   const [maxTradeCountInput, setMaxTradeCountInput] = useState('2');
+  const [maxContractsInput, setMaxContractsInput] = useState('100');
+  const [minContractsInput, setMinContractsInput] = useState('10');
   const [autoTradeMessage, setAutoTradeMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
   // 应用设置状态
@@ -60,6 +62,8 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
       setAutoTradeStatus(data);
       setDurationInput(String(data.min_duration_ms));
       setMaxTradeCountInput(String(data.max_trade_count));
+      setMaxContractsInput(String(data.max_contracts));
+      setMinContractsInput(String(data.min_contracts));
     } catch (error) {
       console.error('获取自动下单状态失败:', error);
     }
@@ -212,6 +216,67 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     try {
       const result = await updateAutoTradeSettings(apiBaseUrl, { max_trade_count: count });
       if (result.success) showAutoTradeMsg('最大次数已更新', 'success');
+      else showAutoTradeMsg(result.error || '更新失败', 'error');
+      await fetchAutoTradeStatus();
+    } catch (error) {
+      showAutoTradeMsg('更新失败', 'error');
+    }
+    setAutoTradeLoading(false);
+  };
+
+  // 切换灵活下单模式
+  const handleToggleFlexibleMode = async () => {
+    if (!autoTradeStatus) return;
+    setAutoTradeLoading(true);
+    try {
+      const result = await updateAutoTradeSettings(apiBaseUrl, { 
+        flexible_mode: !autoTradeStatus.flexible_mode 
+      });
+      if (result.success) {
+        showAutoTradeMsg(
+          autoTradeStatus.flexible_mode ? '已切换为固定模式' : '已切换为灵活模式', 
+          'success'
+        );
+      } else {
+        showAutoTradeMsg(result.error || '切换失败', 'error');
+      }
+      await fetchAutoTradeStatus();
+    } catch (error) {
+      showAutoTradeMsg('切换失败', 'error');
+    }
+    setAutoTradeLoading(false);
+  };
+
+  // 更新最大合同数
+  const handleUpdateMaxContracts = async () => {
+    const count = parseInt(maxContractsInput);
+    if (isNaN(count) || count < 1) {
+      showAutoTradeMsg('请输入有效的合同数（≥1）', 'error');
+      return;
+    }
+    setAutoTradeLoading(true);
+    try {
+      const result = await updateAutoTradeSettings(apiBaseUrl, { max_contracts: count });
+      if (result.success) showAutoTradeMsg('最大合同数已更新', 'success');
+      else showAutoTradeMsg(result.error || '更新失败', 'error');
+      await fetchAutoTradeStatus();
+    } catch (error) {
+      showAutoTradeMsg('更新失败', 'error');
+    }
+    setAutoTradeLoading(false);
+  };
+
+  // 更新最低合同数
+  const handleUpdateMinContracts = async () => {
+    const count = parseInt(minContractsInput);
+    if (isNaN(count) || count < 1) {
+      showAutoTradeMsg('请输入有效的合同数（≥1）', 'error');
+      return;
+    }
+    setAutoTradeLoading(true);
+    try {
+      const result = await updateAutoTradeSettings(apiBaseUrl, { min_contracts: count });
+      if (result.success) showAutoTradeMsg('最低合同数已更新', 'success');
       else showAutoTradeMsg(result.error || '更新失败', 'error');
       await fetchAutoTradeStatus();
     } catch (error) {
@@ -524,6 +589,74 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
                 <span className="text-sm font-mono text-[--text-primary]">${autoTradeStatus.max_amount}</span>
               </div>
 
+              {/* 分隔线 */}
+              <div className="border-t border-[--border-color] my-2"></div>
+
+              {/* 下单模式 */}
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-[--text-secondary]">下单模式</span>
+                <div className="flex items-center gap-2">
+                  <span className={`text-xs px-2 py-1 rounded font-semibold ${
+                    autoTradeStatus.flexible_mode
+                      ? 'bg-purple-500/20 text-purple-400'
+                      : 'bg-blue-500/20 text-blue-400'
+                  }`}>
+                    {autoTradeStatus.flexible_mode ? '灵活模式' : '固定模式'}
+                  </span>
+                  <button
+                    onClick={handleToggleFlexibleMode}
+                    disabled={autoTradeLoading}
+                    className="text-xs px-2 py-1 rounded bg-gray-500/20 text-gray-300 hover:bg-gray-500/30 transition-colors disabled:opacity-50"
+                  >
+                    切换
+                  </button>
+                </div>
+              </div>
+
+              {/* 最大合同数 */}
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-[--text-secondary]">单次最大合同</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={maxContractsInput}
+                    onChange={(e) => setMaxContractsInput(e.target.value)}
+                    className="w-16 text-xs px-2 py-1 rounded bg-[--bg-primary] border border-[--border-color] text-[--text-primary] focus:outline-none focus:border-blue-500 text-center"
+                    min="1"
+                  />
+                  <span className="text-xs text-[--text-muted]">份</span>
+                  <button
+                    onClick={handleUpdateMaxContracts}
+                    disabled={autoTradeLoading}
+                    className="text-xs px-2 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors disabled:opacity-50"
+                  >
+                    更新
+                  </button>
+                </div>
+              </div>
+
+              {/* 最低合同数 */}
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-[--text-secondary]">最低合同门槛</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={minContractsInput}
+                    onChange={(e) => setMinContractsInput(e.target.value)}
+                    className="w-16 text-xs px-2 py-1 rounded bg-[--bg-primary] border border-[--border-color] text-[--text-primary] focus:outline-none focus:border-blue-500 text-center"
+                    min="1"
+                  />
+                  <span className="text-xs text-[--text-muted]">份</span>
+                  <button
+                    onClick={handleUpdateMinContracts}
+                    disabled={autoTradeLoading}
+                    className="text-xs px-2 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors disabled:opacity-50"
+                  >
+                    更新
+                  </button>
+                </div>
+              </div>
+
               {/* 上次下单时间 */}
               {autoTradeStatus.last_trade_time && (
                 <div className="flex items-center justify-between">
@@ -549,8 +682,10 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
             {/* 弹窗底部说明 */}
             <div className="px-4 py-3 border-t border-[--border-color] bg-[--bg-tertiary] rounded-b-lg">
               <p className="text-[10px] text-[--text-muted] leading-relaxed">
-                💡 只有持续时间超过 {autoTradeStatus.min_duration_ms}ms 的套利机会才会触发下单。
-                可修改最大下单次数来控制风险。
+                💡 {autoTradeStatus.flexible_mode 
+                  ? `灵活模式：深度10-20时下${autoTradeStatus.min_contracts}份，深度≥20时下深度的一半（上限${autoTradeStatus.max_contracts}份）` 
+                  : `固定模式：每次固定下${autoTradeStatus.min_contracts}份合同`
+                }。双平台深度都需≥{autoTradeStatus.min_contracts}份才会下单。
               </p>
             </div>
           </div>

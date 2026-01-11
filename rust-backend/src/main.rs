@@ -13,6 +13,7 @@ mod config;
 mod core;
 mod models;
 mod services;
+mod utils;
 
 use crate::config::Config;
 
@@ -20,6 +21,9 @@ use crate::config::Config;
 async fn main() -> Result<()> {
     // 创建日志目录
     std::fs::create_dir_all("logs")?;
+    
+    // 初始化 debug 日志路径 (使用当前工作目录)
+    utils::init_debug_log_path(None);
 
     // 文件日志 appender - 每天轮转
     let file_appender = tracing_appender::rolling::daily("logs", "polytaoli.log");

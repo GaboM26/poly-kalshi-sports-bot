@@ -121,6 +121,12 @@ pub struct PerformanceMetrics {
     // Flags to indicate if latency has been measured
     kalshi_latency_set: AtomicU64,
     polymarket_latency_set: AtomicU64,
+    
+    // Balance cache (stored as cents to avoid floating point issues)
+    kalshi_balance_cents: AtomicU64,
+    polymarket_balance_cents: AtomicU64,
+    kalshi_balance_set: AtomicU64,
+    polymarket_balance_set: AtomicU64,
 }
 
 impl Default for PerformanceMetrics {
@@ -142,6 +148,10 @@ impl PerformanceMetrics {
             polymarket_api_latency_ms: AtomicU64::new(0),
             kalshi_latency_set: AtomicU64::new(0),
             polymarket_latency_set: AtomicU64::new(0),
+            kalshi_balance_cents: AtomicU64::new(0),
+            polymarket_balance_cents: AtomicU64::new(0),
+            kalshi_balance_set: AtomicU64::new(0),
+            polymarket_balance_set: AtomicU64::new(0),
         }
     }
 
@@ -172,6 +182,38 @@ impl PerformanceMetrics {
     pub fn set_polymarket_latency(&self, latency_ms: u64) {
         self.polymarket_api_latency_ms.store(latency_ms, Ordering::Relaxed);
         self.polymarket_latency_set.store(1, Ordering::Relaxed);
+    }
+
+    /// Set cached balance for Kalshi (in dollars)
+    pub fn set_kalshi_balance(&self, balance: f64) {
+        let cents = (balance * 100.0) as u64;
+        self.kalshi_balance_cents.store(cents, Ordering::Relaxed);
+        self.kalshi_balance_set.store(1, Ordering::Relaxed);
+    }
+
+    /// Set cached balance for Polymarket (in dollars)
+    pub fn set_polymarket_balance(&self, balance: f64) {
+        let cents = (balance * 100.0) as u64;
+        self.polymarket_balance_cents.store(cents, Ordering::Relaxed);
+        self.polymarket_balance_set.store(1, Ordering::Relaxed);
+    }
+
+    /// Get cached balances (kalshi, polymarket) in dollars
+    /// Returns (None, None) if balances haven't been set yet
+    pub fn get_cached_balances(&self) -> (Option<f64>, Option<f64>) {
+        let kalshi = if self.kalshi_balance_set.load(Ordering::Relaxed) == 1 {
+            Some(self.kalshi_balance_cents.load(Ordering::Relaxed) as f64 / 100.0)
+        } else {
+            None
+        };
+        
+        let polymarket = if self.polymarket_balance_set.load(Ordering::Relaxed) == 1 {
+            Some(self.polymarket_balance_cents.load(Ordering::Relaxed) as f64 / 100.0)
+        } else {
+            None
+        };
+        
+        (kalshi, polymarket)
     }
 
     /// Get API latency information

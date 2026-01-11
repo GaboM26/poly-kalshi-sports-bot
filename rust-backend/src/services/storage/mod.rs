@@ -166,11 +166,24 @@ impl ArbitrageStorage {
             "ALTER TABLE auto_trade_state ADD COLUMN min_duration_ms INTEGER DEFAULT 500",
             [],
         );
+        // 新增：灵活下单模式相关字段
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_state ADD COLUMN flexible_mode INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_state ADD COLUMN max_contracts INTEGER DEFAULT 100",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_state ADD COLUMN min_contracts INTEGER DEFAULT 10",
+            [],
+        );
 
         // Initialize auto_trade_state with default row if not exists
         conn.execute(
-            "INSERT OR IGNORE INTO auto_trade_state (id, enabled, trade_count, max_trade_count, max_amount, min_duration_ms) 
-             VALUES (1, 0, 0, 2, 10.0, 500)",
+            "INSERT OR IGNORE INTO auto_trade_state (id, enabled, trade_count, max_trade_count, max_amount, min_duration_ms, flexible_mode, max_contracts, min_contracts) 
+             VALUES (1, 0, 0, 2, 10.0, 500, 0, 100, 10)",
             [],
         )?;
 
@@ -263,11 +276,18 @@ impl ArbitrageStorage {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_name TEXT NOT NULL,
                 team_name TEXT NOT NULL,
+                game_date TEXT,
                 market_key TEXT NOT NULL UNIQUE,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )",
             [],
         )?;
+
+        // Migrate existing table: add game_date column if it doesn't exist
+        let _ = conn.execute(
+            "ALTER TABLE excluded_markets ADD COLUMN game_date TEXT",
+            [],
+        );
 
         Ok(())
     }

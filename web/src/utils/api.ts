@@ -206,6 +206,12 @@ export interface AutoTradeStatus {
   remaining: number;
   max_amount: number;
   min_duration_ms: number;
+  /** 是否启用灵活下单模式 */
+  flexible_mode: boolean;
+  /** 单次最大合同数 */
+  max_contracts: number;
+  /** 最低合同数（深度低于此值不下单） */
+  min_contracts: number;
   last_trade_time: string | null;
 }
 
@@ -267,6 +273,12 @@ export async function updateAutoTradeSettings(
     max_amount?: number;
     min_duration_ms?: number;
     max_trade_count?: number;
+    /** 是否启用灵活下单模式 */
+    flexible_mode?: boolean;
+    /** 单次最大合同数 */
+    max_contracts?: number;
+    /** 最低合同数 */
+    min_contracts?: number;
   }
 ): Promise<{ success: boolean; message?: string; error?: string }> {
   const response = await fetch(`${baseUrl}/api/auto-trade/settings`, {

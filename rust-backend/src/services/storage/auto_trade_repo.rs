@@ -21,6 +21,12 @@ pub struct AutoTradeState {
     pub max_amount: f64,
     /// 套利机会持续时间阈值（毫秒）
     pub min_duration_ms: i64,
+    /// 是否启用灵活下单模式
+    pub flexible_mode: bool,
+    /// 单次最大合同数
+    pub max_contracts: i32,
+    /// 最低合同数（深度低于此值不下单）
+    pub min_contracts: i32,
     pub last_trade_time: Option<String>,
     pub updated_at: Option<String>,
 }
@@ -33,6 +39,9 @@ impl Default for AutoTradeState {
             max_trade_count: 2,
             max_amount: 10.0,
             min_duration_ms: 500,
+            flexible_mode: false,
+            max_contracts: 100,
+            min_contracts: 10,
             last_trade_time: None,
             updated_at: None,
         }
@@ -79,7 +88,8 @@ impl ArbitrageStorage {
         let conn = self.conn().lock();
         
         let result = conn.query_row(
-            "SELECT enabled, trade_count, max_trade_count, max_amount, min_duration_ms, last_trade_time, updated_at
+            "SELECT enabled, trade_count, max_trade_count, max_amount, min_duration_ms, 
+                    flexible_mode, max_contracts, min_contracts, last_trade_time, updated_at
              FROM auto_trade_state WHERE id = 1",
             [],
             |row| {
@@ -89,8 +99,11 @@ impl ArbitrageStorage {
                     max_trade_count: row.get(2)?,
                     max_amount: row.get(3)?,
                     min_duration_ms: row.get(4)?,
-                    last_trade_time: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    flexible_mode: row.get::<_, i32>(5).unwrap_or(0) != 0,
+                    max_contracts: row.get(6).unwrap_or(100),
+                    min_contracts: row.get(7).unwrap_or(10),
+                    last_trade_time: row.get(8)?,
+                    updated_at: row.get(9)?,
                 })
             },
         );
@@ -142,11 +155,15 @@ impl ArbitrageStorage {
     }
 
     /// Update auto-trade settings
+    #[allow(clippy::too_many_arguments)]
     pub fn update_auto_trade_settings(
         &self,
         max_amount: Option<f64>,
         min_duration_ms: Option<i64>,
         max_trade_count: Option<i32>,
+        flexible_mode: Option<bool>,
+        max_contracts: Option<i32>,
+        min_contracts: Option<i32>,
     ) -> Result<()> {
         let conn = self.conn().lock();
         
@@ -172,6 +189,30 @@ impl ArbitrageStorage {
                 params![max_count, Utc::now().to_rfc3339()],
             )?;
             info!("🔄 max_trade_count 已更新: {}", max_count);
+        }
+        
+        if let Some(flexible) = flexible_mode {
+            conn.execute(
+                "UPDATE auto_trade_state SET flexible_mode = ?, updated_at = ? WHERE id = 1",
+                params![flexible as i32, Utc::now().to_rfc3339()],
+            )?;
+            info!("🔄 flexible_mode 已更新: {}", flexible);
+        }
+        
+        if let Some(max_c) = max_contracts {
+            conn.execute(
+                "UPDATE auto_trade_state SET max_contracts = ?, updated_at = ? WHERE id = 1",
+                params![max_c, Utc::now().to_rfc3339()],
+            )?;
+            info!("🔄 max_contracts 已更新: {}", max_c);
+        }
+        
+        if let Some(min_c) = min_contracts {
+            conn.execute(
+                "UPDATE auto_trade_state SET min_contracts = ?, updated_at = ? WHERE id = 1",
+                params![min_c, Utc::now().to_rfc3339()],
+            )?;
+            info!("🔄 min_contracts 已更新: {}", min_c);
         }
         
         Ok(())

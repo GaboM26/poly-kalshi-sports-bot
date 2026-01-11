@@ -8,10 +8,32 @@
 //! - Both Kalshi markets point to the same Poly market
 //! - Team name determines which Poly price perspective to use
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::services::metrics::MetricsReport;
+
+/// Generate a unified market key including date for accurate identification
+/// Format: EVENT-NAME_YYYY-MM-DD_TEAM-NAME (e.g., PHI-TOR_2026-01-11_PHI)
+pub fn generate_market_key(
+    event_name: &str,
+    game_date: Option<NaiveDate>,
+    team_name: &str,
+) -> String {
+    match game_date {
+        Some(date) => format!(
+            "{}_{}_{}", 
+            event_name.to_uppercase(), 
+            date.format("%Y-%m-%d"), 
+            team_name.to_uppercase()
+        ),
+        None => format!(
+            "{}_{}", 
+            event_name.to_uppercase(), 
+            team_name.to_uppercase()
+        ),
+    }
+}
 
 /// Platform enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -195,6 +217,9 @@ pub struct MatchedMarket {
     pub event_name: String,
     /// Team that Kalshi market predicts
     pub team_name: String,
+    /// Game date (for distinguishing same-team games on different dates)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub game_date: Option<NaiveDate>,
 
     /// Kalshi side
     pub kalshi_market: KalshiMarket,
@@ -221,12 +246,20 @@ impl MatchedMarket {
             self.poly_no_price = no;
         }
     }
+
+    /// Generate unique market key including date
+    pub fn market_key(&self) -> String {
+        generate_market_key(&self.event_name, self.game_date, &self.team_name)
+    }
 }
 
 /// Matched event
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchedEvent {
     pub event_name: String,
+    /// Game date (for distinguishing same-team games on different dates)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub game_date: Option<NaiveDate>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kalshi_event: Option<KalshiEvent>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -257,6 +290,9 @@ pub struct PriceUpdate {
 pub struct ArbitrageOpportunity {
     pub event_name: String,
     pub team_name: String,
+    /// Game date (for distinguishing same-team games on different dates)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub game_date: Option<NaiveDate>,
 
     // Kalshi side
     pub kalshi_market_id: String,
@@ -316,6 +352,13 @@ pub struct ArbitrageOpportunity {
     pub kalshi_ask_depth: i32,
 }
 
+impl ArbitrageOpportunity {
+    /// Generate unique market key including date
+    pub fn market_key(&self) -> String {
+        generate_market_key(&self.event_name, self.game_date, &self.team_name)
+    }
+}
+
 /// System statistics
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SystemStats {
@@ -340,6 +383,9 @@ pub struct ArbitrageTrackingRecord {
     pub id: String,
     pub event_name: String,
     pub team_name: String,
+    /// Game date (for distinguishing same-team games on different dates)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub game_date: Option<NaiveDate>,
     pub kalshi_market_id: String,
     pub polymarket_market_id: String,
     pub start_time: DateTime<Utc>,
@@ -369,6 +415,13 @@ pub struct ArbitrageTrackingRecord {
     /// Polymarket ask 价格（用于套利的那一侧）
     #[serde(default)]
     pub polymarket_ask_price: f64,
+}
+
+impl ArbitrageTrackingRecord {
+    /// Generate unique market key including date
+    pub fn market_key(&self) -> String {
+        generate_market_key(&self.event_name, self.game_date, &self.team_name)
+    }
 }
 
 /// Order side
@@ -412,6 +465,9 @@ pub struct OrderResponse {
 pub struct MatchedMarketFrontend {
     pub event_name: String,
     pub team_name: String,
+    /// Game date (for distinguishing same-team games on different dates)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub game_date: Option<String>,
     pub kalshi_market_id: String,
     pub polymarket_market_id: String,
     /// Polymarket token_id (asset_id) for Yes orderbook lookup

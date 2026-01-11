@@ -189,6 +189,7 @@ impl EventMatcher {
                 if best_confidence >= 0.7 {
                     let matched = MatchedEvent {
                         event_name: k_event.name.clone(),
+                        game_date: k_date,  // Use Kalshi event's date
                         kalshi_event: Some(k_event.clone()),
                         polymarket_event: Some(p_event.clone()),
                         confidence: best_confidence,
@@ -249,6 +250,7 @@ impl EventMatcher {
                 let matched = MatchedMarket {
                     event_name: matched_event.event_name.clone(),
                     team_name: team_name.clone(),
+                    game_date: matched_event.game_date,  // Inherit from MatchedEvent
                     kalshi_market: k_market.clone(),
                     polymarket_market: poly_market.clone(),
                     poly_yes_price: poly_yes,
