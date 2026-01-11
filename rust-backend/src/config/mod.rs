@@ -195,6 +195,34 @@ impl Default for AutoTradeConfig {
     }
 }
 
+/// Telegram notification configuration
+#[derive(Debug, Clone, Deserialize)]
+pub struct TelegramConfig {
+    /// Whether Telegram notifications are enabled
+    #[serde(default = "default_telegram_enabled")]
+    pub enabled: bool,
+    /// Telegram bot token
+    #[serde(default)]
+    pub bot_token: String,
+    /// Telegram chat ID (group or channel)
+    #[serde(default)]
+    pub chat_id: String,
+}
+
+fn default_telegram_enabled() -> bool {
+    false
+}
+
+impl Default for TelegramConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_telegram_enabled(),
+            bot_token: String::new(),
+            chat_id: String::new(),
+        }
+    }
+}
+
 /// Main configuration struct
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -206,6 +234,8 @@ pub struct Config {
     pub auth: AuthConfig,
     #[serde(default)]
     pub auto_trade: AutoTradeConfig,
+    #[serde(default)]
+    pub telegram: TelegramConfig,
 }
 
 impl Config {

@@ -88,3 +88,17 @@ max_amount = 10.0
 max_trade_count = 2
 # 套利机会持续时间阈值（毫秒）
 min_duration_ms = 500
+
+
+[telegram]
+# Telegram 通知配置（自动下单通知）
+# 默认关闭，需要时启用
+enabled = true
+
+# Telegram Bot Token（从 @BotFather 获取）
+bot_token = "8534665491:AAEYBT3ZQC-N63ThwwGRCUNQT0BP6_OZlqI"
+
+# Telegram Chat ID（群组或频道 ID）
+# 获取方式：将 bot 添加到群组后，发送消息，然后访问
+# https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
+chat_id = "-1003242331044"

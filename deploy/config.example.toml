@@ -74,3 +74,16 @@ secret_key = "your-secret-key-change-this-in-production-min-32-chars-long"
 
 # Token 过期时间（小时）
 token_expire_hours = 24
+
+[telegram]
+# Telegram 通知配置（自动下单通知）
+# 默认关闭，需要时启用
+enabled = false
+
+# Telegram Bot Token（从 @BotFather 获取）
+bot_token = "YOUR_BOT_TOKEN_HERE"
+
+# Telegram Chat ID（群组或频道 ID）
+# 获取方式：将 bot 添加到群组后，发送消息，然后访问
+# https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
+chat_id = "YOUR_CHAT_ID_HERE"

@@ -22,7 +22,7 @@ use tracing::{info, warn, error};
 
 use crate::config::Config;
 use crate::models::PriceUpdate;
-use crate::services::{ArbitrageService, PerformanceMetrics};
+use crate::services::{ArbitrageService, PerformanceMetrics, TelegramClient};
 
 /// Market scan interval in seconds (5 minutes)
 const MARKET_SCAN_INTERVAL_SECS: u64 = 300;
@@ -31,6 +31,7 @@ const MARKET_SCAN_INTERVAL_SECS: u64 = 300;
 pub struct AppState {
     pub service: RwLock<ArbitrageService>,
     pub config: Config,
+    pub telegram_client: Arc<TelegramClient>,
 }
 
 /// Create the Axum application
@@ -51,10 +52,19 @@ pub async fn create_app(config: Config) -> Result<Router> {
     // Start periodic scanning
     service.run_periodic_scan(config.settings.refresh_interval).await;
 
+    // Initialize Telegram client
+    let telegram_client = Arc::new(TelegramClient::new(config.telegram.clone()));
+    if telegram_client.is_enabled() {
+        info!("✅ Telegram 通知已启用");
+    } else {
+        info!("ℹ️ Telegram 通知未启用");
+    }
+
     // Create shared state
     let state = Arc::new(AppState {
         service: RwLock::new(service),
         config: config.clone(),
+        telegram_client,
     });
 
     // Spawn price update handler
@@ -757,6 +767,31 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
             poly_error.as_deref(),
         ) {
             error!("保存自动下单记录失败: {}", e);
+        }
+        
+        // Send Telegram notification (non-blocking, errors logged only)
+        {
+            let telegram = state.telegram_client.clone();
+            let event_name = record.event_name.clone();
+            let team_name = record.team_name.clone();
+            let profit = actual_profit_margin;
+            let k_err = kalshi_error.clone();
+            let p_err = poly_error.clone();
+            let expected_profit = contracts_to_trade as f64 - total_bet;
+            
+            tokio::spawn(async move {
+                telegram.send_auto_trade_notification(
+                    &event_name,
+                    &team_name,
+                    profit,
+                    kalshi_success,
+                    poly_success,
+                    k_err.as_deref(),
+                    p_err.as_deref(),
+                    total_bet,
+                    expected_profit,
+                ).await;
+            });
         }
         
         // Log results
