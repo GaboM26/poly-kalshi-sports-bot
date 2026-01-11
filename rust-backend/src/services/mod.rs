@@ -13,5 +13,5 @@ pub mod websocket_manager;
 
 pub use arbitrage::ArbitrageService;
 pub use metrics::{PerformanceMetrics, MetricsReport, ApiLatency, Operation};
-pub use storage::ArbitrageStorage;
+pub use storage::{ArbitrageStorage, AppSettings, AutoTradeState, AutoTradeRecord, StorageStats};
 pub use websocket_manager::WebSocketManager;

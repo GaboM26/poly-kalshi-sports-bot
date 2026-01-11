@@ -1,0 +1,228 @@
+//! Market lifecycle management
+//!
+//! Handles ended market detection and cleanup.
+
+use chrono::Utc;
+use tracing::{debug, info};
+
+use crate::core::EventMatcher;
+use super::{
+    WebSocketManager,
+    EXTREME_PRICE_THRESHOLD_KALSHI_HIGH, EXTREME_PRICE_THRESHOLD_KALSHI_LOW,
+    EXTREME_PRICE_THRESHOLD_POLY_HIGH, EXTREME_PRICE_THRESHOLD_POLY_LOW,
+    ENDED_DETECTION_DURATION_MINS,
+};
+
+impl WebSocketManager {
+    /// Check if a market shows extreme prices indicating the game has ended
+    pub fn check_market_ended(&self, idx: usize) -> bool {
+        let markets = self.matched_markets.read();
+        if idx >= markets.len() {
+            return false;
+        }
+        let mm = &markets[idx];
+        let market_key = format!("{}_{}", mm.event_name, mm.team_name);
+        
+        if self.confirmed_ended_markets.read().contains(&market_key) {
+            return true;
+        }
+
+        let kalshi_prices = self.kalshi_prices.read();
+        let (k_yes_ask, k_no_ask) = match kalshi_prices.get(&mm.kalshi_market.market_id) {
+            Some((_, ya, _, na)) => (*ya, *na),
+            None => return false,
+        };
+
+        let p_yes = mm.poly_yes_price;
+        let p_no = mm.poly_no_price;
+
+        drop(kalshi_prices);
+        drop(markets);
+
+        let kalshi_extreme = self.is_kalshi_price_extreme(k_yes_ask, k_no_ask);
+        let poly_extreme = self.is_poly_price_extreme(p_yes, p_no);
+
+        if kalshi_extreme && poly_extreme {
+            let now = Utc::now();
+            let mut detection = self.ended_market_detection.write();
+            
+            if let Some(first_detected) = detection.get(&market_key) {
+                let duration = now.signed_duration_since(*first_detected);
+                if duration.num_minutes() >= ENDED_DETECTION_DURATION_MINS {
+                    drop(detection);
+                    self.confirmed_ended_markets.write().insert(market_key.clone());
+                    info!(
+                        "🏁 比赛已结束: {} (极端价格持续 {} 分钟)",
+                        market_key, duration.num_minutes()
+                    );
+                    return true;
+                }
+            } else {
+                detection.insert(market_key.clone(), now);
+                debug!(
+                    "⏱️ 检测到极端价格: {} (Kalshi: {:.0}¢/{:.0}¢, Poly: {:.0}¢/{:.0}¢)",
+                    market_key, k_yes_ask * 100.0, k_no_ask * 100.0, p_yes * 100.0, p_no * 100.0
+                );
+            }
+        } else {
+            let mut detection = self.ended_market_detection.write();
+            if detection.remove(&market_key).is_some() {
+                debug!("🔄 极端价格恢复正常: {}", market_key);
+            }
+        }
+
+        false
+    }
+
+    /// Check if Kalshi prices are extreme (99/2 or 2/99)
+    pub(crate) fn is_kalshi_price_extreme(&self, yes_ask: f64, no_ask: f64) -> bool {
+        let pattern1 = yes_ask >= EXTREME_PRICE_THRESHOLD_KALSHI_HIGH 
+            && no_ask <= EXTREME_PRICE_THRESHOLD_KALSHI_LOW;
+        let pattern2 = yes_ask <= EXTREME_PRICE_THRESHOLD_KALSHI_LOW 
+            && no_ask >= EXTREME_PRICE_THRESHOLD_KALSHI_HIGH;
+        
+        pattern1 || pattern2
+    }
+
+    /// Check if Polymarket prices are extreme (100/0 or 0/100)
+    pub(crate) fn is_poly_price_extreme(&self, yes_price: f64, no_price: f64) -> bool {
+        let pattern1 = yes_price >= EXTREME_PRICE_THRESHOLD_POLY_HIGH 
+            && no_price <= EXTREME_PRICE_THRESHOLD_POLY_LOW;
+        let pattern2 = yes_price <= EXTREME_PRICE_THRESHOLD_POLY_LOW 
+            && no_price >= EXTREME_PRICE_THRESHOLD_POLY_HIGH;
+        
+        pattern1 || pattern2
+    }
+
+    /// Check if a market key is confirmed as ended
+    pub fn is_market_ended(&self, market_key: &str) -> bool {
+        self.confirmed_ended_markets.read().contains(market_key)
+    }
+
+    /// Remove ended markets and return subscription IDs to unsubscribe
+    pub fn remove_ended_markets(&self) -> (Vec<String>, Vec<String>) {
+        let mut kalshi_to_unsub = Vec::new();
+        let mut poly_to_unsub = Vec::new();
+        let mut indices_to_remove = Vec::new();
+        let mut market_keys_to_remove = Vec::new();
+
+        {
+            let markets = self.matched_markets.read();
+            for (idx, mm) in markets.iter().enumerate() {
+                let market_key = format!("{}_{}", mm.event_name, mm.team_name);
+                
+                if self.check_market_ended(idx) {
+                    indices_to_remove.push(idx);
+                    market_keys_to_remove.push(market_key.clone());
+                    
+                    kalshi_to_unsub.push(mm.kalshi_market.market_id.clone());
+                    
+                    if let Some(token) = mm.polymarket_market.get_token_for_team(&mm.team_name) {
+                        poly_to_unsub.push(token.to_string());
+                    }
+                    if let Some(opponent) = mm.polymarket_market.get_opponent(&mm.team_name) {
+                        if let Some(token) = mm.polymarket_market.get_token_for_team(opponent) {
+                            poly_to_unsub.push(token.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        if indices_to_remove.is_empty() {
+            return (kalshi_to_unsub, poly_to_unsub);
+        }
+
+        info!(
+            "🧹 清理已结束的市场: {} 个 (Kalshi: {} 个, Poly: {} 个 token)",
+            indices_to_remove.len(),
+            kalshi_to_unsub.len(),
+            poly_to_unsub.len()
+        );
+
+        {
+            let mut markets = self.matched_markets.write();
+            for &idx in indices_to_remove.iter().rev() {
+                if idx < markets.len() {
+                    let removed = markets.remove(idx);
+                    info!("   移除: {} - {}", removed.event_name, removed.team_name);
+                }
+            }
+        }
+
+        {
+            let mut lookup = self.market_lookup.write();
+            for ticker in &kalshi_to_unsub {
+                lookup.remove(ticker);
+            }
+            for token in &poly_to_unsub {
+                lookup.remove(token);
+            }
+            
+            let markets = self.matched_markets.read();
+            let matcher = EventMatcher::new(24);
+            let new_sub_info = matcher.get_subscription_info(&markets);
+            drop(markets);
+            *lookup = new_sub_info.market_lookup;
+        }
+
+        {
+            let mut kalshi_prices = self.kalshi_prices.write();
+            for ticker in &kalshi_to_unsub {
+                kalshi_prices.remove(ticker);
+            }
+        }
+        {
+            let mut poly_prices = self.poly_token_prices.write();
+            for token in &poly_to_unsub {
+                poly_prices.remove(token);
+            }
+        }
+
+        {
+            let mut opps = self.opportunities.write();
+            opps.retain(|o| {
+                let key = format!("{}_{}", o.event_name, o.team_name);
+                !market_keys_to_remove.contains(&key)
+            });
+        }
+
+        {
+            let mut tracking = self.active_tracking.write();
+            for key in &market_keys_to_remove {
+                if tracking.remove(key).is_some() {
+                    self.storage.track_end(key);
+                }
+            }
+        }
+
+        {
+            let mut detection = self.ended_market_detection.write();
+            for key in &market_keys_to_remove {
+                detection.remove(key);
+            }
+        }
+
+        kalshi_to_unsub.sort();
+        kalshi_to_unsub.dedup();
+        poly_to_unsub.sort();
+        poly_to_unsub.dedup();
+
+        info!(
+            "✅ 清理完成，剩余 {} 个活跃市场",
+            self.matched_markets.read().len()
+        );
+
+        (kalshi_to_unsub, poly_to_unsub)
+    }
+
+    /// Get count of markets currently being monitored for ending
+    pub fn get_ending_detection_count(&self) -> usize {
+        self.ended_market_detection.read().len()
+    }
+
+    /// Get count of confirmed ended markets
+    pub fn get_confirmed_ended_count(&self) -> usize {
+        self.confirmed_ended_markets.read().len()
+    }
+}
