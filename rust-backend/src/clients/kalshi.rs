@@ -63,28 +63,18 @@ impl OrderBook {
     /// 计算 yes 侧的 ask 深度（买入 yes 时使用）
     /// Kalshi: yes_ask = 1 - no_bid，所以买 yes 的深度看 no 侧的 bid
     /// no 按价格升序排列，last 是最高买价（best no_bid）
-    pub fn yes_ask_depth(&self, max_contracts: i32) -> i32 {
-        let mut depth = 0;
-        for (_, qty) in self.no.iter().rev() {
-            depth += qty;
-            if depth >= max_contracts {
-                return max_contracts;
-            }
-        }
-        depth
+    /// 只看最优档位的深度，避免累加多档位导致过于乐观的深度估计
+    pub fn yes_ask_depth(&self, _max_contracts: i32) -> i32 {
+        // 只返回最优档位（No 侧最高 bid）的深度
+        self.no.last().map(|(_, qty)| *qty).unwrap_or(0)
     }
 
     /// 计算 no 侧的 ask 深度（买入 no 时使用）
     /// no_ask = 1 - yes_bid，所以买 no 的深度看 yes 侧的 bid
-    pub fn no_ask_depth(&self, max_contracts: i32) -> i32 {
-        let mut depth = 0;
-        for (_, qty) in self.yes.iter().rev() {
-            depth += qty;
-            if depth >= max_contracts {
-                return max_contracts;
-            }
-        }
-        depth
+    /// 只看最优档位的深度，避免累加多档位导致过于乐观的深度估计
+    pub fn no_ask_depth(&self, _max_contracts: i32) -> i32 {
+        // 只返回最优档位（Yes 侧最高 bid）的深度
+        self.yes.last().map(|(_, qty)| *qty).unwrap_or(0)
     }
 
     /// 根据 side 获取对应的 ask 深度
@@ -306,27 +296,28 @@ impl KalshiClient {
         Ok((events, markets))
     }
 
-    /// Place an order (market order using FOK - Fill or Kill)
+    /// Place an order with FOK (Fill or Kill) - must fill entirely or cancel
     pub async fn place_order(
         &self,
         ticker: &str,
         side: &str,
         outcome: &str,
         count: i32,
-        price: i32, // in cents - used as max price for FOK
+        price: i32, // in cents - max price willing to pay
     ) -> Result<Value> {
         let action = if side == "buy" { "buy" } else { "sell" };
         let yes_price = if outcome == "yes" { price } else { 100 - price };
         
-        // 使用 FOK (Fill or Kill) 订单类型，保证立即成交或取消
-        // yes_price 作为最高可接受价格（市价吃单）
+        // 使用 FOK (Fill or Kill) 订单类型
+        // 必须全部成交，否则全部取消，不会产生挂单
         let body = json!({
             "ticker": ticker,
             "action": action,
             "side": outcome,
             "count": count,
-            "type": "market",
+            "type": "limit",
             "yes_price": yes_price,
+            "time_in_force": "fill_or_kill",
         });
 
         self.post("/portfolio/orders", &body).await
