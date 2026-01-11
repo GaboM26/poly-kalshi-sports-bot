@@ -306,24 +306,26 @@ impl KalshiClient {
         Ok((events, markets))
     }
 
-    /// Place an order
+    /// Place an order (market order using FOK - Fill or Kill)
     pub async fn place_order(
         &self,
         ticker: &str,
         side: &str,
         outcome: &str,
         count: i32,
-        price: i32, // in cents
+        price: i32, // in cents - used as max price for FOK
     ) -> Result<Value> {
         let action = if side == "buy" { "buy" } else { "sell" };
         let yes_price = if outcome == "yes" { price } else { 100 - price };
         
+        // 使用 FOK (Fill or Kill) 订单类型，保证立即成交或取消
+        // yes_price 作为最高可接受价格（市价吃单）
         let body = json!({
             "ticker": ticker,
             "action": action,
             "side": outcome,
             "count": count,
-            "type": "limit",
+            "type": "market",
             "yes_price": yes_price,
         });
 

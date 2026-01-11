@@ -8,8 +8,10 @@ use std::str::FromStr;
 /// Contract configuration for a specific chain
 #[derive(Debug, Clone)]
 pub struct ContractConfig {
-    /// Exchange contract address
+    /// Exchange contract address (for neg_risk=false markets)
     pub exchange: Address,
+    /// Neg Risk CTF Exchange contract address (for neg_risk=true markets)
+    pub neg_risk_exchange: Address,
     /// Collateral token address (USDC)
     pub collateral: Address,
     /// Conditional tokens contract address
@@ -27,12 +29,16 @@ pub fn get_contract_config(chain_id: u64) -> Option<ContractConfig> {
     match chain_id {
         POLYGON_CHAIN_ID => Some(ContractConfig {
             exchange: Address::from_str("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E").unwrap(),
+            // NegRiskCtfExchange for neg_risk=true markets (e.g., NBA sports markets)
+            neg_risk_exchange: Address::from_str("0xC5d563A36AE78145C45a50134d48A1215220f80a").unwrap(),
             collateral: Address::from_str("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174").unwrap(),
             conditional_tokens: Address::from_str("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045")
                 .unwrap(),
         }),
         AMOY_CHAIN_ID => Some(ContractConfig {
             exchange: Address::from_str("0xdFE02Eb6733538f8Ea35D585af8DE5958AD99E40").unwrap(),
+            // Amoy testnet neg_risk exchange (same as mainnet pattern)
+            neg_risk_exchange: Address::from_str("0x87d1A0DdB4C63a6301916F02090A51a7241571e4").unwrap(),
             collateral: Address::from_str("0x9c4e1703476e875070ee25b56a58b008cfb8fa78").unwrap(),
             conditional_tokens: Address::from_str("0x69308FB512518e39F9b16112fA8d994F4e2Bf8bB")
                 .unwrap(),

@@ -258,6 +258,12 @@ pub async fn create_app(config: Config) -> Result<Router> {
         .route("/api/auto-trade/reset", post(routes::reset_auto_trade))
         .route("/api/auto-trade/settings", put(routes::update_auto_trade_settings))
         .route("/api/auto-trade/history", get(routes::get_auto_trade_history))
+        .route("/api/auto-trade/excluded", get(routes::get_excluded_markets))
+        .route("/api/auto-trade/exclude", post(routes::exclude_market))
+        .route("/api/auto-trade/unexclude", post(routes::unexclude_market))
+        // App settings (hot-updatable)
+        .route("/api/settings", get(routes::get_app_settings))
+        .route("/api/settings", put(routes::update_app_settings))
         // WebSocket
         .route("/ws", get(websocket::ws_handler))
         // Add state
@@ -367,14 +373,17 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
         if total_bet > auto_state.max_amount {
             let skip_reason = format!("总投入 ${:.2} 超过限额 ${:.2}", total_bet, auto_state.max_amount);
             info!("   ⚠️ {}", skip_reason);
-            let storage = service.ws_manager.get_storage();
-            let _ = storage.save_skipped_auto_trade_record(
-                &record.event_name, &record.team_name,
-                &record.kalshi_market_id, &record.polymarket_market_id,
-                &opportunity.kalshi_side, &opportunity.polymarket_side,
-                fixed_contracts, opportunity.kalshi_price, opportunity.polymarket_price,
-                opportunity.profit_margin, duration_ms, &skip_reason,
-            );
+            // Only record if this is a new skip reason for this market
+            if service.ws_manager.should_record_skip(&key, &skip_reason) {
+                let storage = service.ws_manager.get_storage();
+                let _ = storage.save_skipped_auto_trade_record(
+                    &record.event_name, &record.team_name,
+                    &record.kalshi_market_id, &record.polymarket_market_id,
+                    &opportunity.kalshi_side, &opportunity.polymarket_side,
+                    fixed_contracts, opportunity.kalshi_price, opportunity.polymarket_price,
+                    opportunity.profit_margin, duration_ms, &skip_reason,
+                );
+            }
             continue;
         }
         
@@ -388,14 +397,17 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
             None => {
                 let skip_reason = format!("无法获取 Polymarket token ({}侧)", opportunity.polymarket_side);
                 error!("❌ {}: {} - {}", skip_reason, record.event_name, record.team_name);
-                let storage = service.ws_manager.get_storage();
-                let _ = storage.save_skipped_auto_trade_record(
-                    &record.event_name, &record.team_name,
-                    &record.kalshi_market_id, &record.polymarket_market_id,
-                    &opportunity.kalshi_side, &opportunity.polymarket_side,
-                    fixed_contracts, opportunity.kalshi_price, opportunity.polymarket_price,
-                    opportunity.profit_margin, duration_ms, &skip_reason,
-                );
+                // Only record if this is a new skip reason for this market
+                if service.ws_manager.should_record_skip(&key, &skip_reason) {
+                    let storage = service.ws_manager.get_storage();
+                    let _ = storage.save_skipped_auto_trade_record(
+                        &record.event_name, &record.team_name,
+                        &record.kalshi_market_id, &record.polymarket_market_id,
+                        &opportunity.kalshi_side, &opportunity.polymarket_side,
+                        fixed_contracts, opportunity.kalshi_price, opportunity.polymarket_price,
+                        opportunity.profit_margin, duration_ms, &skip_reason,
+                    );
+                }
                 continue;
             }
         };
@@ -411,14 +423,17 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
         
         if !depth_valid {
             info!("   ⚠️ [深度/价格检查] 跳过下单: {}", validation_reason);
-            let storage = service.ws_manager.get_storage();
-            let _ = storage.save_skipped_auto_trade_record(
-                &record.event_name, &record.team_name,
-                &record.kalshi_market_id, &record.polymarket_market_id,
-                &opportunity.kalshi_side, &opportunity.polymarket_side,
-                fixed_contracts, opportunity.kalshi_price, opportunity.polymarket_price,
-                opportunity.profit_margin, duration_ms, &validation_reason,
-            );
+            // Only record if this is a new skip reason for this market
+            if service.ws_manager.should_record_skip(&key, &validation_reason) {
+                let storage = service.ws_manager.get_storage();
+                let _ = storage.save_skipped_auto_trade_record(
+                    &record.event_name, &record.team_name,
+                    &record.kalshi_market_id, &record.polymarket_market_id,
+                    &opportunity.kalshi_side, &opportunity.polymarket_side,
+                    fixed_contracts, opportunity.kalshi_price, opportunity.polymarket_price,
+                    opportunity.profit_margin, duration_ms, &validation_reason,
+                );
+            }
             continue;
         }
         
@@ -439,14 +454,17 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
         if total_bet > auto_state.max_amount {
             let skip_reason = format!("更新价格后总投入 ${:.2} 超过限额 ${:.2}", total_bet, auto_state.max_amount);
             info!("   ⚠️ {}", skip_reason);
-            let storage = service.ws_manager.get_storage();
-            let _ = storage.save_skipped_auto_trade_record(
-                &record.event_name, &record.team_name,
-                &record.kalshi_market_id, &record.polymarket_market_id,
-                &opportunity.kalshi_side, &opportunity.polymarket_side,
-                fixed_contracts, current_k_price, current_p_price,
-                opportunity.profit_margin, duration_ms, &skip_reason,
-            );
+            // Only record if this is a new skip reason for this market
+            if service.ws_manager.should_record_skip(&key, &skip_reason) {
+                let storage = service.ws_manager.get_storage();
+                let _ = storage.save_skipped_auto_trade_record(
+                    &record.event_name, &record.team_name,
+                    &record.kalshi_market_id, &record.polymarket_market_id,
+                    &opportunity.kalshi_side, &opportunity.polymarket_side,
+                    fixed_contracts, current_k_price, current_p_price,
+                    opportunity.profit_margin, duration_ms, &skip_reason,
+                );
+            }
             continue;
         }
         
@@ -457,6 +475,9 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
         
         // Mark as auto-traded BEFORE executing (to prevent duplicate orders)
         service.ws_manager.mark_as_auto_traded(&key);
+        
+        // Record execution start time for measuring order latency
+        let exec_start = Instant::now();
         
         // Execute Kalshi order
         let kalshi_result = service.kalshi_client.place_order(
@@ -473,6 +494,12 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
             "buy",
             poly_amount,
         ).await;
+        
+        // Calculate execution time (API call latency)
+        let exec_duration_ms = exec_start.elapsed().as_millis() as i64;
+        
+        // Calculate total time from opportunity detection to order completion
+        let total_duration_ms = Utc::now().signed_duration_since(record.start_time).num_milliseconds();
         
         // Extract results for logging and recording
         let kalshi_success = kalshi_result.is_ok();
@@ -513,7 +540,8 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
             current_p_price,  // Use current validated price
             total_bet,
             actual_profit_margin,  // Use recalculated profit margin
-            duration_ms,
+            duration_ms,  // Opportunity duration before order (ms)
+            total_duration_ms,  // Total time from detection to order completion (ms)
             kalshi_success,
             poly_success,
             kalshi_order_id.as_deref(),
@@ -529,6 +557,7 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>) {
             // Increment trade count on success
             if let Ok(new_count) = service.ws_manager.increment_trade_count() {
                 info!("✅ [自动下单] 成功! 已执行 {}/{} 次", new_count, auto_state.max_trade_count);
+                info!("   ⏱️ 从发现机会到下单完成: {}ms (API执行: {}ms)", total_duration_ms, exec_duration_ms);
             }
             info!("   Kalshi: {:?}", kalshi_result.unwrap());
             info!("   Polymarket: {:?}", poly_result.unwrap());

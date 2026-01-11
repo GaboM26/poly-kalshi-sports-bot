@@ -6,7 +6,10 @@ import {
   disableAutoTrade, 
   resetAutoTradeCount, 
   updateAutoTradeSettings,
-  AutoTradeStatus 
+  AutoTradeStatus,
+  getAppSettings,
+  updateAppSettings,
+  AppSettings
 } from '../utils/api';
 
 interface HeaderProps {
@@ -36,7 +39,19 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
   const [showAutoTradeModal, setShowAutoTradeModal] = useState(false);
   const [autoTradeLoading, setAutoTradeLoading] = useState(false);
   const [durationInput, setDurationInput] = useState('500');
+  const [maxTradeCountInput, setMaxTradeCountInput] = useState('2');
   const [autoTradeMessage, setAutoTradeMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  // 应用设置状态
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+  // 编辑用的临时值
+  const [editRefreshInterval, setEditRefreshInterval] = useState('5');
+  const [editMinProfit, setEditMinProfit] = useState('1.0');
+  const [editDefaultBet, setEditDefaultBet] = useState('10');
+  const [editTrackingThreshold, setEditTrackingThreshold] = useState('2.0');
 
   // 获取自动下单状态
   const fetchAutoTradeStatus = useCallback(async () => {
@@ -44,8 +59,23 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
       const data = await getAutoTradeStatus(apiBaseUrl);
       setAutoTradeStatus(data);
       setDurationInput(String(data.min_duration_ms));
+      setMaxTradeCountInput(String(data.max_trade_count));
     } catch (error) {
       console.error('获取自动下单状态失败:', error);
+    }
+  }, [apiBaseUrl]);
+
+  // 获取应用设置
+  const fetchAppSettings = useCallback(async () => {
+    try {
+      const data = await getAppSettings(apiBaseUrl);
+      setAppSettings(data);
+      setEditRefreshInterval(String(data.refresh_interval));
+      setEditMinProfit(String(data.min_profit_margin));
+      setEditDefaultBet(String(data.default_bet_amount));
+      setEditTrackingThreshold(String(data.tracking_threshold));
+    } catch (error) {
+      console.error('获取应用设置失败:', error);
     }
   }, [apiBaseUrl]);
 
@@ -56,10 +86,65 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     return () => clearInterval(interval);
   }, [fetchAutoTradeStatus]);
 
+  // 初始加载应用设置
+  useEffect(() => {
+    fetchAppSettings();
+  }, [fetchAppSettings]);
+
   // 显示消息
   const showAutoTradeMsg = (text: string, type: 'success' | 'error') => {
     setAutoTradeMessage({ text, type });
     setTimeout(() => setAutoTradeMessage(null), 3000);
+  };
+
+  // 显示设置消息
+  const showSettingsMsg = (text: string, type: 'success' | 'error') => {
+    setSettingsMessage({ text, type });
+    setTimeout(() => setSettingsMessage(null), 3000);
+  };
+
+  // 更新应用设置
+  const handleUpdateSettings = async () => {
+    const refreshInterval = parseInt(editRefreshInterval);
+    const minProfit = parseFloat(editMinProfit);
+    const defaultBet = parseFloat(editDefaultBet);
+    const trackingThreshold = parseFloat(editTrackingThreshold);
+
+    if (isNaN(refreshInterval) || refreshInterval < 1) {
+      showSettingsMsg('刷新间隔至少1秒', 'error');
+      return;
+    }
+    if (isNaN(minProfit) || minProfit < 0) {
+      showSettingsMsg('最小利润率不能为负', 'error');
+      return;
+    }
+    if (isNaN(defaultBet) || defaultBet <= 0) {
+      showSettingsMsg('默认金额必须大于0', 'error');
+      return;
+    }
+    if (isNaN(trackingThreshold) || trackingThreshold < 0) {
+      showSettingsMsg('追踪阈值不能为负', 'error');
+      return;
+    }
+
+    setSettingsLoading(true);
+    try {
+      const result = await updateAppSettings(apiBaseUrl, {
+        refresh_interval: refreshInterval,
+        min_profit_margin: minProfit,
+        default_bet_amount: defaultBet,
+        tracking_threshold: trackingThreshold,
+      });
+      if (result.success) {
+        showSettingsMsg('设置已保存（重启后完全生效）', 'success');
+        await fetchAppSettings();
+      } else {
+        showSettingsMsg(result.error || '保存失败', 'error');
+      }
+    } catch (error) {
+      showSettingsMsg('保存失败', 'error');
+    }
+    setSettingsLoading(false);
   };
 
   // 切换自动下单开关
@@ -108,6 +193,25 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     try {
       const result = await updateAutoTradeSettings(apiBaseUrl, { min_duration_ms: duration });
       if (result.success) showAutoTradeMsg('设置已更新', 'success');
+      else showAutoTradeMsg(result.error || '更新失败', 'error');
+      await fetchAutoTradeStatus();
+    } catch (error) {
+      showAutoTradeMsg('更新失败', 'error');
+    }
+    setAutoTradeLoading(false);
+  };
+
+  // 更新最大下单次数
+  const handleUpdateMaxTradeCount = async () => {
+    const count = parseInt(maxTradeCountInput);
+    if (isNaN(count) || count < 1) {
+      showAutoTradeMsg('请输入有效的次数（≥1）', 'error');
+      return;
+    }
+    setAutoTradeLoading(true);
+    try {
+      const result = await updateAutoTradeSettings(apiBaseUrl, { max_trade_count: count });
+      if (result.success) showAutoTradeMsg('最大次数已更新', 'success');
       else showAutoTradeMsg(result.error || '更新失败', 'error');
       await fetchAutoTradeStatus();
     } catch (error) {
@@ -281,6 +385,16 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
             </button>
           )}
 
+          {/* 设置按钮 */}
+          <button
+            onClick={() => setShowSettingsModal(true)}
+            className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors"
+            title="应用设置"
+          >
+            <span>⚙️</span>
+            <span>设置</span>
+          </button>
+
           {/* 用户信息 */}
           {username && (
             <div className="flex items-center gap-1 pl-2 border-l border-[--border-color]">
@@ -354,8 +468,23 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
                   <span className={`text-sm font-mono font-semibold ${
                     autoTradeStatus.remaining > 0 ? 'text-green-400' : 'text-red-400'
                   }`}>
-                    {autoTradeStatus.trade_count} / {autoTradeStatus.max_trade_count}
+                    {autoTradeStatus.trade_count}
                   </span>
+                  <span className="text-[--text-muted]">/</span>
+                  <input
+                    type="number"
+                    value={maxTradeCountInput}
+                    onChange={(e) => setMaxTradeCountInput(e.target.value)}
+                    className="w-12 text-xs px-2 py-1 rounded bg-[--bg-primary] border border-[--border-color] text-[--text-primary] focus:outline-none focus:border-blue-500 text-center"
+                    min="1"
+                  />
+                  <button
+                    onClick={handleUpdateMaxTradeCount}
+                    disabled={autoTradeLoading}
+                    className="text-xs px-2 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors disabled:opacity-50"
+                  >
+                    更新
+                  </button>
                   <button
                     onClick={handleAutoTradeReset}
                     disabled={autoTradeLoading}
@@ -420,8 +549,139 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
             {/* 弹窗底部说明 */}
             <div className="px-4 py-3 border-t border-[--border-color] bg-[--bg-tertiary] rounded-b-lg">
               <p className="text-[10px] text-[--text-muted] leading-relaxed">
-                💡 测试阶段限制最多 {autoTradeStatus.max_trade_count} 次自动下单。
-                只有持续时间超过 {autoTradeStatus.min_duration_ms}ms 的套利机会才会触发下单。
+                💡 只有持续时间超过 {autoTradeStatus.min_duration_ms}ms 的套利机会才会触发下单。
+                可修改最大下单次数来控制风险。
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 应用设置弹窗 */}
+      {showSettingsModal && appSettings && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowSettingsModal(false)}>
+          <div 
+            className="bg-[--bg-secondary] border border-[--border-color] rounded-lg shadow-xl w-96 max-w-[90vw]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 弹窗头部 */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[--border-color]">
+              <div className="flex items-center gap-2">
+                <span className="text-base">⚙️</span>
+                <span className="font-semibold text-[--text-primary] text-sm">应用设置</span>
+              </div>
+              <button
+                onClick={() => setShowSettingsModal(false)}
+                className="text-[--text-muted] hover:text-[--text-primary] text-lg leading-none"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* 弹窗内容 */}
+            <div className="p-4 space-y-4">
+              {/* 刷新间隔 */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm text-[--text-secondary]">数据刷新间隔</span>
+                  <p className="text-[10px] text-[--text-muted]">定时扫描市场的间隔</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={editRefreshInterval}
+                    onChange={(e) => setEditRefreshInterval(e.target.value)}
+                    className="w-16 text-xs px-2 py-1 rounded bg-[--bg-primary] border border-[--border-color] text-[--text-primary] focus:outline-none focus:border-blue-500 text-right"
+                    min="1"
+                  />
+                  <span className="text-xs text-[--text-muted]">秒</span>
+                </div>
+              </div>
+
+              {/* 最小利润率 */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm text-[--text-secondary]">最小利润率</span>
+                  <p className="text-[10px] text-[--text-muted]">低于此利润率的机会不显示</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={editMinProfit}
+                    onChange={(e) => setEditMinProfit(e.target.value)}
+                    className="w-16 text-xs px-2 py-1 rounded bg-[--bg-primary] border border-[--border-color] text-[--text-primary] focus:outline-none focus:border-blue-500 text-right"
+                    min="0"
+                    step="0.1"
+                  />
+                  <span className="text-xs text-[--text-muted]">%</span>
+                </div>
+              </div>
+
+              {/* 默认下注金额 */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm text-[--text-secondary]">默认下注金额</span>
+                  <p className="text-[10px] text-[--text-muted]">套利计算使用的默认金额</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-[--text-muted]">$</span>
+                  <input
+                    type="number"
+                    value={editDefaultBet}
+                    onChange={(e) => setEditDefaultBet(e.target.value)}
+                    className="w-16 text-xs px-2 py-1 rounded bg-[--bg-primary] border border-[--border-color] text-[--text-primary] focus:outline-none focus:border-blue-500 text-right"
+                    min="1"
+                    step="1"
+                  />
+                </div>
+              </div>
+
+              {/* 追踪阈值 */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm text-[--text-secondary]">追踪阈值</span>
+                  <p className="text-[10px] text-[--text-muted]">超过此利润率开始记录追踪</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={editTrackingThreshold}
+                    onChange={(e) => setEditTrackingThreshold(e.target.value)}
+                    className="w-16 text-xs px-2 py-1 rounded bg-[--bg-primary] border border-[--border-color] text-[--text-primary] focus:outline-none focus:border-blue-500 text-right"
+                    min="0"
+                    step="0.1"
+                  />
+                  <span className="text-xs text-[--text-muted]">%</span>
+                </div>
+              </div>
+
+              {/* 保存按钮 */}
+              <div className="flex justify-end pt-2">
+                <button
+                  onClick={handleUpdateSettings}
+                  disabled={settingsLoading}
+                  className="px-4 py-1.5 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors text-xs font-semibold disabled:opacity-50"
+                >
+                  {settingsLoading ? '保存中...' : '保存设置'}
+                </button>
+              </div>
+
+              {/* 消息提示 */}
+              {settingsMessage && (
+                <div className={`text-xs px-3 py-2 rounded ${
+                  settingsMessage.type === 'success'
+                    ? 'bg-green-500/20 text-green-400'
+                    : 'bg-red-500/20 text-red-400'
+                }`}>
+                  {settingsMessage.text}
+                </div>
+              )}
+            </div>
+
+            {/* 弹窗底部说明 */}
+            <div className="px-4 py-3 border-t border-[--border-color] bg-[--bg-tertiary] rounded-b-lg">
+              <p className="text-[10px] text-[--text-muted] leading-relaxed">
+                💡 设置保存后会立即生效。部分设置（如刷新间隔）需要重启服务才能完全生效。
               </p>
             </div>
           </div>

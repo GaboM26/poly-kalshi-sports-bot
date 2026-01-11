@@ -276,3 +276,52 @@ export async function updateAutoTradeSettings(
   });
   return response.json();
 }
+
+// ==================== 应用设置 API ====================
+
+/**
+ * 应用设置响应类型
+ */
+export interface AppSettings {
+  /** 数据刷新间隔（秒） */
+  refresh_interval: number;
+  /** 显示套利机会的最小利润率（%） */
+  min_profit_margin: number;
+  /** 套利计算使用的默认金额（美元） */
+  default_bet_amount: number;
+  /** 开始追踪记录的利润率阈值（%） */
+  tracking_threshold: number;
+  updated_at: string | null;
+}
+
+/**
+ * 获取应用设置
+ */
+export async function getAppSettings(
+  baseUrl: string
+): Promise<AppSettings> {
+  const response = await fetch(`${baseUrl}/api/settings`, {
+    headers: getAuthHeaders(),
+  });
+  return response.json();
+}
+
+/**
+ * 更新应用设置
+ */
+export async function updateAppSettings(
+  baseUrl: string,
+  settings: {
+    refresh_interval?: number;
+    min_profit_margin?: number;
+    default_bet_amount?: number;
+    tracking_threshold?: number;
+  }
+): Promise<{ success: boolean; message?: string; error?: string }> {
+  const response = await fetch(`${baseUrl}/api/settings`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(settings),
+  });
+  return response.json();
+}

@@ -66,6 +66,9 @@ impl ArbitrageService {
 
         // Set clients for orderbook depth queries
         ws_manager.set_clients(kalshi_client.clone(), polymarket_client.clone());
+        
+        // Load excluded markets from database
+        ws_manager.load_excluded_markets();
 
         let ws_manager = Arc::new(ws_manager);
 

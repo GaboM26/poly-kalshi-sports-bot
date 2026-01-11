@@ -86,6 +86,10 @@ pub struct WebSocketManager {
     ended_market_detection: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
     /// Set of market keys that have been confirmed as ended
     confirmed_ended_markets: Arc<RwLock<std::collections::HashSet<String>>>,
+    /// Set of recorded skip reasons: "market_key:simplified_reason" -> prevent duplicate skip records
+    recorded_skip_reasons: Arc<RwLock<std::collections::HashSet<String>>>,
+    /// Set of market keys excluded from auto-trade (user-defined)
+    excluded_markets: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
 impl WebSocketManager {
@@ -125,6 +129,8 @@ impl WebSocketManager {
             auto_traded_opportunities: Arc::new(RwLock::new(std::collections::HashSet::new())),
             ended_market_detection: Arc::new(RwLock::new(HashMap::new())),
             confirmed_ended_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            recorded_skip_reasons: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            excluded_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
     }
 
@@ -324,6 +330,9 @@ impl WebSocketManager {
                 update.market_id, price
             );
             
+            // 首次收到该 token 价格时，验证 token 映射是否正确
+            let is_first_price = !self.poly_token_prices.read().contains_key(&update.market_id);
+            
             self.poly_token_prices
                 .write()
                 .insert(update.market_id.clone(), price);
@@ -341,6 +350,62 @@ impl WebSocketManager {
 
                         // Update the correct price field
                         let is_own = Some(update.market_id.as_str()) == own_token;
+                        
+                        // 首次收到价格时，验证 token 映射
+                        if is_first_price {
+                            let expected_price = if is_own {
+                                mm.poly_yes_price  // own token 应该是 yes 价格
+                            } else {
+                                mm.poly_no_price   // opponent token 应该是 no 价格
+                            };
+                            
+                            let price_diff = (price - expected_price).abs();
+                            let price_tolerance = 0.20; // 允许 20% 差异（考虑价格波动）
+                            let is_valid = price_diff <= price_tolerance;
+                            
+                            // #region agent log - Token 映射验证（市场匹配后）
+                            {
+                                use std::io::Write;
+                                let debug_log = serde_json::json!({
+                                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                                    "hypothesisId": "TOKEN_MAPPING_VALIDATION",
+                                    "location": "websocket_manager.rs:on_polymarket_price_update",
+                                    "message": if is_valid { "✅ Token映射验证通过" } else { "⚠️ Token映射验证异常" },
+                                    "data": {
+                                        "event_name": &mm.event_name,
+                                        "team_name": &mm.team_name,
+                                        "token_id": &update.market_id,
+                                        "is_own_token": is_own,
+                                        "expected_price": expected_price,
+                                        "actual_price": price,
+                                        "price_diff": price_diff,
+                                        "is_valid": is_valid,
+                                        "poly_team_a": &mm.polymarket_market.team_a,
+                                        "poly_team_b": &mm.polymarket_market.team_b,
+                                        "poly_token_id_a": &mm.polymarket_market.token_id_a,
+                                        "poly_token_id_b": &mm.polymarket_market.token_id_b,
+                                    }
+                                });
+                                if let Ok(mut file) = std::fs::OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log")
+                                {
+                                    let _ = writeln!(file, "{}", debug_log);
+                                }
+                            }
+                            // #endregion
+                            
+                            if !is_valid {
+                                tracing::warn!(
+                                    "⚠️ [Token映射验证] {}-{}: {} token 价格异常 (预期={:.4}, 实际={:.4}, 差={:.4})",
+                                    mm.event_name, mm.team_name,
+                                    if is_own { "own" } else { "opponent" },
+                                    expected_price, price, price_diff
+                                );
+                            }
+                        }
+                        
                         markets_to_update.push((idx, is_own, price));
                     }
                 }
@@ -550,6 +615,9 @@ impl WebSocketManager {
                 record.event_name, record.team_name, record.max_profit_margin
             );
             self.storage.track_end(key);
+            // Clear skip records when tracking ends so future opportunities can be recorded
+            drop(tracking);  // Release the lock first
+            self.clear_skip_records_for_market(key);
         }
     }
 
@@ -791,6 +859,37 @@ impl WebSocketManager {
         Ok(())
     }
 
+    // ==================== App Settings Methods ====================
+
+    /// Update application settings (hot-updatable)
+    /// Note: tracking_threshold update requires runtime modification
+    pub fn update_app_settings(
+        &self,
+        refresh_interval: Option<u64>,
+        min_profit_margin: Option<f64>,
+        default_bet_amount: Option<f64>,
+        tracking_threshold: Option<f64>,
+    ) -> anyhow::Result<()> {
+        // Update database storage
+        self.storage.update_app_settings(
+            refresh_interval,
+            min_profit_margin,
+            default_bet_amount,
+            tracking_threshold,
+        )?;
+        
+        // Note: For full hot-update support, the following runtime values would need to be updated:
+        // - tracking_threshold: stored in self.tracking_threshold (would need interior mutability)
+        // - min_profit_margin & default_bet_amount: stored in self.calculator (would need rebuild)
+        // - refresh_interval: used in periodic scan task (would need task restart)
+        //
+        // Current implementation updates the database; new values take effect on restart.
+        // For critical hot-update needs, consider reloading settings in the calculation loop.
+        
+        info!("📝 应用设置已更新到数据库");
+        Ok(())
+    }
+
     /// Check if an opportunity is eligible for auto-trade
     /// Returns (eligible, reason)
     pub fn check_auto_trade_eligibility(&self, key: &str, duration_ms: i64) -> (bool, String) {
@@ -799,6 +898,12 @@ impl WebSocketManager {
         // Check if auto-trade is enabled
         if !state.enabled {
             return (false, "自动下单未开启".to_string());
+        }
+
+        // Check if market is excluded by user (normalize key to uppercase for comparison)
+        let normalized_key = key.to_uppercase();
+        if self.excluded_markets.read().contains(&normalized_key) {
+            return (false, "该市场已被排除".to_string());
         }
 
         // Check trade count limit
@@ -818,10 +923,127 @@ impl WebSocketManager {
 
         (true, format!("可以下单 ({}/{})", state.trade_count + 1, state.max_trade_count))
     }
+    
+    /// Load excluded markets from database on startup
+    pub fn load_excluded_markets(&self) {
+        match self.storage.get_excluded_markets() {
+            Ok(markets) => {
+                let count = markets.len();
+                *self.excluded_markets.write() = markets;
+                if count > 0 {
+                    info!("📋 从数据库加载了 {} 个排除的市场", count);
+                }
+            }
+            Err(e) => {
+                tracing::error!("加载排除市场列表失败: {}", e);
+            }
+        }
+    }
+    
+    /// Exclude a market from auto-trade (persisted to database)
+    /// Normalizes to uppercase for consistency
+    pub fn exclude_market(&self, event_name: &str, team_name: &str) -> bool {
+        // Normalize to uppercase for consistency
+        let normalized_event = event_name.to_uppercase();
+        let normalized_team = team_name.to_uppercase();
+        let key = format!("{}_{}", normalized_event, normalized_team);
+        
+        // Save to database first (storage also normalizes)
+        match self.storage.exclude_market(event_name, team_name) {
+            Ok(inserted) => {
+                if inserted {
+                    // Update memory cache with normalized key
+                    self.excluded_markets.write().insert(key);
+                }
+                inserted
+            }
+            Err(e) => {
+                tracing::error!("保存排除市场到数据库失败: {}", e);
+                false
+            }
+        }
+    }
+    
+    /// Remove a market from exclusion list (persisted to database)
+    /// Normalizes to uppercase for consistency
+    pub fn unexclude_market(&self, event_name: &str, team_name: &str) -> bool {
+        // Normalize to uppercase for consistency
+        let normalized_event = event_name.to_uppercase();
+        let normalized_team = team_name.to_uppercase();
+        let key = format!("{}_{}", normalized_event, normalized_team);
+        
+        // Remove from database first (storage also normalizes)
+        match self.storage.unexclude_market(event_name, team_name) {
+            Ok(removed) => {
+                if removed {
+                    // Update memory cache with normalized key
+                    self.excluded_markets.write().remove(&key);
+                }
+                removed
+            }
+            Err(e) => {
+                tracing::error!("从数据库移除排除市场失败: {}", e);
+                false
+            }
+        }
+    }
+    
+    /// Get list of excluded markets (all uppercase normalized)
+    pub fn get_excluded_markets(&self) -> Vec<String> {
+        self.excluded_markets.read().iter().cloned().collect()
+    }
+    
+    /// Check if a market is excluded
+    /// Normalizes to uppercase for consistency
+    pub fn is_market_excluded(&self, event_name: &str, team_name: &str) -> bool {
+        let normalized_event = event_name.to_uppercase();
+        let normalized_team = team_name.to_uppercase();
+        let key = format!("{}_{}", normalized_event, normalized_team);
+        self.excluded_markets.read().contains(&key)
+    }
 
     /// Mark an opportunity as auto-traded
     pub fn mark_as_auto_traded(&self, key: &str) {
         self.auto_traded_opportunities.write().insert(key.to_string());
+        // Clear skip records when successfully traded, so future skips for different reasons can be recorded
+        self.clear_skip_records_for_market(key);
+    }
+
+    /// Check if a skip reason should be recorded (deduplication)
+    /// Returns true if this is a new skip reason for this market, and marks it as recorded
+    /// The reason is simplified to a category to group similar messages
+    pub fn should_record_skip(&self, market_key: &str, skip_reason: &str) -> bool {
+        // Simplify the reason to a category for grouping
+        let simplified_reason = if skip_reason.contains("Polymarket 深度不足") {
+            "poly_depth"
+        } else if skip_reason.contains("Kalshi 深度不足") {
+            "kalshi_depth"
+        } else if skip_reason.contains("超过限额") {
+            "over_limit"
+        } else if skip_reason.contains("无法获取") {
+            "token_not_found"
+        } else if skip_reason.contains("价格和超过") {
+            "price_sum_invalid"
+        } else {
+            "other"
+        };
+        
+        let record_key = format!("{}:{}", market_key, simplified_reason);
+        let mut recorded = self.recorded_skip_reasons.write();
+        
+        if recorded.contains(&record_key) {
+            false  // Already recorded this reason for this market
+        } else {
+            recorded.insert(record_key);
+            true  // First time seeing this reason for this market
+        }
+    }
+
+    /// Clear skip records for a specific market (called when tracking ends or trade succeeds)
+    pub fn clear_skip_records_for_market(&self, market_key: &str) {
+        let mut recorded = self.recorded_skip_reasons.write();
+        let prefix = format!("{}:", market_key);
+        recorded.retain(|k| !k.starts_with(&prefix));
     }
 
     /// Increment trade count after successful auto-trade
@@ -872,6 +1094,34 @@ impl WebSocketManager {
         markets.iter()
             .find(|mm| mm.event_name == event_name && mm.team_name == team_name)
             .and_then(|mm| {
+                // #region agent log - Token 映射调试（下单时）
+                {
+                    use std::io::Write;
+                    let debug_log = serde_json::json!({
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                        "hypothesisId": "TOKEN_MAPPING",
+                        "location": "websocket_manager.rs:get_poly_token_for_side",
+                        "message": "下单时Token选择",
+                        "data": {
+                            "event_name": event_name,
+                            "team_name": team_name,
+                            "requested_side": side,
+                            "poly_team_a": &mm.polymarket_market.team_a,
+                            "poly_team_b": &mm.polymarket_market.team_b,
+                            "poly_token_id_a": &mm.polymarket_market.token_id_a,
+                            "poly_token_id_b": &mm.polymarket_market.token_id_b,
+                        }
+                    });
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log")
+                    {
+                        let _ = writeln!(file, "{}", debug_log);
+                    }
+                }
+                // #endregion
+                
                 if side == "yes" {
                     // Buy team wins -> use team's own token
                     mm.polymarket_market.get_token_for_team(team_name)
@@ -879,7 +1129,7 @@ impl WebSocketManager {
                 } else {
                     // Buy team loses (opponent wins) -> use opponent's token
                     mm.polymarket_market.get_opponent(team_name)
-                        .and_then(|opponent| mm.polymarket_market.get_token_for_team(opponent))
+                        .and_then(|opp| mm.polymarket_market.get_token_for_team(opp))
                         .map(|s| s.to_string())
                 }
             })

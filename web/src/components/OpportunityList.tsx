@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { MatchedMarketData, ArbitrageExecuteRequest } from '../types';
 import { executeArbitrage } from '../utils/api';
 
@@ -21,6 +21,67 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
   // 执行状态
   const [executingKey, setExecutingKey] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<{ key: string; success: boolean; message: string } | null>(null);
+  
+  // 排除市场状态
+  const [excludedMarkets, setExcludedMarkets] = useState<Set<string>>(new Set());
+  const [excludingKey, setExcludingKey] = useState<string | null>(null);
+  
+  // 获取排除市场列表
+  const fetchExcludedMarkets = useCallback(async () => {
+    if (!apiBaseUrl) return;
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/auto-trade/excluded`);
+      const data = await res.json();
+      setExcludedMarkets(new Set(data.excluded_markets || []));
+    } catch (err) {
+      console.error('获取排除列表失败:', err);
+    }
+  }, [apiBaseUrl]);
+  
+  // 初始加载排除列表
+  useEffect(() => {
+    fetchExcludedMarkets();
+  }, [fetchExcludedMarkets]);
+  
+  // 排除/取消排除市场
+  const handleToggleExclude = async (market: MatchedMarketData, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!apiBaseUrl) return;
+    
+    const key = `${market.event_name}_${market.team_name}`;
+    const isExcluded = excludedMarkets.has(key);
+    
+    setExcludingKey(key);
+    
+    try {
+      const endpoint = isExcluded ? 'unexclude' : 'exclude';
+      const res = await fetch(`${apiBaseUrl}/api/auto-trade/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event_name: market.event_name,
+          team_name: market.team_name
+        })
+      });
+      
+      if (res.ok) {
+        // 更新本地状态
+        setExcludedMarkets(prev => {
+          const next = new Set(prev);
+          if (isExcluded) {
+            next.delete(key);
+          } else {
+            next.add(key);
+          }
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error('排除操作失败:', err);
+    } finally {
+      setExcludingKey(null);
+    }
+  };
   
   // 执行套利
   const handleExecute = async (market: MatchedMarketData, executionKey: string, e: React.MouseEvent) => {
@@ -216,7 +277,13 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                 <tr
                   key={uniqueKey}
                   onClick={() => onSelectMarket?.(market)}
-                  className={`cursor-pointer border-b border-[--border-color] hover:bg-[--bg-secondary] transition-colors ${market.has_opportunity ? 'bg-[rgba(16,185,129,0.05)]' : ''}`}
+                  className={`cursor-pointer border-b border-[--border-color] hover:bg-[--bg-secondary] transition-colors ${
+                    excludedMarkets.has(executionKey) 
+                      ? 'bg-[rgba(239,68,68,0.05)] opacity-60' 
+                      : market.has_opportunity 
+                        ? 'bg-[rgba(16,185,129,0.05)]' 
+                        : ''
+                  }`}
                 >
                   {/* Event */}
                   <td className="py-1 px-2">
@@ -275,28 +342,43 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                   
                   {/* Action */}
                   <td className="text-center py-1 px-2">
-                    {market.has_opportunity ? (
-                      <div className="flex flex-col items-center gap-0.5">
-                        <button
-                          onClick={(e) => handleExecute(market, executionKey, e)}
-                          disabled={executingKey === executionKey || !apiBaseUrl}
-                          className={`px-1.5 py-0.5 text-[9px] font-medium rounded transition-colors ${
-                            executingKey === executionKey
-                              ? 'bg-gray-500/30 text-gray-400 cursor-wait'
-                              : 'bg-[--accent-green]/20 text-[--accent-green] hover:bg-[--accent-green]/30'
-                          }`}
-                        >
-                          {executingKey === executionKey ? '...' : '执行'}
-                        </button>
-                        {lastResult?.key === executionKey && (
-                          <span className={`text-[9px] leading-none ${lastResult.success ? 'text-green-400' : 'text-red-400'}`}>
-                            {lastResult.success ? '✓' : '✗'}
-                          </span>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="text-[--text-muted] text-[10px]">-</span>
-                    )}
+                    <div className="flex items-center justify-center gap-1">
+                      {market.has_opportunity ? (
+                        <div className="flex flex-col items-center gap-0.5">
+                          <button
+                            onClick={(e) => handleExecute(market, executionKey, e)}
+                            disabled={executingKey === executionKey || !apiBaseUrl}
+                            className={`px-1.5 py-0.5 text-[9px] font-medium rounded transition-colors ${
+                              executingKey === executionKey
+                                ? 'bg-gray-500/30 text-gray-400 cursor-wait'
+                                : 'bg-[--accent-green]/20 text-[--accent-green] hover:bg-[--accent-green]/30'
+                            }`}
+                          >
+                            {executingKey === executionKey ? '...' : '执行'}
+                          </button>
+                          {lastResult?.key === executionKey && (
+                            <span className={`text-[9px] leading-none ${lastResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                              {lastResult.success ? '✓' : '✗'}
+                            </span>
+                          )}
+                        </div>
+                      ) : null}
+                      {/* 排除按钮 */}
+                      <button
+                        onClick={(e) => handleToggleExclude(market, e)}
+                        disabled={excludingKey === executionKey || !apiBaseUrl}
+                        title={excludedMarkets.has(executionKey) ? '取消排除' : '排除此市场'}
+                        className={`px-1 py-0.5 text-[9px] font-medium rounded transition-colors ${
+                          excludingKey === executionKey
+                            ? 'bg-gray-500/30 text-gray-400 cursor-wait'
+                            : excludedMarkets.has(executionKey)
+                              ? 'bg-orange-500/20 text-orange-400 hover:bg-orange-500/30'
+                              : 'bg-gray-500/20 text-gray-400 hover:bg-red-500/20 hover:text-red-400'
+                        }`}
+                      >
+                        {excludingKey === executionKey ? '...' : excludedMarkets.has(executionKey) ? '🚫' : '⊘'}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );

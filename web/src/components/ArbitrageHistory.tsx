@@ -35,7 +35,10 @@ interface AutoTradeRecord {
   polymarket_price: number;
   total_amount: number;
   profit_margin: number;
+  /** 机会持续时间（下单前，毫秒） */
   duration_ms: number;
+  /** 从发现机会到下单完成的总耗时（毫秒） */
+  total_duration_ms: number;
   kalshi_success: boolean;
   polymarket_success: boolean;
   kalshi_order_id?: string;
@@ -222,6 +225,9 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
                         ) : (
                           <span>
                             K:{record.kalshi_contracts}合约 P:${record.polymarket_amount.toFixed(2)}
+                            {record.total_duration_ms > 0 && (
+                              <span className="text-[--text-muted] ml-1">⏱️{(record.total_duration_ms / 1000).toFixed(1)}s</span>
+                            )}
                           </span>
                         )}
                         <span>{formatTime(record.created_at)}</span>
@@ -513,9 +519,21 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
                 <span className="text-[--text-primary] tabular-nums">${selectedAutoTrade.total_amount.toFixed(2)}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[--text-muted]">持续时间</span>
-                <span className="text-[--text-primary] tabular-nums">{selectedAutoTrade.duration_ms}ms</span>
+                <span className="text-[--text-muted]">机会持续时间</span>
+                <span className="text-[--text-primary] tabular-nums">{(selectedAutoTrade.duration_ms / 1000).toFixed(1)}s</span>
               </div>
+              {selectedAutoTrade.total_duration_ms > 0 && (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-[--text-muted]">下单总耗时</span>
+                    <span className="text-[--text-primary] tabular-nums">{(selectedAutoTrade.total_duration_ms / 1000).toFixed(1)}s</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[--text-muted]">API执行时间</span>
+                    <span className="text-[--text-primary] tabular-nums">{selectedAutoTrade.total_duration_ms - selectedAutoTrade.duration_ms}ms</span>
+                  </div>
+                </>
+              )}
               <div className="flex justify-between">
                 <span className="text-[--text-muted]">执行时间</span>
                 <span className="text-[--text-primary]">{formatDate(selectedAutoTrade.created_at)} {formatTime(selectedAutoTrade.created_at)}</span>

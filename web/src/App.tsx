@@ -8,6 +8,7 @@ import { HistoryExplorer } from './components/HistoryExplorer';
 import { OrderPanel } from './components/OrderPanel';
 import { OrderForm } from './components/OrderForm';
 import { MetricsPanel } from './components/MetricsPanel';
+import { PolyDebugOrder } from './components/PolyDebugOrder';
 import { useWebSocket } from './hooks/useWebSocket';
 import { MatchedMarketData, OrderbookDepthResponse } from './types';
 
@@ -67,6 +68,7 @@ function App() {
   const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking'>('detail');
   const [leftBottomTab, setLeftBottomTab] = useState<'positions' | 'history'>('positions');
   const [showHistoryExplorer, setShowHistoryExplorer] = useState(false);
+  const [showPolyDebug, setShowPolyDebug] = useState(false);
   const [orderbookDepth, setOrderbookDepth] = useState<OrderbookDepthResponse | null>(null);
 
   // 获取订单簿深度
@@ -445,6 +447,23 @@ function App() {
           onClose={() => setShowHistoryExplorer(false)} 
         />
       )}
+
+      {/* Polymarket 调试下单弹窗 */}
+      {showPolyDebug && (
+        <PolyDebugOrder
+          apiBaseUrl={apiBaseUrl}
+          onClose={() => setShowPolyDebug(false)}
+        />
+      )}
+
+      {/* 调试按钮 - 固定在右下角 */}
+      <button
+        onClick={() => setShowPolyDebug(true)}
+        className="fixed bottom-4 right-4 w-12 h-12 rounded-full bg-purple-500 hover:bg-purple-600 text-white shadow-lg flex items-center justify-center text-xl z-40"
+        title="Poly 手动下单调试"
+      >
+        🔧
+      </button>
     </div>
   );
 }

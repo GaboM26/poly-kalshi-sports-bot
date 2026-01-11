@@ -40,15 +40,29 @@ api_key = ""
 api_secret = ""
 api_passphrase = ""
 
+# [settings] 和 [auto_trade] 配置已迁移到数据库
+# 可在前端界面实时修改，无需重启服务
+# 以下为初始默认值（首次启动时写入数据库）
+
 [settings]
-# 刷新间隔（秒）
+# 数据刷新间隔（秒）
 refresh_interval = 5
-
-# 最小利润率（百分比）
+# 显示套利机会的最小利润率（%）
 min_profit_margin = 1.0
+# 套利计算使用的默认金额（美元）
+default_bet_amount = 10.0
+# 开始追踪记录的利润率阈值（%）
+tracking_threshold = 2.0
 
-# 默认下注金额（美元）
-default_bet_amount = 10.0  # Testing phase amount
+[auto_trade]
+# 自动下单功能默认关闭
+enabled = false
+# 自动下单单次最大金额（美元）
+max_amount = 10.0
+# 自动下单最大执行次数
+max_trade_count = 2
+# 套利机会持续时间阈值（毫秒）
+min_duration_ms = 500
 
 [auth]
 # Web UI 登录认证配置

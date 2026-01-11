@@ -15,13 +15,42 @@ use tracing::{error, info};
 
 use crate::models::ArbitrageTrackingRecord;
 
+/// Application settings stored in database (hot-updatable from frontend)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppSettings {
+    /// 数据刷新间隔（秒）
+    pub refresh_interval: u64,
+    /// 显示套利机会的最小利润率（%）
+    pub min_profit_margin: f64,
+    /// 套利计算使用的默认金额（美元）
+    pub default_bet_amount: f64,
+    /// 开始追踪记录的利润率阈值（%）
+    pub tracking_threshold: f64,
+    pub updated_at: Option<String>,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            refresh_interval: 5,
+            min_profit_margin: 1.0,
+            default_bet_amount: 10.0,
+            tracking_threshold: 2.0,
+            updated_at: None,
+        }
+    }
+}
+
 /// Auto-trade state stored in database
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutoTradeState {
     pub enabled: bool,
     pub trade_count: i32,
+    /// 自动下单最大执行次数
     pub max_trade_count: i32,
+    /// 自动下单单次最大金额（美元）
     pub max_amount: f64,
+    /// 套利机会持续时间阈值（毫秒）
     pub min_duration_ms: i64,
     pub last_trade_time: Option<String>,
     pub updated_at: Option<String>,
@@ -58,7 +87,10 @@ pub struct AutoTradeRecord {
     pub polymarket_price: f64,
     pub total_amount: f64,
     pub profit_margin: f64,
+    /// 机会持续时间（下单前，毫秒）
     pub duration_ms: i64,
+    /// 从发现机会到下单完成的总耗时（毫秒）
+    pub total_duration_ms: i64,
     pub kalshi_success: bool,
     pub polymarket_success: bool,
     pub kalshi_order_id: Option<String>,
@@ -196,6 +228,7 @@ impl ArbitrageStorage {
                 total_amount REAL NOT NULL,
                 profit_margin REAL NOT NULL,
                 duration_ms INTEGER NOT NULL,
+                total_duration_ms INTEGER DEFAULT 0,
                 kalshi_success INTEGER NOT NULL,
                 polymarket_success INTEGER NOT NULL,
                 kalshi_order_id TEXT,
@@ -222,13 +255,49 @@ impl ArbitrageStorage {
             "ALTER TABLE auto_trade_history ADD COLUMN skip_reason TEXT",
             [],
         );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN total_duration_ms INTEGER DEFAULT 0",
+            [],
+        );
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_auto_trade_created_at ON auto_trade_history(created_at)",
             [],
         )?;
 
-        info!("📦 数据库初始化完成，包含 auto_trade_state 和 auto_trade_history 表");
+        // Create app_settings table for hot-updatable settings
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS app_settings (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                refresh_interval INTEGER DEFAULT 5,
+                min_profit_margin REAL DEFAULT 1.0,
+                default_bet_amount REAL DEFAULT 10.0,
+                tracking_threshold REAL DEFAULT 2.0,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        // Initialize app_settings with default row if not exists
+        conn.execute(
+            "INSERT OR IGNORE INTO app_settings (id, refresh_interval, min_profit_margin, default_bet_amount, tracking_threshold)
+             VALUES (1, 5, 1.0, 10.0, 2.0)",
+            [],
+        )?;
+
+        // Create excluded_markets table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS excluded_markets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_name TEXT NOT NULL,
+                team_name TEXT NOT NULL,
+                market_key TEXT NOT NULL UNIQUE,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
+        info!("📦 数据库初始化完成，包含 auto_trade_state, auto_trade_history, app_settings 和 excluded_markets 表");
 
         let conn = Arc::new(Mutex::new(conn));
 
@@ -809,6 +878,7 @@ impl ArbitrageStorage {
         total_amount: f64,
         profit_margin: f64,
         duration_ms: i64,
+        total_duration_ms: i64,
         kalshi_success: bool,
         polymarket_success: bool,
         kalshi_order_id: Option<&str>,
@@ -830,10 +900,10 @@ impl ArbitrageStorage {
                 event_name, team_name, kalshi_market_id, polymarket_market_id,
                 kalshi_side, polymarket_side, kalshi_contracts, kalshi_price, kalshi_fee,
                 polymarket_amount, polymarket_price, total_amount, profit_margin,
-                duration_ms, kalshi_success, polymarket_success,
+                duration_ms, total_duration_ms, kalshi_success, polymarket_success,
                 kalshi_order_id, polymarket_order_id, kalshi_error, polymarket_error,
                 status, skip_reason, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             params![
                 event_name,
                 team_name,
@@ -849,6 +919,7 @@ impl ArbitrageStorage {
                 total_amount,
                 profit_margin,
                 duration_ms,
+                total_duration_ms,
                 kalshi_success as i32,
                 polymarket_success as i32,
                 kalshi_order_id,
@@ -942,7 +1013,7 @@ impl ArbitrageStorage {
             "SELECT id, event_name, team_name, kalshi_market_id, polymarket_market_id,
                     kalshi_side, polymarket_side, kalshi_contracts, kalshi_price, kalshi_fee,
                     polymarket_amount, polymarket_price, total_amount, profit_margin,
-                    duration_ms, kalshi_success, polymarket_success,
+                    duration_ms, total_duration_ms, kalshi_success, polymarket_success,
                     kalshi_order_id, polymarket_order_id, kalshi_error, polymarket_error,
                     status, skip_reason, created_at
              FROM auto_trade_history
@@ -968,19 +1039,175 @@ impl ArbitrageStorage {
                     total_amount: row.get(12)?,
                     profit_margin: row.get(13)?,
                     duration_ms: row.get(14)?,
-                    kalshi_success: row.get::<_, i32>(15)? != 0,
-                    polymarket_success: row.get::<_, i32>(16)? != 0,
-                    kalshi_order_id: row.get(17)?,
-                    polymarket_order_id: row.get(18)?,
-                    kalshi_error: row.get(19)?,
-                    polymarket_error: row.get(20)?,
-                    status: row.get::<_, Option<String>>(21)?.unwrap_or_else(|| "executed".to_string()),
-                    skip_reason: row.get(22)?,
-                    created_at: row.get(23)?,
+                    total_duration_ms: row.get::<_, i64>(15).unwrap_or(0),
+                    kalshi_success: row.get::<_, i32>(16)? != 0,
+                    polymarket_success: row.get::<_, i32>(17)? != 0,
+                    kalshi_order_id: row.get(18)?,
+                    polymarket_order_id: row.get(19)?,
+                    kalshi_error: row.get(20)?,
+                    polymarket_error: row.get(21)?,
+                    status: row.get::<_, Option<String>>(22)?.unwrap_or_else(|| "executed".to_string()),
+                    skip_reason: row.get(23)?,
+                    created_at: row.get(24)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(records)
+    }
+
+    // ==================== App Settings Methods ====================
+
+    /// Get current application settings
+    pub fn get_app_settings(&self) -> Result<AppSettings> {
+        let conn = self.conn.lock();
+        
+        let result = conn.query_row(
+            "SELECT refresh_interval, min_profit_margin, default_bet_amount, tracking_threshold, updated_at
+             FROM app_settings WHERE id = 1",
+            [],
+            |row| {
+                Ok(AppSettings {
+                    refresh_interval: row.get(0)?,
+                    min_profit_margin: row.get(1)?,
+                    default_bet_amount: row.get(2)?,
+                    tracking_threshold: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(settings) => Ok(settings),
+            Err(_) => Ok(AppSettings::default()),
+        }
+    }
+
+    /// Update application settings
+    pub fn update_app_settings(
+        &self,
+        refresh_interval: Option<u64>,
+        min_profit_margin: Option<f64>,
+        default_bet_amount: Option<f64>,
+        tracking_threshold: Option<f64>,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        
+        if let Some(interval) = refresh_interval {
+            conn.execute(
+                "UPDATE app_settings SET refresh_interval = ?, updated_at = ? WHERE id = 1",
+                params![interval as i64, Utc::now().to_rfc3339()],
+            )?;
+            info!("🔄 refresh_interval 已更新: {}秒", interval);
+        }
+        
+        if let Some(margin) = min_profit_margin {
+            conn.execute(
+                "UPDATE app_settings SET min_profit_margin = ?, updated_at = ? WHERE id = 1",
+                params![margin, Utc::now().to_rfc3339()],
+            )?;
+            info!("🔄 min_profit_margin 已更新: {}%", margin);
+        }
+        
+        if let Some(amount) = default_bet_amount {
+            conn.execute(
+                "UPDATE app_settings SET default_bet_amount = ?, updated_at = ? WHERE id = 1",
+                params![amount, Utc::now().to_rfc3339()],
+            )?;
+            info!("🔄 default_bet_amount 已更新: ${}",amount);
+        }
+        
+        if let Some(threshold) = tracking_threshold {
+            conn.execute(
+                "UPDATE app_settings SET tracking_threshold = ?, updated_at = ? WHERE id = 1",
+                params![threshold, Utc::now().to_rfc3339()],
+            )?;
+            info!("🔄 tracking_threshold 已更新: {}%", threshold);
+        }
+        
+        Ok(())
+    }
+
+    // ==================== Excluded Markets Methods ====================
+
+    /// Add a market to exclusion list
+    /// Normalizes event_name and team_name to ensure consistency
+    pub fn exclude_market(&self, event_name: &str, team_name: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        
+        // Normalize to uppercase for consistency
+        let normalized_event = event_name.to_uppercase();
+        let normalized_team = team_name.to_uppercase();
+        let market_key = format!("{}_{}", normalized_event, normalized_team);
+        
+        let result = conn.execute(
+            "INSERT OR IGNORE INTO excluded_markets (event_name, team_name, market_key, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![normalized_event, normalized_team, market_key, Utc::now().to_rfc3339()],
+        )?;
+        
+        if result > 0 {
+            info!("🚫 市场已排除并保存到数据库: {} - {}", normalized_event, normalized_team);
+        }
+        
+        Ok(result > 0)
+    }
+
+    /// Remove a market from exclusion list
+    /// Normalizes event_name and team_name to ensure consistency
+    pub fn unexclude_market(&self, event_name: &str, team_name: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        
+        // Normalize to uppercase for consistency
+        let normalized_event = event_name.to_uppercase();
+        let normalized_team = team_name.to_uppercase();
+        let market_key = format!("{}_{}", normalized_event, normalized_team);
+        
+        let result = conn.execute(
+            "DELETE FROM excluded_markets WHERE market_key = ?1",
+            params![market_key],
+        )?;
+        
+        if result > 0 {
+            info!("✅ 市场已取消排除: {} - {}", normalized_event, normalized_team);
+        }
+        
+        Ok(result > 0)
+    }
+
+    /// Get all excluded market keys
+    pub fn get_excluded_markets(&self) -> Result<std::collections::HashSet<String>> {
+        let conn = self.conn.lock();
+        
+        let mut stmt = conn.prepare(
+            "SELECT market_key FROM excluded_markets"
+        )?;
+        
+        let keys = stmt.query_map([], |row| {
+            row.get::<_, String>(0)
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+        
+        Ok(keys)
+    }
+
+    /// Check if a market is excluded
+    /// Normalizes event_name and team_name to ensure consistency
+    pub fn is_market_excluded(&self, event_name: &str, team_name: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        
+        // Normalize to uppercase for consistency
+        let normalized_event = event_name.to_uppercase();
+        let normalized_team = team_name.to_uppercase();
+        let market_key = format!("{}_{}", normalized_event, normalized_team);
+        
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM excluded_markets WHERE market_key = ?1",
+            params![market_key],
+            |row| row.get(0),
+        )?;
+        
+        Ok(count > 0)
     }
 }

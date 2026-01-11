@@ -3,11 +3,11 @@
 //! Handles order creation, amount calculation, and signing.
 
 use alloy::primitives::{keccak256, Address, B256, U256};
-use alloy::signers::Signer as AlloySigner;
 use anyhow::{bail, Result};
 use rand::Rng;
+use tracing::{debug, info};
 
-use super::config::{get_contract_config, to_token_decimals};
+use super::config::{get_contract_config, to_token_decimals, ContractConfig};
 use super::signer::Signer;
 use super::types::{OrderArgs, Side, SignatureType, SignedOrder, OrderBookSummary, OrderType, MarketOrderArgs};
 
@@ -149,11 +149,22 @@ impl OrderBuilder {
         round_config: RoundConfig,
     ) -> Result<(u8, u64, u64)> {
         let raw_price = round_normal(price, round_config.price);
+        
+        // 🔍 详细日志：金额计算
+        info!(
+            "🔢 [Poly金额计算] side={:?}, amount={}, price={}, raw_price={}, round_config={{price:{}, size:{}, amount:{}}}",
+            side, amount, price, raw_price, round_config.price, round_config.size, round_config.amount
+        );
 
         match side {
             Side::Buy => {
                 let raw_maker_amt = round_down(amount, round_config.size);
                 let mut raw_taker_amt = raw_maker_amt / raw_price;
+                
+                info!(
+                    "🔢 [Poly金额计算-BUY] raw_maker_amt={}, raw_taker_amt(初始)={}",
+                    raw_maker_amt, raw_taker_amt
+                );
 
                 if decimal_places(raw_taker_amt) > round_config.amount {
                     raw_taker_amt = round_up(raw_taker_amt, round_config.amount + 4);
@@ -164,12 +175,22 @@ impl OrderBuilder {
 
                 let maker_amount = to_token_decimals(raw_maker_amt);
                 let taker_amount = to_token_decimals(raw_taker_amt);
+                
+                info!(
+                    "🔢 [Poly金额计算-BUY结果] raw_taker_amt(最终)={}, maker_amount={}, taker_amount={}",
+                    raw_taker_amt, maker_amount, taker_amount
+                );
 
                 Ok((0, maker_amount, taker_amount))
             }
             Side::Sell => {
                 let raw_maker_amt = round_down(amount, round_config.size);
                 let mut raw_taker_amt = raw_maker_amt * raw_price;
+                
+                info!(
+                    "🔢 [Poly金额计算-SELL] raw_maker_amt={}, raw_taker_amt(初始)={}",
+                    raw_maker_amt, raw_taker_amt
+                );
 
                 if decimal_places(raw_taker_amt) > round_config.amount {
                     raw_taker_amt = round_up(raw_taker_amt, round_config.amount + 4);
@@ -180,6 +201,11 @@ impl OrderBuilder {
 
                 let maker_amount = to_token_decimals(raw_maker_amt);
                 let taker_amount = to_token_decimals(raw_taker_amt);
+                
+                info!(
+                    "🔢 [Poly金额计算-SELL结果] raw_taker_amt(最终)={}, maker_amount={}, taker_amount={}",
+                    raw_taker_amt, maker_amount, taker_amount
+                );
 
                 Ok((1, maker_amount, taker_amount))
             }
@@ -221,8 +247,8 @@ impl OrderBuilder {
             signature_type: self.sig_type as u8,
         };
 
-        // Sign the order
-        self.sign_order(&order_data, &contract_config.exchange, neg_risk).await
+        // Sign the order with correct exchange address based on neg_risk
+        self.sign_order(&order_data, &contract_config, neg_risk).await
     }
 
     /// Create and sign a market order
@@ -257,21 +283,74 @@ impl OrderBuilder {
             signature_type: self.sig_type as u8,
         };
 
-        self.sign_order(&order_data, &contract_config.exchange, neg_risk).await
+        // Sign the order with correct exchange address based on neg_risk
+        self.sign_order(&order_data, &contract_config, neg_risk).await
     }
 
     /// Sign an order
+    /// 
+    /// Uses the correct exchange contract address based on neg_risk:
+    /// - neg_risk=false → CTF Exchange (0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E)
+    /// - neg_risk=true → NegRiskCtfExchange (0xC5d563A36AE78145C45a50134d48A1215220f80a)
     async fn sign_order(
         &self,
         data: &OrderData,
-        exchange: &Address,
-        _neg_risk: bool,
+        contract_config: &ContractConfig,
+        neg_risk: bool,
     ) -> Result<SignedOrder> {
+        // Select the correct exchange address based on neg_risk flag
+        // This is CRITICAL: using the wrong address will cause "Invalid order payload" error
+        let exchange = if neg_risk {
+            &contract_config.neg_risk_exchange
+        } else {
+            &contract_config.exchange
+        };
+        
+        // 🔍 详细日志：签名过程开始
+        info!(
+            "🔐 [Poly签名开始] token_id={}, neg_risk={}, 使用合约: {:?}",
+            data.token_id, neg_risk, exchange
+        );
+        info!(
+            "🔐 [Poly签名参数] maker={:?}, signer={:?}, taker={:?}, maker_amt={}, taker_amt={}, side={}, fee_rate_bps={}, nonce={}, expiration={}, sig_type={}",
+            data.maker, data.signer, data.taker, data.maker_amount, data.taker_amount,
+            data.side, data.fee_rate_bps, data.nonce, data.expiration, data.signature_type
+        );
+
+        // #region agent log - 签名详情 (假设 A, D, E)
+        {
+            use std::io::Write;
+            let debug_log = serde_json::json!({
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "location": "order_builder.rs:sign_order",
+                "hypothesisId": "A,D,E",
+                "message": "签名过程详情",
+                "data": {
+                    "token_id": &data.token_id,
+                    "neg_risk": neg_risk,
+                    "exchange_address": format!("{:?}", exchange),
+                    "chain_id": self.chain_id,
+                    "maker": format!("{:?}", data.maker),
+                    "signer": format!("{:?}", data.signer),
+                    "maker_amount": data.maker_amount,
+                    "taker_amount": data.taker_amount,
+                    "side": data.side,
+                    "nonce_salt": data.nonce
+                }
+            });
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
+                let _ = writeln!(f, "{}", debug_log.to_string());
+            }
+        }
+        // #endregion
+
         // Calculate struct hash
         let struct_hash = data.struct_hash();
+        info!("🔐 [Poly签名] struct_hash={:?}", struct_hash);
 
         // Calculate domain separator
         let domain_separator = calculate_domain_separator(exchange, self.chain_id);
+        info!("🔐 [Poly签名] domain_separator={:?}, chain_id={}", domain_separator, self.chain_id);
 
         // Calculate EIP-712 hash
         let mut eip712_data = Vec::with_capacity(66);
@@ -279,11 +358,13 @@ impl OrderBuilder {
         eip712_data.extend_from_slice(domain_separator.as_slice());
         eip712_data.extend_from_slice(struct_hash.as_slice());
         let hash = keccak256(&eip712_data);
+        info!("🔐 [Poly签名] eip712_hash={:?}", hash);
 
         // Sign
         let signature = self.signer.sign_hash(&hash).await?;
+        info!("🔐 [Poly签名] signature={}", signature);
 
-        Ok(SignedOrder {
+        let signed_order = SignedOrder {
             salt: data.nonce.to_string(),
             maker: format!("{:?}", data.maker),
             signer: format!("{:?}", data.signer),
@@ -297,7 +378,18 @@ impl OrderBuilder {
             side: data.side.to_string(),
             signature_type: data.signature_type.to_string(),
             signature,
-        })
+        };
+        
+        info!(
+            "🔐 [Poly签名完成] token_id={}, side={}, maker_amt={}, taker_amt={}, neg_risk={}",
+            signed_order.token_id,
+            if signed_order.side == "0" { "BUY" } else { "SELL" },
+            signed_order.maker_amount,
+            signed_order.taker_amount,
+            neg_risk
+        );
+        
+        Ok(signed_order)
     }
 
     /// Calculate buy market price from order book

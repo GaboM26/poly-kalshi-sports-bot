@@ -157,19 +157,13 @@ pub struct AutoTradeConfig {
     /// Whether auto-trade is enabled by default
     #[serde(default = "default_auto_trade_enabled")]
     pub enabled: bool,
-    /// Maximum amount per trade in USD
+    /// Maximum amount per trade in USD (自动下单单次最大金额)
     #[serde(default = "default_auto_trade_max_amount")]
     pub max_amount: f64,
-    /// Minimum profit margin to trigger auto-trade (percentage)
-    #[serde(default = "default_auto_trade_min_profit")]
-    pub min_profit_margin: f64,
-    /// Cooldown between trades in seconds
-    #[serde(default = "default_auto_trade_cooldown")]
-    pub cooldown_seconds: u64,
-    /// Maximum trade count (testing phase limit)
+    /// Maximum trade count (自动下单最大执行次数)
     #[serde(default = "default_auto_trade_max_count")]
     pub max_trade_count: i32,
-    /// Minimum duration for opportunity (milliseconds)
+    /// Minimum duration for opportunity in milliseconds (套利机会持续时间阈值)
     #[serde(default = "default_auto_trade_min_duration")]
     pub min_duration_ms: i64,
 }
@@ -180,14 +174,6 @@ fn default_auto_trade_enabled() -> bool {
 
 fn default_auto_trade_max_amount() -> f64 {
     10.0
-}
-
-fn default_auto_trade_min_profit() -> f64 {
-    2.0
-}
-
-fn default_auto_trade_cooldown() -> u64 {
-    60
 }
 
 fn default_auto_trade_max_count() -> i32 {
@@ -203,8 +189,6 @@ impl Default for AutoTradeConfig {
         Self {
             enabled: default_auto_trade_enabled(),
             max_amount: default_auto_trade_max_amount(),
-            min_profit_margin: default_auto_trade_min_profit(),
-            cooldown_seconds: default_auto_trade_cooldown(),
             max_trade_count: default_auto_trade_max_count(),
             min_duration_ms: default_auto_trade_min_duration(),
         }

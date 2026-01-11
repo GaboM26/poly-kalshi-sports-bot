@@ -55,7 +55,8 @@ pub async fn get_opportunities(State(state): State<Arc<AppState>>) -> impl IntoR
 /// Get matched markets
 pub async fn get_matched_markets(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let service = state.service.read().await;
-    let markets = service.get_matched_markets().to_vec();
+    // 使用 frontend 格式，包含 poly_token_id 等字段
+    let markets = service.ws_manager.get_matched_markets_for_frontend();
     Json(markets)
 }
 
@@ -969,4 +970,143 @@ pub async fn get_auto_trade_history(
             ).into_response()
         }
     }
+}
+
+// ==================== App Settings API ====================
+
+/// App settings response
+#[derive(Serialize)]
+pub struct AppSettingsResponse {
+    /// 数据刷新间隔（秒）
+    pub refresh_interval: u64,
+    /// 显示套利机会的最小利润率（%）
+    pub min_profit_margin: f64,
+    /// 套利计算使用的默认金额（美元）
+    pub default_bet_amount: f64,
+    /// 开始追踪记录的利润率阈值（%）
+    pub tracking_threshold: f64,
+    pub updated_at: Option<String>,
+}
+
+/// Get application settings
+pub async fn get_app_settings(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let service = state.service.read().await;
+    let storage = service.ws_manager.get_storage();
+    
+    match storage.get_app_settings() {
+        Ok(settings) => Json(AppSettingsResponse {
+            refresh_interval: settings.refresh_interval,
+            min_profit_margin: settings.min_profit_margin,
+            default_bet_amount: settings.default_bet_amount,
+            tracking_threshold: settings.tracking_threshold,
+            updated_at: settings.updated_at,
+        }).into_response(),
+        Err(e) => {
+            error!("获取应用设置失败: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": e.to_string()
+                }))
+            ).into_response()
+        }
+    }
+}
+
+/// App settings update request
+#[derive(Deserialize)]
+pub struct AppSettingsRequest {
+    /// 数据刷新间隔（秒）
+    pub refresh_interval: Option<u64>,
+    /// 显示套利机会的最小利润率（%）
+    pub min_profit_margin: Option<f64>,
+    /// 套利计算使用的默认金额（美元）
+    pub default_bet_amount: Option<f64>,
+    /// 开始追踪记录的利润率阈值（%）
+    pub tracking_threshold: Option<f64>,
+}
+
+/// Update application settings
+pub async fn update_app_settings(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AppSettingsRequest>,
+) -> impl IntoResponse {
+    let service = state.service.read().await;
+    
+    // Update storage
+    match service.ws_manager.update_app_settings(
+        req.refresh_interval,
+        req.min_profit_margin,
+        req.default_bet_amount,
+        req.tracking_threshold,
+    ) {
+        Ok(_) => Json(serde_json::json!({
+            "success": true,
+            "message": "应用设置已更新"
+        })).into_response(),
+        Err(e) => {
+            error!("更新应用设置失败: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
+                }))
+            ).into_response()
+        }
+    }
+}
+
+// ============================================================
+// Market Exclusion APIs
+// ============================================================
+
+/// Market exclusion request
+#[derive(Deserialize)]
+pub struct MarketExclusionRequest {
+    pub event_name: String,
+    pub team_name: String,
+}
+
+/// Get list of excluded markets
+pub async fn get_excluded_markets(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let service = state.service.read().await;
+    let excluded = service.ws_manager.get_excluded_markets();
+    
+    Json(serde_json::json!({
+        "excluded_markets": excluded,
+        "count": excluded.len()
+    }))
+}
+
+/// Exclude a market from auto-trade
+pub async fn exclude_market(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<MarketExclusionRequest>,
+) -> impl IntoResponse {
+    let service = state.service.read().await;
+    let inserted = service.ws_manager.exclude_market(&req.event_name, &req.team_name);
+    
+    Json(serde_json::json!({
+        "success": true,
+        "message": if inserted { "市场已排除" } else { "市场已在排除列表中" },
+        "event_name": req.event_name,
+        "team_name": req.team_name
+    }))
+}
+
+/// Remove a market from exclusion list
+pub async fn unexclude_market(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<MarketExclusionRequest>,
+) -> impl IntoResponse {
+    let service = state.service.read().await;
+    let removed = service.ws_manager.unexclude_market(&req.event_name, &req.team_name);
+    
+    Json(serde_json::json!({
+        "success": true,
+        "message": if removed { "市场已取消排除" } else { "市场不在排除列表中" },
+        "event_name": req.event_name,
+        "team_name": req.team_name
+    }))
 }

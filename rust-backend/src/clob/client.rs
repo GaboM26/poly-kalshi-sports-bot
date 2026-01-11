@@ -331,9 +331,24 @@ impl ClobClient {
         let tick_size = self.get_tick_size(&order_args.token_id).await?;
         let neg_risk = self.get_neg_risk(&order_args.token_id).await?;
 
+        // Log market order parameters for debugging
+        info!(
+            "📋 [Poly市价单] 开始创建: token_id={}, side={:?}, amount={:.4}, tick_size={}, neg_risk={}",
+            order_args.token_id, order_args.side, order_args.amount, tick_size, neg_risk
+        );
+
         // Calculate market price from order book
         // Use Fak (Fill and Kill) mode - fill as much as possible, cancel the rest
         let order_book = self.get_order_book(&order_args.token_id).await?;
+        
+        // Log orderbook state for debugging
+        let best_bid = order_book.bids.last().map(|(p, s)| format!("{}@{}", s, p));
+        let best_ask = order_book.asks.first().map(|(p, s)| format!("{}@{}", s, p));
+        debug!(
+            "📊 [Poly订单簿] best_bid={:?}, best_ask={:?}, bids_levels={}, asks_levels={}",
+            best_bid, best_ask, order_book.bids.len(), order_book.asks.len()
+        );
+        
         let price = match order_args.side {
             Side::Buy => builder.calculate_buy_market_price(
                 &order_book,
@@ -346,6 +361,11 @@ impl ClobClient {
                 OrderType::Fak,
             )?,
         };
+
+        info!(
+            "📋 [Poly市价单] 计算价格: price={:.4}, side={:?}",
+            price, order_args.side
+        );
 
         builder
             .create_market_order(order_args, price, tick_size, neg_risk)
@@ -375,11 +395,82 @@ impl ClobClient {
         let body = order_to_json(order, &creds.api_key, order_type);
         let body_str = serde_json::to_string(&body)?;
 
+        // Log the full order payload for debugging - DETAILED
+        info!(
+            "📤 [Poly提交订单] token_id={}, side={}, maker_amt={}, taker_amt={}, order_type={:?}",
+            order.token_id,
+            if order.side == "0" { "BUY" } else { "SELL" },
+            order.maker_amount,
+            order.taker_amount,
+            order_type
+        );
+        
+        // 🔍 详细日志：输出完整的签名订单信息
+        info!(
+            "🔍 [Poly订单详细] salt={}, maker={}, signer={}, taker={}, expiration={}, nonce={}, fee_rate_bps={}, signature_type={}",
+            order.salt, order.maker, order.signer, order.taker, 
+            order.expiration, order.nonce, order.fee_rate_bps, order.signature_type
+        );
+        info!("🔍 [Poly订单签名] signature={}", order.signature);
+        
+        // 🔍 输出完整请求体（用于调试）
+        info!("🔍 [Poly完整请求体] {}", body_str);
+
+        // #region agent log - 写入调试日志文件 (假设 A, B, C)
+        {
+            use std::io::Write;
+            let debug_log = serde_json::json!({
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "location": "client.rs:post_order",
+                "hypothesisId": "A,B,C",
+                "message": "Poly订单提交",
+                "data": {
+                    "token_id": &order.token_id,
+                    "side": &order.side,
+                    "maker_amount": &order.maker_amount,
+                    "taker_amount": &order.taker_amount,
+                    "salt": &order.salt,
+                    "maker": &order.maker,
+                    "signer": &order.signer,
+                    "signature_type": &order.signature_type,
+                    "order_type": format!("{:?}", order_type),
+                    "full_body": &body_str
+                }
+            });
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
+                let _ = writeln!(f, "{}", debug_log.to_string());
+            }
+        }
+        // #endregion
+
         let request_args = RequestArgs::new("POST", endpoints::POST_ORDER).with_body(&body_str);
         let headers = create_level_2_headers(signer, creds, &request_args);
+        
+        // 🔍 输出请求头（隐藏敏感信息）
+        info!("🔍 [Poly请求头] POLY_ADDRESS={}, POLY_TIMESTAMP存在={}", 
+            headers.get("POLY_ADDRESS").unwrap_or(&"N/A".to_string()),
+            headers.contains_key("POLY_TIMESTAMP")
+        );
 
         let url = format!("{}{}", self.host, endpoints::POST_ORDER);
         let response: Value = self.post_with_headers(&url, &headers, Some(&body_str)).await?;
+
+        // Log response for debugging
+        info!(
+            "📥 [Poly订单响应] success={}, order_id={}, status={}",
+            response.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
+            response.get("orderID").and_then(|v| v.as_str()).unwrap_or("N/A"),
+            response.get("status").and_then(|v| v.as_str()).unwrap_or("N/A")
+        );
+        
+        // 🔍 输出完整响应（用于调试）
+        info!("🔍 [Poly完整响应] {}", serde_json::to_string(&response).unwrap_or_default());
+        
+        if let Some(error_msg) = response.get("errorMsg").and_then(|v| v.as_str()) {
+            if !error_msg.is_empty() {
+                info!("📥 [Poly订单错误] errorMsg={}", error_msg);
+            }
+        }
 
         Ok(serde_json::from_value(response)?)
     }
@@ -538,6 +629,33 @@ impl ClobClient {
         let response_body = response.text().await?;
 
         if !status.is_success() {
+            // 🔍 详细错误日志
+            tracing::error!(
+                "❌ [Poly HTTP错误] status={}, url={}, response_body={}",
+                status, url, response_body
+            );
+            
+            // #region agent log - 写入失败日志 (假设 A, B, C, D, E)
+            {
+                use std::io::Write;
+                let debug_log = serde_json::json!({
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    "location": "client.rs:post_with_headers:error",
+                    "hypothesisId": "A,B,C,D,E",
+                    "message": "HTTP请求失败",
+                    "data": {
+                        "status": status.to_string(),
+                        "url": url,
+                        "response_body": &response_body,
+                        "request_body": body.map(|b| b.to_string())
+                    }
+                });
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/Users/meloner/rustcode/polytaoli/.cursor/debug.log") {
+                    let _ = writeln!(f, "{}", debug_log.to_string());
+                }
+            }
+            // #endregion
+            
             bail!("HTTP {} - {}", status, response_body);
         }
 
