@@ -296,7 +296,7 @@ impl KalshiClient {
         Ok((events, markets))
     }
 
-    /// Place an order with FOK (Fill or Kill) - must fill entirely or cancel
+    /// Place an order with IOC (Immediate or Cancel) - fill immediately at best available prices
     pub async fn place_order(
         &self,
         ticker: &str,
@@ -308,8 +308,8 @@ impl KalshiClient {
         let action = if side == "buy" { "buy" } else { "sell" };
         let yes_price = if outcome == "yes" { price } else { 100 - price };
         
-        // 使用 FOK (Fill or Kill) 订单类型
-        // 必须全部成交，否则全部取消，不会产生挂单
+        // 使用 IOC (Immediate or Cancel) 订单类型
+        // 立即以最优价格成交可成交的部分，未成交部分取消，不会产生挂单
         let body = json!({
             "ticker": ticker,
             "action": action,
@@ -317,7 +317,7 @@ impl KalshiClient {
             "count": count,
             "type": "limit",
             "yes_price": yes_price,
-            "time_in_force": "fill_or_kill",
+            "time_in_force": "ioc",
         });
 
         self.post("/portfolio/orders", &body).await
