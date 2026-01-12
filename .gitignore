@@ -32,6 +32,8 @@ rust-backend/target/
 # Node.js
 node_modules/
 web/dist/
+*.tar.gz
+prod-log/*
 
 # IDE
 .vscode/

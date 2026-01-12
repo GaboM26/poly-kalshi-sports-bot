@@ -224,8 +224,9 @@ impl ClobClient {
             Ok(ob) => {
                 let has_bids = !ob.bids.is_empty();
                 let has_asks = !ob.asks.is_empty();
+                // API returns: bids[last] = best_bid (highest), asks[last] = best_ask (lowest)
                 let best_bid = ob.bids.last().map(|(p, _)| *p);
-                let best_ask = ob.asks.first().map(|(p, _)| *p);
+                let best_ask = ob.asks.last().map(|(p, _)| *p);
                 info!(
                     "✅ [Token验证] Orderbook有效: has_bids={}, has_asks={}, best_bid={:?}, best_ask={:?}",
                     has_bids, has_asks, best_bid, best_ask
@@ -442,8 +443,9 @@ impl ClobClient {
         let order_book = self.get_order_book(&order_args.token_id).await?;
         
         // Log orderbook state for debugging
+        // API returns: bids[last] = best_bid (highest), asks[last] = best_ask (lowest)
         let best_bid = order_book.bids.last().map(|(p, s)| format!("{}@{}", s, p));
-        let best_ask = order_book.asks.first().map(|(p, s)| format!("{}@{}", s, p));
+        let best_ask = order_book.asks.last().map(|(p, s)| format!("{}@{}", s, p));
         debug!(
             "📊 [Poly订单簿] best_bid={:?}, best_ask={:?}, bids_levels={}, asks_levels={}",
             best_bid, best_ask, order_book.bids.len(), order_book.asks.len()
@@ -507,8 +509,9 @@ impl ClobClient {
         let order_book = self.get_order_book(token_id).await?;
         
         // Log orderbook state
-        let best_bid = order_book.bids.first().map(|(p, s)| format!("{:.4}@{:.4}", s, p));
-        let best_ask = order_book.asks.first().map(|(p, s)| format!("{:.4}@{:.4}", s, p));
+        // API returns: bids[last] = best_bid (highest), asks[last] = best_ask (lowest)
+        let best_bid = order_book.bids.last().map(|(p, s)| format!("{:.4}@{:.4}", s, p));
+        let best_ask = order_book.asks.last().map(|(p, s)| format!("{:.4}@{:.4}", s, p));
         info!(
             "📊 [Poly订单簿] best_bid={:?}, best_ask={:?}, bids_levels={}, asks_levels={}",
             best_bid, best_ask, order_book.bids.len(), order_book.asks.len()
@@ -539,7 +542,7 @@ impl ClobClient {
             }
             Side::Sell => {
                 // For SELL, calculate USDC you'll receive (with slippage as min acceptable)
-                // Traverse bids from highest to lowest
+                // API returns bids: [low...high], use .rev() to start from best_bid (last)
                 let mut total_usdc = 0.0;
                 let mut total_tokens = 0.0;
                 
@@ -961,8 +964,14 @@ impl ClobClient {
 }
 
 /// Parse orderbook summary from raw response
+/// 
+/// Polymarket API returns:
+/// - bids: ascending order (low to high), best_bid = LAST (highest buy price)
+/// - asks: descending order (high to low), best_ask = LAST (lowest sell price)
+/// 
+/// We keep the original order from API and use .last() to get best prices
 fn parse_orderbook_summary(raw: &Value) -> Result<OrderBookSummary> {
-    let bids = raw["bids"]
+    let bids: Vec<(f64, f64)> = raw["bids"]
         .as_array()
         .map(|arr| {
             arr.iter()
@@ -975,7 +984,7 @@ fn parse_orderbook_summary(raw: &Value) -> Result<OrderBookSummary> {
         })
         .unwrap_or_default();
 
-    let asks = raw["asks"]
+    let asks: Vec<(f64, f64)> = raw["asks"]
         .as_array()
         .map(|arr| {
             arr.iter()
@@ -987,6 +996,10 @@ fn parse_orderbook_summary(raw: &Value) -> Result<OrderBookSummary> {
                 .collect()
         })
         .unwrap_or_default();
+
+    // DO NOT SORT - keep API's original order:
+    // bids: [low...high], best_bid at last
+    // asks: [high...low], best_ask at last
 
     Ok(OrderBookSummary { bids, asks })
 }

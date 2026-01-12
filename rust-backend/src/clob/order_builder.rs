@@ -504,8 +504,8 @@ impl OrderBuilder {
     /// Calculate the cost (in USDC) to buy a specific number of tokens
     /// Returns (total_usdc_cost, worst_price_encountered, tokens_available)
     /// 
-    /// This function traverses the order book from best ask (lowest price) upward,
-    /// accumulating tokens until the target is reached or liquidity runs out.
+    /// Polymarket API returns asks in descending order (high to low)
+    /// So we use .rev() to traverse from best_ask (last) to worst (first)
     pub fn calculate_buy_cost_for_tokens(
         &self,
         order_book: &OrderBookSummary,
@@ -520,9 +520,8 @@ impl OrderBuilder {
         let mut total_tokens = 0.0;
         let mut worst_price = 0.0;
         
-        // Traverse asks from lowest price (best ask) to highest
-        // asks should be sorted low to high, so iterate normally (no .rev())
-        for (price, size) in order_book.asks.iter() {
+        // API returns asks: [high...low], so use .rev() to start from best_ask (last)
+        for (price, size) in order_book.asks.iter().rev() {
             let tokens_at_this_level = (*size).min(target_tokens - total_tokens);
             total_tokens += tokens_at_this_level;
             total_usdc += tokens_at_this_level * price;
@@ -554,6 +553,7 @@ impl OrderBuilder {
     }
 
     /// Calculate buy market price from order book (legacy, for compatibility)
+    /// API returns asks: [high...low], best_ask at last
     pub fn calculate_buy_market_price(
         &self,
         order_book: &OrderBookSummary,
@@ -565,8 +565,8 @@ impl OrderBuilder {
         }
 
         let mut sum = 0.0;
-        // Fixed: traverse from lowest price (best ask) - NO .rev()!
-        for (price, size) in order_book.asks.iter() {
+        // API returns asks: [high...low], use .rev() to start from best_ask (last)
+        for (price, size) in order_book.asks.iter().rev() {
             sum += size * price;
             if sum >= amount_to_match {
                 return Ok(*price);
@@ -574,10 +574,11 @@ impl OrderBuilder {
         }
 
         // Return best ask if we can't fill completely
-        Ok(order_book.asks.first().map(|(p, _)| *p).unwrap_or(1.0))
+        Ok(order_book.asks.last().map(|(p, _)| *p).unwrap_or(1.0))
     }
 
     /// Calculate sell market price from order book
+    /// API returns bids: [low...high], best_bid at last
     pub fn calculate_sell_market_price(
         &self,
         order_book: &OrderBookSummary,
@@ -589,6 +590,7 @@ impl OrderBuilder {
         }
 
         let mut sum = 0.0;
+        // API returns bids: [low...high], use .rev() to start from best_bid (last)
         for (price, size) in order_book.bids.iter().rev() {
             sum += size;
             if sum >= amount_to_match {
@@ -601,7 +603,7 @@ impl OrderBuilder {
         }
 
         // Return best bid if we can't fill completely
-        Ok(order_book.bids.first().map(|(p, _)| *p).unwrap_or(0.0))
+        Ok(order_book.bids.last().map(|(p, _)| *p).unwrap_or(0.0))
     }
 }
 

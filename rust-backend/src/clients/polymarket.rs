@@ -511,8 +511,9 @@ impl PolymarketClient {
         info!("📊 [Step 1] 获取订单簿状态...");
         match clob.as_ref().get_order_book(token_id).await {
             Ok(orderbook) => {
+                // API returns: bids[last] = best_bid (highest), asks[last] = best_ask (lowest)
                 let best_bid = orderbook.bids.last().map(|(p, s)| format!("{:.4}@{:.2}", s, p));
-                let best_ask = orderbook.asks.first().map(|(p, s)| format!("{:.4}@{:.2}", s, p));
+                let best_ask = orderbook.asks.last().map(|(p, s)| format!("{:.4}@{:.2}", s, p));
                 let bid_depth: f64 = orderbook.bids.iter().map(|(p, s)| p * s).sum();
                 let ask_depth: f64 = orderbook.asks.iter().map(|(p, s)| p * s).sum();
                 info!("   ✅ 订单簿有效: best_bid={:?}, best_ask={:?}", best_bid, best_ask);
