@@ -233,7 +233,7 @@ impl ArbitrageService {
             .await
     }
 
-    /// Place an order on Polymarket
+    /// Place an order on Polymarket (legacy - uses USDC amount)
     pub async fn place_polymarket_order(
         &self,
         token_id: &str,
@@ -242,6 +242,19 @@ impl ArbitrageService {
     ) -> Result<serde_json::Value> {
         self.polymarket_client
             .place_market_order(token_id, side, amount)
+            .await
+    }
+
+    /// Place an order on Polymarket by tokens quantity (RECOMMENDED)
+    /// Uses 5% slippage and traverses order book from best price
+    pub async fn place_polymarket_order_by_tokens(
+        &self,
+        token_id: &str,
+        side: &str,
+        tokens: f64,
+    ) -> Result<serde_json::Value> {
+        self.polymarket_client
+            .place_market_order_by_tokens(token_id, side, tokens)
             .await
     }
 

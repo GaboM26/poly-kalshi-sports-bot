@@ -393,7 +393,103 @@ impl PolymarketClient {
         Ok((events, markets))
     }
 
-    /// Place a market order
+    /// Place a market order by specifying tokens quantity (RECOMMENDED)
+    /// 
+    /// This method:
+    /// - Takes `tokens` as the number of tokens/contracts to buy
+    /// - Calculates USDC needed by traversing order book from best price
+    /// - Uses 5% slippage for protection
+    /// - Uses FAK (Fill and Kill) mode
+    /// 
+    /// This works like Kalshi's IOC - fills at best available prices level by level
+    pub async fn place_market_order_by_tokens(
+        &self,
+        token_id: &str,
+        side: &str,
+        tokens: f64,  // Number of tokens/contracts to buy
+    ) -> Result<Value> {
+        let token_short = &token_id[..20.min(token_id.len())];
+        info!("════════════════════════════════════════════════════════════");
+        info!("🎯 [Poly下单-Tokens模式] token={}..., side={}, tokens={:.4}", token_short, side, tokens);
+        info!("════════════════════════════════════════════════════════════");
+        
+        let clob = self
+            .clob
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
+
+        let order_side = if side.to_lowercase() == "buy" {
+            Side::Buy
+        } else {
+            Side::Sell
+        };
+
+        // Use the new create_market_order_by_tokens with 5% slippage
+        info!("🔐 [Step 1] 创建并签名订单 (Tokens模式, 5%滑点)...");
+        let signed_order = match clob.as_ref().create_market_order_by_tokens(
+            token_id,
+            order_side,
+            tokens,
+            Some(0.05),  // 5% slippage
+        ).await {
+            Ok(order) => {
+                info!("   ✅ 订单创建成功:");
+                info!("      maker_amount: {} (tokens)", order.maker_amount);
+                info!("      taker_amount: {} (USDC with slippage)", order.taker_amount);
+                info!("      salt: {}", order.salt);
+                info!("      signature: {}...", &order.signature[..20.min(order.signature.len())]);
+                order
+            }
+            Err(e) => {
+                tracing::error!("   ❌ 订单创建失败: {}", e);
+                Self::write_debug_log("place_market_order_by_tokens:create_failed", serde_json::json!({
+                    "token_id": token_id,
+                    "side": side,
+                    "tokens": tokens,
+                    "error": e.to_string(),
+                }));
+                return Err(e);
+            }
+        };
+        
+        // Step 2: Post order
+        info!("📤 [Step 2] 提交订单到Polymarket...");
+        let response = match clob
+            .as_ref()
+            .post_order(&signed_order, crate::clob::OrderType::Fak)
+            .await
+        {
+            Ok(resp) => {
+                info!("   ✅ 订单提交成功!");
+                info!("════════════════════════════════════════════════════════════");
+                resp
+            }
+            Err(e) => {
+                tracing::error!("   ❌ 订单提交失败: {}", e);
+                info!("════════════════════════════════════════════════════════════");
+                
+                Self::write_debug_log("place_market_order_by_tokens:post_failed", serde_json::json!({
+                    "token_id": token_id,
+                    "side": side,
+                    "tokens": tokens,
+                    "signed_order": {
+                        "maker_amount": signed_order.maker_amount,
+                        "taker_amount": signed_order.taker_amount,
+                        "salt": signed_order.salt,
+                        "maker": signed_order.maker,
+                        "signer": signed_order.signer,
+                        "signature_type": signed_order.signature_type,
+                    },
+                    "error": e.to_string(),
+                }));
+                return Err(e);
+            }
+        };
+
+        Ok(serde_json::to_value(response)?)
+    }
+
+    /// Place a market order (legacy method - uses USDC amount)
     /// Uses FAK (Fill and Kill) mode - fills as much as possible, cancels the rest immediately
     pub async fn place_market_order(
         &self,
@@ -403,7 +499,7 @@ impl PolymarketClient {
     ) -> Result<Value> {
         let token_short = &token_id[..20.min(token_id.len())];
         info!("════════════════════════════════════════════════════════════");
-        info!("🎯 [Poly下单开始] token={}..., side={}, amount={:.4}", token_short, side, amount);
+        info!("🎯 [Poly下单开始-旧模式] token={}..., side={}, amount={:.4}", token_short, side, amount);
         info!("════════════════════════════════════════════════════════════");
         
         let clob = self

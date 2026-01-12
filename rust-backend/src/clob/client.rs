@@ -472,6 +472,113 @@ impl ClobClient {
             .await
     }
 
+    /// Create a market order by specifying tokens quantity (recommended method)
+    /// 
+    /// This method:
+    /// 1. Traverses the order book from best price
+    /// 2. Calculates the total USDC needed to buy `tokens` quantity
+    /// 3. Adds slippage protection (default 5%)
+    /// 4. Creates order with correct maker/taker semantics
+    /// 
+    /// This behaves like Kalshi's IOC - fills from best price level up until target is met
+    pub async fn create_market_order_by_tokens(
+        &self,
+        token_id: &str,
+        side: Side,
+        tokens: f64,
+        slippage: Option<f64>,  // Default 5%
+    ) -> Result<SignedOrder> {
+        self.assert_l1_auth()?;
+        let builder = self
+            .builder
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Order builder not initialized"))?;
+
+        let tick_size = self.get_tick_size(token_id).await?;
+        let neg_risk = self.get_neg_risk(token_id).await?;
+        let slippage = slippage.unwrap_or(0.05); // Default 5% slippage
+
+        info!(
+            "📋 [Poly市价单-Tokens模式] 开始创建: token_id={}, side={:?}, tokens={:.4}, slippage={:.1}%, tick_size={}, neg_risk={}",
+            token_id, side, tokens, slippage * 100.0, tick_size, neg_risk
+        );
+
+        // Get order book
+        let order_book = self.get_order_book(token_id).await?;
+        
+        // Log orderbook state
+        let best_bid = order_book.bids.first().map(|(p, s)| format!("{:.4}@{:.4}", s, p));
+        let best_ask = order_book.asks.first().map(|(p, s)| format!("{:.4}@{:.4}", s, p));
+        info!(
+            "📊 [Poly订单簿] best_bid={:?}, best_ask={:?}, bids_levels={}, asks_levels={}",
+            best_bid, best_ask, order_book.bids.len(), order_book.asks.len()
+        );
+
+        // Calculate cost based on side
+        let usdc_with_slippage = match side {
+            Side::Buy => {
+                // Calculate USDC needed to buy `tokens` from order book (with slippage)
+                let (usdc, worst_price, available_tokens) = builder.calculate_buy_cost_for_tokens(
+                    &order_book,
+                    tokens,
+                    slippage,
+                )?;
+                
+                if available_tokens < tokens {
+                    info!(
+                        "⚠️ [流动性不足] 目标tokens={:.4}, 可用tokens={:.4}, 将部分成交",
+                        tokens, available_tokens
+                    );
+                }
+                
+                info!(
+                    "📋 [BUY计算完成] tokens={:.4}, usdc_with_slippage={:.4}, worst_price={:.4}",
+                    tokens, usdc, worst_price
+                );
+                usdc
+            }
+            Side::Sell => {
+                // For SELL, calculate USDC you'll receive (with slippage as min acceptable)
+                // Traverse bids from highest to lowest
+                let mut total_usdc = 0.0;
+                let mut total_tokens = 0.0;
+                
+                for (price, size) in order_book.bids.iter().rev() {
+                    let tokens_at_level = (*size).min(tokens - total_tokens);
+                    total_tokens += tokens_at_level;
+                    total_usdc += tokens_at_level * price;
+                    
+                    if total_tokens >= tokens {
+                        break;
+                    }
+                }
+                
+                // Apply slippage (reduce expected USDC for sell)
+                let usdc_with_slippage = total_usdc * (1.0 - slippage);
+                
+                info!(
+                    "📋 [SELL计算完成] tokens={:.4}, usdc_with_slippage={:.4}",
+                    tokens, usdc_with_slippage
+                );
+                usdc_with_slippage
+            }
+        };
+
+        // Create order with correct maker/taker semantics
+        builder
+            .create_market_order_by_tokens(
+                token_id,
+                side,
+                tokens,
+                usdc_with_slippage,
+                tick_size,
+                neg_risk,
+                None, // fee_rate_bps
+                None, // nonce
+            )
+            .await
+    }
+
     // === L2 Authenticated Endpoints ===
 
     fn assert_l2_auth(&self) -> Result<()> {

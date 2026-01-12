@@ -704,12 +704,13 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
             kalshi_price_cents,
         ).await;
         
-        // Execute Polymarket order
-        info!("🚀 [执行Polymarket订单]...");
-        let poly_result = service.polymarket_client.place_market_order(
+        // Execute Polymarket order (using new tokens mode with 5% slippage)
+        info!("🚀 [执行Polymarket订单-Tokens模式]...");
+        info!("   tokens={}, 预计USDC={:.4} (含5%滑点后由系统计算)", contracts_to_trade, poly_amount);
+        let poly_result = service.polymarket_client.place_market_order_by_tokens(
             &poly_token,
             "buy",
-            poly_amount,
+            contracts_to_trade as f64,  // Pass tokens quantity, not USDC amount
         ).await;
         
         // Calculate execution time (API call latency)
