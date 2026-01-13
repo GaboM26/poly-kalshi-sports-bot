@@ -9,7 +9,7 @@ use tracing::{debug, info};
 
 use super::config::{get_contract_config, to_token_decimals, ContractConfig};
 use super::signer::Signer;
-use super::types::{OrderArgs, Side, SignatureType, SignedOrder, OrderBookSummary, OrderType, MarketOrderArgs};
+use super::types::{OrderArgs, LimitOrderArgs, Side, SignatureType, SignedOrder, OrderBookSummary, OrderType, MarketOrderArgs};
 use crate::utils;
 
 /// Rounding configuration for different tick sizes
@@ -141,64 +141,11 @@ impl OrderBuilder {
         }
     }
 
-    /// Calculate market order amounts
-    /// Calculate order amounts for "specify tokens" mode
-    /// 
-    /// For BUY: makerAmount = tokens you want, takerAmount = USDC you pay
-    /// For SELL: makerAmount = tokens you sell, takerAmount = USDC you receive
-    /// 
-    /// This is the correct semantic for Polymarket orders!
-    pub fn get_order_amounts_for_tokens(
-        &self,
-        side: Side,
-        tokens: f64,           // Number of tokens
-        usdc_with_slippage: f64, // USDC amount (with slippage for BUY)
-        round_config: RoundConfig,
-    ) -> Result<(u8, u64, u64)> {
-        info!(
-            "🔢 [Poly金额计算-Tokens模式] side={:?}, tokens={}, usdc={}, round_config={{price:{}, size:{}, amount:{}}}",
-            side, tokens, usdc_with_slippage, round_config.price, round_config.size, round_config.amount
-        );
-
-        match side {
-            Side::Buy => {
-                // BUY: you give USDC (taker), you get tokens (maker)
-                let raw_tokens = round_down(tokens, round_config.size);
-                let raw_usdc = round_up(usdc_with_slippage, round_config.size);
-                
-                // makerAmount = tokens you receive
-                // takerAmount = USDC you pay
-                let maker_amount = to_token_decimals(raw_tokens);
-                let taker_amount = to_token_decimals(raw_usdc);
-                
-                info!(
-                    "🔢 [Poly金额计算-BUY-Tokens模式] tokens={} -> maker_amount={}, usdc={} -> taker_amount={}",
-                    raw_tokens, maker_amount, raw_usdc, taker_amount
-                );
-
-                Ok((0, maker_amount, taker_amount))
-            }
-            Side::Sell => {
-                // SELL: you give tokens (maker), you get USDC (taker)
-                let raw_tokens = round_down(tokens, round_config.size);
-                let raw_usdc = round_down(usdc_with_slippage, round_config.size);
-                
-                // makerAmount = tokens you sell
-                // takerAmount = USDC you receive
-                let maker_amount = to_token_decimals(raw_tokens);
-                let taker_amount = to_token_decimals(raw_usdc);
-                
-                info!(
-                    "🔢 [Poly金额计算-SELL-Tokens模式] tokens={} -> maker_amount={}, usdc={} -> taker_amount={}",
-                    raw_tokens, maker_amount, raw_usdc, taker_amount
-                );
-
-                Ok((1, maker_amount, taker_amount))
-            }
-        }
-    }
-
-    /// Legacy: Calculate order amounts (kept for backward compatibility)
+    /// Calculate market order amounts (matches py-clob-client get_market_order_amounts)
+    ///
+    /// Semantic (same as official SDK):
+    /// - BUY: amount = USDC to spend, makerAmount = USDC, takerAmount = tokens
+    /// - SELL: amount = tokens to sell, makerAmount = tokens, takerAmount = USDC
     pub fn get_market_order_amounts(
         &self,
         side: Side,
@@ -208,21 +155,18 @@ impl OrderBuilder {
     ) -> Result<(u8, u64, u64)> {
         let raw_price = round_normal(price, round_config.price);
         
-        // 🔍 详细日志：金额计算
-        info!(
-            "🔢 [Poly金额计算-旧模式] side={:?}, amount={}, price={}, raw_price={}, round_config={{price:{}, size:{}, amount:{}}}",
-            side, amount, price, raw_price, round_config.price, round_config.size, round_config.amount
+        debug!(
+            "🔢 [市价单金额计算] side={:?}, amount={}, price={}, raw_price={}",
+            side, amount, price, raw_price
         );
 
         match side {
             Side::Buy => {
+                // BUY: amount = USDC to spend
+                // makerAmount = USDC (what you pay)
+                // takerAmount = tokens (what you receive) = USDC / price
                 let raw_maker_amt = round_down(amount, round_config.size);
                 let mut raw_taker_amt = raw_maker_amt / raw_price;
-                
-                info!(
-                    "🔢 [Poly金额计算-BUY-旧] raw_maker_amt={}, raw_taker_amt(初始)={}",
-                    raw_maker_amt, raw_taker_amt
-                );
 
                 if decimal_places(raw_taker_amt) > round_config.amount {
                     raw_taker_amt = round_up(raw_taker_amt, round_config.amount + 4);
@@ -231,24 +175,22 @@ impl OrderBuilder {
                     }
                 }
 
-                let maker_amount = to_token_decimals(raw_maker_amt);
-                let taker_amount = to_token_decimals(raw_taker_amt);
+                let maker_amount = to_token_decimals(raw_maker_amt);  // USDC
+                let taker_amount = to_token_decimals(raw_taker_amt);  // tokens
                 
                 info!(
-                    "🔢 [Poly金额计算-BUY-旧结果] raw_taker_amt(最终)={}, maker_amount={}, taker_amount={}",
-                    raw_taker_amt, maker_amount, taker_amount
+                    "🔢 [市价单-BUY] USDC={} -> maker_amount={}, tokens={} -> taker_amount={}",
+                    raw_maker_amt, maker_amount, raw_taker_amt, taker_amount
                 );
 
                 Ok((0, maker_amount, taker_amount))
             }
             Side::Sell => {
+                // SELL: amount = tokens to sell
+                // makerAmount = tokens (what you sell)
+                // takerAmount = USDC (what you receive) = tokens * price
                 let raw_maker_amt = round_down(amount, round_config.size);
                 let mut raw_taker_amt = raw_maker_amt * raw_price;
-                
-                info!(
-                    "🔢 [Poly金额计算-SELL-旧] raw_maker_amt={}, raw_taker_amt(初始)={}",
-                    raw_maker_amt, raw_taker_amt
-                );
 
                 if decimal_places(raw_taker_amt) > round_config.amount {
                     raw_taker_amt = round_up(raw_taker_amt, round_config.amount + 4);
@@ -257,12 +199,12 @@ impl OrderBuilder {
                     }
                 }
 
-                let maker_amount = to_token_decimals(raw_maker_amt);
-                let taker_amount = to_token_decimals(raw_taker_amt);
+                let maker_amount = to_token_decimals(raw_maker_amt);  // tokens
+                let taker_amount = to_token_decimals(raw_taker_amt);  // USDC
                 
                 info!(
-                    "🔢 [Poly金额计算-SELL-旧结果] raw_taker_amt(最终)={}, maker_amount={}, taker_amount={}",
-                    raw_taker_amt, maker_amount, taker_amount
+                    "🔢 [市价单-SELL] tokens={} -> maker_amount={}, USDC={} -> taker_amount={}",
+                    raw_maker_amt, maker_amount, raw_taker_amt, taker_amount
                 );
 
                 Ok((1, maker_amount, taker_amount))
@@ -309,7 +251,11 @@ impl OrderBuilder {
         self.sign_order(&order_data, &contract_config, neg_risk).await
     }
 
-    /// Create and sign a market order (legacy)
+    /// Create and sign a market order (matches py-clob-client create_market_order)
+    ///
+    /// For market orders:
+    /// - BUY: amount = USDC to spend (e.g., 100 means spend $100)
+    /// - SELL: amount = tokens/shares to sell
     pub async fn create_market_order(
         &self,
         order_args: &MarketOrderArgs,
@@ -327,6 +273,11 @@ impl OrderBuilder {
         let contract_config = get_contract_config(self.chain_id)
             .ok_or_else(|| anyhow::anyhow!("Unsupported chain ID: {}", self.chain_id))?;
 
+        info!(
+            "🔐 [市价单创建] token_id={}, side={:?}, amount={}, price={}, maker_amt={}, taker_amt={}",
+            order_args.token_id, order_args.side, order_args.amount, price, maker_amount, taker_amount
+        );
+
         let order_data = OrderData {
             maker: self.funder,
             taker: Address::ZERO,
@@ -341,57 +292,46 @@ impl OrderBuilder {
             signature_type: self.sig_type as u8,
         };
 
-        // Sign the order with correct exchange address based on neg_risk
         self.sign_order(&order_data, &contract_config, neg_risk).await
     }
 
-    /// Create and sign a market order by specifying tokens quantity
-    /// 
-    /// This is the recommended method for placing orders:
-    /// - tokens: Number of tokens to buy/sell
-    /// - usdc_with_slippage: Maximum USDC to spend (for BUY) or minimum USDC to receive (for SELL)
-    /// - Uses correct maker/taker semantics for Polymarket
-    pub async fn create_market_order_by_tokens(
+    /// Create and sign a limit order using LimitOrderArgs
+    pub async fn create_limit_order(
         &self,
-        token_id: &str,
-        side: Side,
-        tokens: f64,
-        usdc_with_slippage: f64,
+        order_args: &LimitOrderArgs,
         tick_size: f64,
         neg_risk: bool,
-        fee_rate_bps: Option<i64>,
-        nonce: Option<u64>,
     ) -> Result<SignedOrder> {
         let round_config = get_round_config(tick_size);
         let (side_value, maker_amount, taker_amount) =
-            self.get_order_amounts_for_tokens(side, tokens, usdc_with_slippage, round_config)?;
+            self.get_order_amounts(order_args.side, order_args.size, order_args.price, round_config)?;
 
-        let nonce = nonce.unwrap_or_else(|| rand::thread_rng().gen());
-        let fee_rate_bps = fee_rate_bps.unwrap_or(0);
+        let nonce = order_args.nonce.unwrap_or_else(|| rand::thread_rng().gen());
+        let expiration = order_args.expiration.unwrap_or(0);
+        let fee_rate_bps = order_args.fee_rate_bps.unwrap_or(0);
 
         let contract_config = get_contract_config(self.chain_id)
             .ok_or_else(|| anyhow::anyhow!("Unsupported chain ID: {}", self.chain_id))?;
 
         info!(
-            "🔐 [Poly创建订单-Tokens模式] token_id={}, side={:?}, tokens={}, usdc={}, maker_amt={}, taker_amt={}",
-            token_id, side, tokens, usdc_with_slippage, maker_amount, taker_amount
+            "🔐 [限价单创建] token_id={}, side={:?}, price={}, size={}, maker_amt={}, taker_amt={}",
+            order_args.token_id, order_args.side, order_args.price, order_args.size, maker_amount, taker_amount
         );
 
         let order_data = OrderData {
             maker: self.funder,
             taker: Address::ZERO,
-            token_id: token_id.to_string(),
+            token_id: order_args.token_id.clone(),
             maker_amount,
             taker_amount,
             side: side_value,
             fee_rate_bps,
             nonce,
             signer: self.signer.address(),
-            expiration: 0, // Market orders have no expiration
+            expiration,
             signature_type: self.sig_type as u8,
         };
 
-        // Sign the order with correct exchange address based on neg_risk
         self.sign_order(&order_data, &contract_config, neg_risk).await
     }
 
@@ -552,8 +492,10 @@ impl OrderBuilder {
         Ok((total_usdc_with_slippage, worst_price, total_tokens))
     }
 
-    /// Calculate buy market price from order book (legacy, for compatibility)
+    /// Calculate buy market price from order book with 5% slippage
     /// API returns asks: [high...low], best_ask at last
+    /// 
+    /// Returns price rounded to 2 decimal places (cents), with 5% markup for aggressive fill
     pub fn calculate_buy_market_price(
         &self,
         order_book: &OrderBookSummary,
@@ -565,45 +507,61 @@ impl OrderBuilder {
         }
 
         let mut sum = 0.0;
+        let mut worst_price = 0.0;
+        
         // API returns asks: [high...low], use .rev() to start from best_ask (last)
         for (price, size) in order_book.asks.iter().rev() {
             sum += size * price;
+            worst_price = *price;
             if sum >= amount_to_match {
-                return Ok(*price);
+                break;
             }
         }
 
-        // Return best ask if we can't fill completely
-        Ok(order_book.asks.last().map(|(p, _)| *p).unwrap_or(1.0))
+        // Add 5% slippage for aggressive fill
+        let price_with_slippage = worst_price * 1.05;
+        
+        // Round to 2 decimal places (cents) and cap at 0.99
+        let final_price = (price_with_slippage * 100.0).ceil() / 100.0;
+        let final_price = final_price.min(0.99);
+        
+        Ok(final_price)
     }
 
-    /// Calculate sell market price from order book
+    /// Calculate sell market price from order book with 5% slippage
     /// API returns bids: [low...high], best_bid at last
+    /// 
+    /// Returns price rounded to 2 decimal places (cents), with 5% discount for aggressive fill
     pub fn calculate_sell_market_price(
         &self,
         order_book: &OrderBookSummary,
         amount_to_match: f64,
-        order_type: OrderType,
+        _order_type: OrderType,
     ) -> Result<f64> {
         if order_book.bids.is_empty() {
             bail!("No bids in order book");
         }
 
         let mut sum = 0.0;
+        let mut worst_price = 1.0;
+        
         // API returns bids: [low...high], use .rev() to start from best_bid (last)
         for (price, size) in order_book.bids.iter().rev() {
             sum += size;
+            worst_price = *price;
             if sum >= amount_to_match {
-                return Ok(*price);
+                break;
             }
         }
 
-        if order_type == OrderType::Fok {
-            bail!("Cannot fill order - insufficient liquidity");
-        }
-
-        // Return best bid if we can't fill completely
-        Ok(order_book.bids.last().map(|(p, _)| *p).unwrap_or(0.0))
+        // Subtract 5% slippage for aggressive fill (sell at lower price)
+        let price_with_slippage = worst_price * 0.95;
+        
+        // Round to 2 decimal places (cents) and ensure minimum 0.01
+        let final_price = (price_with_slippage * 100.0).floor() / 100.0;
+        let final_price = final_price.max(0.01);
+        
+        Ok(final_price)
     }
 }
 

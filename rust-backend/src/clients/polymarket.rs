@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
-use crate::clob::{ApiCreds, ClobClient, MarketOrderArgs, Side, SignatureType};
+use crate::clob::{ApiCreds, ClobClient, MarketOrderArgs, LimitOrderArgs, OrderType, Side, SignatureType};
 use crate::config::PolymarketConfig;
 use crate::core::normalize_team_name;
 use crate::models::{Platform, PolymarketEvent, PolymarketMarket, PriceUpdate};
@@ -393,262 +393,228 @@ impl PolymarketClient {
         Ok((events, markets))
     }
 
-    /// Place a market order by specifying tokens quantity (RECOMMENDED)
-    /// 
-    /// This method:
-    /// - Takes `tokens` as the number of tokens/contracts to buy
-    /// - Calculates USDC needed by traversing order book from best price
-    /// - Uses 5% slippage for protection
-    /// - Uses FAK (Fill and Kill) mode
-    /// 
-    /// This works like Kalshi's IOC - fills at best available prices level by level
-    pub async fn place_market_order_by_tokens(
-        &self,
-        token_id: &str,
-        side: &str,
-        tokens: f64,  // Number of tokens/contracts to buy
-    ) -> Result<Value> {
+    // ========================================================================
+    // HIGH-LEVEL ORDER PLACEMENT API (Recommended)
+    // ========================================================================
+
+    /// Market buy - buy tokens worth a specific USDC amount
+    ///
+    /// # Arguments
+    /// * `token_id` - The token/asset ID to buy
+    /// * `usdc_amount` - Amount of USDC to spend
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Spend $100 USDC to buy as many tokens as possible
+    /// client.market_buy(token_id, 100.0).await?;
+    /// ```
+    pub async fn market_buy(&self, token_id: &str, usdc_amount: f64) -> Result<Value> {
         let token_short = &token_id[..20.min(token_id.len())];
         info!("════════════════════════════════════════════════════════════");
-        info!("🎯 [Poly下单-Tokens模式] token={}..., side={}, tokens={:.4}", token_short, side, tokens);
+        info!("🎯 [市价买入] token={}..., usdc_amount={:.4}", token_short, usdc_amount);
         info!("════════════════════════════════════════════════════════════");
-        
+
         let clob = self
             .clob
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
 
-        let order_side = if side.to_lowercase() == "buy" {
-            Side::Buy
-        } else {
-            Side::Sell
+        let args = MarketOrderArgs {
+            token_id: token_id.to_string(),
+            amount: usdc_amount,
+            side: Side::Buy,
+            price: None,
+            fee_rate_bps: None,
+            nonce: None,
+            order_type: Some(OrderType::Fak),  // FAK: 尽可能成交，剩余取消
         };
 
-        // Use the new create_market_order_by_tokens with 5% slippage
-        info!("🔐 [Step 1] 创建并签名订单 (Tokens模式, 5%滑点)...");
-        let signed_order = match clob.as_ref().create_market_order_by_tokens(
-            token_id,
-            order_side,
-            tokens,
-            Some(0.05),  // 5% slippage
-        ).await {
-            Ok(order) => {
-                info!("   ✅ 订单创建成功:");
-                info!("      maker_amount: {} (tokens)", order.maker_amount);
-                info!("      taker_amount: {} (USDC with slippage)", order.taker_amount);
-                info!("      salt: {}", order.salt);
-                info!("      signature: {}...", &order.signature[..20.min(order.signature.len())]);
-                order
-            }
-            Err(e) => {
-                tracing::error!("   ❌ 订单创建失败: {}", e);
-                Self::write_debug_log("place_market_order_by_tokens:create_failed", serde_json::json!({
-                    "token_id": token_id,
-                    "side": side,
-                    "tokens": tokens,
-                    "error": e.to_string(),
-                }));
-                return Err(e);
-            }
-        };
-        
-        // Step 2: Post order
-        info!("📤 [Step 2] 提交订单到Polymarket...");
-        let response = match clob
-            .as_ref()
-            .post_order(&signed_order, crate::clob::OrderType::Fak)
-            .await
-        {
-            Ok(resp) => {
-                info!("   ✅ 订单提交成功!");
-                info!("════════════════════════════════════════════════════════════");
-                resp
-            }
-            Err(e) => {
-                tracing::error!("   ❌ 订单提交失败: {}", e);
-                info!("════════════════════════════════════════════════════════════");
-                
-                Self::write_debug_log("place_market_order_by_tokens:post_failed", serde_json::json!({
-                    "token_id": token_id,
-                    "side": side,
-                    "tokens": tokens,
-                    "signed_order": {
-                        "maker_amount": signed_order.maker_amount,
-                        "taker_amount": signed_order.taker_amount,
-                        "salt": signed_order.salt,
-                        "maker": signed_order.maker,
-                        "signer": signed_order.signer,
-                        "signature_type": signed_order.signature_type,
-                    },
-                    "error": e.to_string(),
-                }));
-                return Err(e);
-            }
-        };
+        let response = clob.as_ref().create_and_post_market_order(&args).await?;
+        info!("   ✅ 市价买入成功!");
+        info!("════════════════════════════════════════════════════════════");
 
         Ok(serde_json::to_value(response)?)
     }
 
-    /// Place a market order (legacy method - uses USDC amount)
-    /// Uses FAK (Fill and Kill) mode - fills as much as possible, cancels the rest immediately
+    /// Market sell - sell a specific number of tokens
+    ///
+    /// # Arguments
+    /// * `token_id` - The token/asset ID to sell
+    /// * `tokens` - Number of tokens to sell
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Sell 50 tokens at market price
+    /// client.market_sell(token_id, 50.0).await?;
+    /// ```
+    pub async fn market_sell(&self, token_id: &str, tokens: f64) -> Result<Value> {
+        let token_short = &token_id[..20.min(token_id.len())];
+        info!("════════════════════════════════════════════════════════════");
+        info!("🎯 [市价卖出] token={}..., tokens={:.4}", token_short, tokens);
+        info!("════════════════════════════════════════════════════════════");
+
+        let clob = self
+            .clob
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
+
+        let args = MarketOrderArgs {
+            token_id: token_id.to_string(),
+            amount: tokens,  // For SELL, amount = tokens
+            side: Side::Sell,
+            price: None,
+            fee_rate_bps: None,
+            nonce: None,
+            order_type: Some(OrderType::Fak),  // FAK: 尽可能成交，剩余取消
+        };
+
+        let response = clob.as_ref().create_and_post_market_order(&args).await?;
+        info!("   ✅ 市价卖出成功!");
+        info!("════════════════════════════════════════════════════════════");
+
+        Ok(serde_json::to_value(response)?)
+    }
+
+    /// Limit buy - place a limit buy order at a specific price
+    ///
+    /// # Arguments
+    /// * `token_id` - The token/asset ID to buy
+    /// * `price` - Price per token (0.0 to 1.0)
+    /// * `size` - Number of tokens to buy
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Buy 100 tokens at $0.45 each
+    /// client.limit_buy(token_id, 0.45, 100.0).await?;
+    /// ```
+    pub async fn limit_buy(&self, token_id: &str, price: f64, size: f64) -> Result<Value> {
+        let token_short = &token_id[..20.min(token_id.len())];
+        info!("════════════════════════════════════════════════════════════");
+        info!("🎯 [限价买入] token={}..., price={:.4}, size={:.4}", token_short, price, size);
+        info!("════════════════════════════════════════════════════════════");
+
+        let clob = self
+            .clob
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
+
+        let args = LimitOrderArgs {
+            token_id: token_id.to_string(),
+            price,
+            size,
+            side: Side::Buy,
+            fee_rate_bps: None,
+            nonce: None,
+            expiration: None,
+        };
+
+        let response = clob.as_ref().create_and_post_limit_order(&args, OrderType::Gtc).await?;
+        info!("   ✅ 限价买入订单已提交!");
+        info!("════════════════════════════════════════════════════════════");
+
+        Ok(serde_json::to_value(response)?)
+    }
+
+    /// Limit sell - place a limit sell order at a specific price
+    ///
+    /// # Arguments
+    /// * `token_id` - The token/asset ID to sell
+    /// * `price` - Price per token (0.0 to 1.0)
+    /// * `size` - Number of tokens to sell
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Sell 100 tokens at $0.55 each
+    /// client.limit_sell(token_id, 0.55, 100.0).await?;
+    /// ```
+    pub async fn limit_sell(&self, token_id: &str, price: f64, size: f64) -> Result<Value> {
+        let token_short = &token_id[..20.min(token_id.len())];
+        info!("════════════════════════════════════════════════════════════");
+        info!("🎯 [限价卖出] token={}..., price={:.4}, size={:.4}", token_short, price, size);
+        info!("════════════════════════════════════════════════════════════");
+
+        let clob = self
+            .clob
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
+
+        let args = LimitOrderArgs {
+            token_id: token_id.to_string(),
+            price,
+            size,
+            side: Side::Sell,
+            fee_rate_bps: None,
+            nonce: None,
+            expiration: None,
+        };
+
+        let response = clob.as_ref().create_and_post_limit_order(&args, OrderType::Gtc).await?;
+        info!("   ✅ 限价卖出订单已提交!");
+        info!("════════════════════════════════════════════════════════════");
+
+        Ok(serde_json::to_value(response)?)
+    }
+
+    // ========================================================================
+    // LEGACY ORDER PLACEMENT METHODS (kept for backward compatibility)
+    // ========================================================================
+
+    /// Place a market order by specifying tokens quantity (LEGACY)
+    ///
+    /// Note: Consider using `market_buy` or `market_sell` instead.
+    pub async fn place_market_order_by_tokens(
+        &self,
+        token_id: &str,
+        side: &str,
+        tokens: f64,
+    ) -> Result<Value> {
+        // Route to the appropriate high-level method
+        if side.to_lowercase() == "buy" {
+            // For BUY with tokens, we need to calculate USDC amount
+            // This is a rough estimate - actual will depend on order book
+            let clob = self
+                .clob
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
+            
+            // Get order book to estimate cost
+            let orderbook = clob.as_ref().get_order_book(token_id).await?;
+            let mut total_usdc = 0.0;
+            let mut remaining = tokens;
+            
+            // Estimate USDC needed (asks are sorted high to low, best ask at last)
+            for (price, size) in orderbook.asks.iter().rev() {
+                let fill = (*size).min(remaining);
+                total_usdc += fill * price;
+                remaining -= fill;
+                if remaining <= 0.0 {
+                    break;
+                }
+            }
+            
+            // Add 5% slippage buffer
+            let usdc_with_slippage = total_usdc * 1.05;
+            self.market_buy(token_id, usdc_with_slippage).await
+        } else {
+            self.market_sell(token_id, tokens).await
+        }
+    }
+
+    /// Place a market order (legacy method - uses USDC amount for BUY, tokens for SELL)
+    ///
+    /// Note: Consider using `market_buy` or `market_sell` instead.
     pub async fn place_market_order(
         &self,
         token_id: &str,
         side: &str,
         amount: f64,
     ) -> Result<Value> {
-        let token_short = &token_id[..20.min(token_id.len())];
-        info!("════════════════════════════════════════════════════════════");
-        info!("🎯 [Poly下单开始-旧模式] token={}..., side={}, amount={:.4}", token_short, side, amount);
-        info!("════════════════════════════════════════════════════════════");
-        
-        let clob = self
-            .clob
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
-
-        // Step 1: Pre-order validation - check orderbook
-        info!("📊 [Step 1] 获取订单簿状态...");
-        match clob.as_ref().get_order_book(token_id).await {
-            Ok(orderbook) => {
-                // API returns: bids[last] = best_bid (highest), asks[last] = best_ask (lowest)
-                let best_bid = orderbook.bids.last().map(|(p, s)| format!("{:.4}@{:.2}", s, p));
-                let best_ask = orderbook.asks.last().map(|(p, s)| format!("{:.4}@{:.2}", s, p));
-                let bid_depth: f64 = orderbook.bids.iter().map(|(p, s)| p * s).sum();
-                let ask_depth: f64 = orderbook.asks.iter().map(|(p, s)| p * s).sum();
-                info!("   ✅ 订单簿有效: best_bid={:?}, best_ask={:?}", best_bid, best_ask);
-                info!("   📈 深度: bid_depth=${:.2}, ask_depth=${:.2}, bid_levels={}, ask_levels={}", 
-                    bid_depth, ask_depth, orderbook.bids.len(), orderbook.asks.len());
-            }
-            Err(e) => {
-                tracing::error!("   ❌ 订单簿获取失败: {}", e);
-                // Write to debug log
-                Self::write_debug_log("place_market_order:orderbook_failed", serde_json::json!({
-                    "token_id": token_id,
-                    "side": side,
-                    "amount": amount,
-                    "error": e.to_string(),
-                }));
-            }
-        }
-        
-        // Step 2: Get tick size and neg_risk
-        info!("📏 [Step 2] 获取tick_size和neg_risk...");
-        let tick_size = match clob.as_ref().get_tick_size(token_id).await {
-            Ok(ts) => {
-                info!("   ✅ tick_size={}", ts);
-                ts
-            }
-            Err(e) => {
-                tracing::error!("   ❌ tick_size获取失败: {}", e);
-                0.01 // default
-            }
-        };
-        
-        let neg_risk = match clob.as_ref().get_neg_risk(token_id).await {
-            Ok(nr) => {
-                info!("   ✅ neg_risk={}", nr);
-                nr
-            }
-            Err(e) => {
-                tracing::error!("   ❌ neg_risk获取失败: {}", e);
-                false // default
-            }
-        };
-
-        let order_side = if side.to_lowercase() == "buy" {
-            Side::Buy
+        // Route to the appropriate high-level method
+        if side.to_lowercase() == "buy" {
+            self.market_buy(token_id, amount).await
         } else {
-            Side::Sell
-        };
-
-        // Step 3: Create order args
-        info!("📝 [Step 3] 构建订单参数...");
-        let order_args = MarketOrderArgs {
-            token_id: token_id.to_string(),
-            amount,
-            side: order_side,
-            fee_rate_bps: None,
-            nonce: None,
-            slippage: Some(0.02), // 2% slippage for better fill rate
-        };
-        info!("   token_id: {}", token_id);
-        info!("   amount: {:.4}", amount);
-        info!("   side: {:?}", order_side);
-        info!("   slippage: 2%");
-        
-        // Step 4: Create signed order
-        info!("🔐 [Step 4] 创建并签名订单...");
-        let signed_order = match clob.as_ref().create_market_order(&order_args).await {
-            Ok(order) => {
-                info!("   ✅ 订单创建成功:");
-                info!("      maker_amount: {}", order.maker_amount);
-                info!("      taker_amount: {}", order.taker_amount);
-                info!("      salt: {}", order.salt);
-                info!("      signature: {}...", &order.signature[..20.min(order.signature.len())]);
-                order
-            }
-            Err(e) => {
-                tracing::error!("   ❌ 订单创建失败: {}", e);
-                Self::write_debug_log("place_market_order:create_failed", serde_json::json!({
-                    "token_id": token_id,
-                    "side": side,
-                    "amount": amount,
-                    "tick_size": tick_size,
-                    "neg_risk": neg_risk,
-                    "error": e.to_string(),
-                }));
-                return Err(e);
-            }
-        };
-        
-        // Step 5: Post order
-        info!("📤 [Step 5] 提交订单到Polymarket...");
-        let response = match clob
-            .as_ref()
-            .post_order(&signed_order, crate::clob::OrderType::Fak)
-            .await
-        {
-            Ok(resp) => {
-                info!("   ✅ 订单提交成功!");
-                info!("════════════════════════════════════════════════════════════");
-                resp
-            }
-            Err(e) => {
-                tracing::error!("   ❌ 订单提交失败: {}", e);
-                info!("════════════════════════════════════════════════════════════");
-                
-                // Write comprehensive debug log for failed orders
-                Self::write_debug_log("place_market_order:post_failed", serde_json::json!({
-                    "token_id": token_id,
-                    "side": side,
-                    "amount": amount,
-                    "tick_size": tick_size,
-                    "neg_risk": neg_risk,
-                    "signed_order": {
-                        "maker_amount": signed_order.maker_amount,
-                        "taker_amount": signed_order.taker_amount,
-                        "salt": signed_order.salt,
-                        "maker": signed_order.maker,
-                        "signer": signed_order.signer,
-                        "signature_type": signed_order.signature_type,
-                    },
-                    "error": e.to_string(),
-                }));
-                return Err(e);
-            }
-        };
-
-        Ok(serde_json::to_value(response)?)
-    }
-    
-    /// Write debug log to file
-    fn write_debug_log(location: &str, data: serde_json::Value) {
-        utils::write_debug_log(
-            &format!("polymarket.rs:{}", location),
-            "Polymarket操作",
-            data
-        );
+            self.market_sell(token_id, amount).await
+        }
     }
 
     /// Get open orders

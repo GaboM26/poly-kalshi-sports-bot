@@ -45,6 +45,10 @@ interface AutoTradeRecord {
   polymarket_order_id?: string;
   kalshi_error?: string;
   polymarket_error?: string;
+  /** Kalshi API 延迟（毫秒） */
+  kalshi_latency_ms?: number;
+  /** Polymarket API 延迟（毫秒） */
+  poly_latency_ms?: number;
   status: string; // "executed" | "partial" | "skipped"
   skip_reason?: string;
   created_at: string;
@@ -225,8 +229,10 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
                         ) : (
                           <span>
                             K:{record.kalshi_contracts}合约 P:${record.polymarket_amount.toFixed(2)}
-                            {record.total_duration_ms > 0 && (
-                              <span className="text-[--text-muted] ml-1">⏱️{(record.total_duration_ms / 1000).toFixed(1)}s</span>
+                            {(record.kalshi_latency_ms || record.poly_latency_ms) && (
+                              <span className="text-[--text-muted] ml-1" title={`Kalshi: ${record.kalshi_latency_ms}ms, Poly: ${record.poly_latency_ms}ms`}>
+                                ⏱️K:{record.kalshi_latency_ms || '-'}ms P:{record.poly_latency_ms || '-'}ms
+                              </span>
                             )}
                           </span>
                         )}
@@ -529,8 +535,16 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
                     <span className="text-[--text-primary] tabular-nums">{(selectedAutoTrade.total_duration_ms / 1000).toFixed(1)}s</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-[--text-muted]">API执行时间</span>
-                    <span className="text-[--text-primary] tabular-nums">{selectedAutoTrade.total_duration_ms - selectedAutoTrade.duration_ms}ms</span>
+                    <span className="text-[--text-muted]">API延迟 (Kalshi)</span>
+                    <span className="text-[--text-primary] tabular-nums">
+                      {selectedAutoTrade.kalshi_latency_ms ? `${selectedAutoTrade.kalshi_latency_ms}ms` : '-'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[--text-muted]">API延迟 (Poly)</span>
+                    <span className="text-[--text-primary] tabular-nums">
+                      {selectedAutoTrade.poly_latency_ms ? `${selectedAutoTrade.poly_latency_ms}ms` : '-'}
+                    </span>
                   </div>
                 </>
               )}

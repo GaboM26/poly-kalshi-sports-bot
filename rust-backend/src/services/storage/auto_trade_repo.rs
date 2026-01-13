@@ -75,6 +75,10 @@ pub struct AutoTradeRecord {
     pub polymarket_order_id: Option<String>,
     pub kalshi_error: Option<String>,
     pub polymarket_error: Option<String>,
+    /// Kalshi API latency in milliseconds
+    pub kalshi_latency_ms: Option<i64>,
+    /// Polymarket API latency in milliseconds
+    pub poly_latency_ms: Option<i64>,
     /// Status: "executed", "skipped", "partial"
     pub status: String,
     /// Reason for skipping (if status is "skipped")
@@ -264,6 +268,8 @@ impl ArbitrageStorage {
         polymarket_order_id: Option<&str>,
         kalshi_error: Option<&str>,
         polymarket_error: Option<&str>,
+        kalshi_latency_ms: i64,
+        poly_latency_ms: i64,
     ) -> Result<i64> {
         let conn = self.conn().lock();
         
@@ -281,8 +287,8 @@ impl ArbitrageStorage {
                 polymarket_amount, polymarket_price, total_amount, profit_margin,
                 duration_ms, total_duration_ms, kalshi_success, polymarket_success,
                 kalshi_order_id, polymarket_order_id, kalshi_error, polymarket_error,
-                status, skip_reason, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+                kalshi_latency_ms, poly_latency_ms, status, skip_reason, created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
             params![
                 event_name,
                 team_name,
@@ -305,6 +311,8 @@ impl ArbitrageStorage {
                 polymarket_order_id,
                 kalshi_error,
                 polymarket_error,
+                kalshi_latency_ms,
+                poly_latency_ms,
                 status,
                 Option::<String>::None, // skip_reason is None for executed orders
                 Utc::now().to_rfc3339(),
@@ -312,10 +320,11 @@ impl ArbitrageStorage {
         )?;
         
         let id = conn.last_insert_rowid();
-        info!("📝 自动下单记录已保存: ID={}, 事件={}, 状态={}, K:{}/P:{}", 
+        info!("📝 自动下单记录已保存: ID={}, 事件={}, 状态={}, K:{}/P:{}, 延迟: K={}ms/P={}ms", 
             id, event_name, status,
             if kalshi_success { "成功" } else { "失败" },
-            if polymarket_success { "成功" } else { "失败" }
+            if polymarket_success { "成功" } else { "失败" },
+            kalshi_latency_ms, poly_latency_ms
         );
         Ok(id)
     }
@@ -394,7 +403,7 @@ impl ArbitrageStorage {
                     polymarket_amount, polymarket_price, total_amount, profit_margin,
                     duration_ms, total_duration_ms, kalshi_success, polymarket_success,
                     kalshi_order_id, polymarket_order_id, kalshi_error, polymarket_error,
-                    status, skip_reason, created_at
+                    kalshi_latency_ms, poly_latency_ms, status, skip_reason, created_at
              FROM auto_trade_history
              ORDER BY created_at DESC
              LIMIT ?1",
@@ -425,9 +434,11 @@ impl ArbitrageStorage {
                     polymarket_order_id: row.get(19)?,
                     kalshi_error: row.get(20)?,
                     polymarket_error: row.get(21)?,
-                    status: row.get::<_, Option<String>>(22)?.unwrap_or_else(|| "executed".to_string()),
-                    skip_reason: row.get(23)?,
-                    created_at: row.get(24)?,
+                    kalshi_latency_ms: row.get::<_, Option<i64>>(22).ok().flatten(),
+                    poly_latency_ms: row.get::<_, Option<i64>>(23).ok().flatten(),
+                    status: row.get::<_, Option<String>>(24)?.unwrap_or_else(|| "executed".to_string()),
+                    skip_reason: row.get(25)?,
+                    created_at: row.get(26)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

@@ -236,6 +236,15 @@ impl ArbitrageStorage {
             "ALTER TABLE auto_trade_history ADD COLUMN total_duration_ms INTEGER DEFAULT 0",
             [],
         );
+        // 新增：分别记录两个平台的API延迟
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN kalshi_latency_ms INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN poly_latency_ms INTEGER DEFAULT 0",
+            [],
+        );
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_auto_trade_created_at ON auto_trade_history(created_at)",

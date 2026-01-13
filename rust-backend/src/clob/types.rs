@@ -1,6 +1,11 @@
 //! CLOB types and data structures
+//!
+//! Types matching the official Polymarket py-clob-client SDK.
 
 use serde::{Deserialize, Serialize};
+
+/// Zero address constant
+pub const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
 /// API credentials for Polymarket CLOB
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,14 +74,14 @@ impl Default for SignatureType {
     }
 }
 
-/// Order arguments for creating an order
+/// Order arguments for creating a limit order (legacy, use LimitOrderArgs)
 #[derive(Debug, Clone)]
 pub struct OrderArgs {
     /// Token ID to trade
     pub token_id: String,
-    /// Price (0.0 to 1.0)
+    /// Price per token (0.0 to 1.0)
     pub price: f64,
-    /// Size in shares
+    /// Number of tokens/shares
     pub size: f64,
     /// Buy or Sell
     pub side: Side,
@@ -90,21 +95,50 @@ pub struct OrderArgs {
     pub order_type: Option<OrderType>,
 }
 
-/// Market order arguments
+/// Market order arguments (matches py-clob-client MarketOrderArgs)
+///
+/// For market orders:
+/// - BUY: `amount` = USDC amount to spend (e.g., 100 means spend $100)
+/// - SELL: `amount` = number of tokens/shares to sell
 #[derive(Debug, Clone)]
 pub struct MarketOrderArgs {
     /// Token ID to trade
     pub token_id: String,
-    /// Amount to spend (for buy) or receive (for sell) in USD
+    /// BUY: USDC amount to spend | SELL: tokens/shares to sell
     pub amount: f64,
+    /// Buy or Sell
+    pub side: Side,
+    /// Price (optional, auto-calculated from orderbook if not provided)
+    pub price: Option<f64>,
+    /// Fee rate BPS (default 0)
+    pub fee_rate_bps: Option<i64>,
+    /// Nonce (auto-generated if None)
+    pub nonce: Option<u64>,
+    /// Order type for market orders (default FOK)
+    pub order_type: Option<OrderType>,
+}
+
+/// Limit order arguments (matches py-clob-client OrderArgs)
+///
+/// For limit orders, you specify:
+/// - `price`: the price per token (0.0 to 1.0)
+/// - `size`: number of tokens/shares
+#[derive(Debug, Clone)]
+pub struct LimitOrderArgs {
+    /// Token ID to trade
+    pub token_id: String,
+    /// Price per token (0.0 to 1.0)
+    pub price: f64,
+    /// Number of tokens/shares
+    pub size: f64,
     /// Buy or Sell
     pub side: Side,
     /// Fee rate BPS (default 0)
     pub fee_rate_bps: Option<i64>,
     /// Nonce (auto-generated if None)
     pub nonce: Option<u64>,
-    /// Slippage tolerance (default 0.5%)
-    pub slippage: Option<f64>,
+    /// Expiration timestamp (0 for no expiration)
+    pub expiration: Option<u64>,
 }
 
 /// Signed order ready for submission

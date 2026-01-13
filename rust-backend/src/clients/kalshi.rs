@@ -303,18 +303,28 @@ impl KalshiClient {
         side: &str,
         outcome: &str,
         count: i32,
-        _price: i32, // 市价单不需要价格，保留参数以兼容现有调用
+        price: i32, // 当前市场价格（美分），会在此基础上+1美分以保证成交
     ) -> Result<Value> {
         let action = if side == "buy" { "buy" } else { "sell" };
         
-        // 使用市价单，按当前最优价格立即成交
-        let body = json!({
+        // 在当前价格基础上加1美分以保证成交，但不超过99美分
+        let adjusted_price = (price + 1).min(99);
+        
+        // 根据 outcome 决定使用 yes_price 还是 no_price
+        // Kalshi API 要求市价单必须提供价格参数
+        let mut body = json!({
             "ticker": ticker,
             "action": action,
             "side": outcome,
             "count": count,
             "type": "market",
         });
+        
+        if outcome == "yes" {
+            body["yes_price"] = json!(adjusted_price);
+        } else {
+            body["no_price"] = json!(adjusted_price);
+        }
 
         self.post("/portfolio/orders", &body).await
     }

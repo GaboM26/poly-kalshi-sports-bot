@@ -694,26 +694,48 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
         // Record execution start time for measuring order latency
         let exec_start = Instant::now();
         
-        // Execute Kalshi order
-        info!("🚀 [执行Kalshi订单]...");
-        let kalshi_result = service.kalshi_client.place_order(
-            &record.kalshi_market_id,
-            "buy",
-            &opportunity.kalshi_side,
-            kalshi_contracts,
-            kalshi_price_cents,
-        ).await;
+        // Execute both orders CONCURRENTLY using tokio::join!
+        // This minimizes time difference between the two orders
+        info!("🚀 [并发执行订单] Kalshi + Polymarket...");
+        info!("   Kalshi: {} 合约 @ {}¢", kalshi_contracts, kalshi_price_cents);
+        info!("   Poly: {} tokens, 预计USDC={:.4}", contracts_to_trade, poly_amount);
         
-        // Execute Polymarket order (using new tokens mode with 5% slippage)
-        info!("🚀 [执行Polymarket订单-Tokens模式]...");
-        info!("   tokens={}, 预计USDC={:.4} (含5%滑点后由系统计算)", contracts_to_trade, poly_amount);
-        let poly_result = service.polymarket_client.place_market_order_by_tokens(
-            &poly_token,
-            "buy",
-            contracts_to_trade as f64,  // Pass tokens quantity, not USDC amount
-        ).await;
+        // Wrap each future with individual timing
+        let kalshi_future = {
+            let kalshi_start = Instant::now();
+            let result = service.kalshi_client.place_order(
+                &record.kalshi_market_id,
+                "buy",
+                &opportunity.kalshi_side,
+                kalshi_contracts,
+                kalshi_price_cents,
+            );
+            async move {
+                let res = result.await;
+                let duration = kalshi_start.elapsed().as_millis() as i64;
+                (res, duration)
+            }
+        };
         
-        // Calculate execution time (API call latency)
+        let poly_future = {
+            let poly_start = Instant::now();
+            let result = service.polymarket_client.place_market_order_by_tokens(
+                &poly_token,
+                "buy",
+                contracts_to_trade as f64,
+            );
+            async move {
+                let res = result.await;
+                let duration = poly_start.elapsed().as_millis() as i64;
+                (res, duration)
+            }
+        };
+        
+        // Wait for both orders to complete concurrently
+        let ((kalshi_result, kalshi_latency_ms), (poly_result, poly_latency_ms)) = 
+            tokio::join!(kalshi_future, poly_future);
+        
+        // Calculate total execution time (max of both, since concurrent)
         let exec_duration_ms = exec_start.elapsed().as_millis() as i64;
         
         // Calculate total time from opportunity detection to order completion
@@ -766,6 +788,8 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
             poly_order_id.as_deref(),
             kalshi_error.as_deref(),
             poly_error.as_deref(),
+            kalshi_latency_ms,  // Kalshi API latency
+            poly_latency_ms,    // Polymarket API latency
         ) {
             error!("保存自动下单记录失败: {}", e);
         }
@@ -800,7 +824,9 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
             // Increment trade count on success
             if let Ok(new_count) = service.ws_manager.increment_trade_count() {
                 info!("✅ [自动下单] 成功! 已执行 {}/{} 次", new_count, auto_state.max_trade_count);
-                info!("   ⏱️ 从发现机会到下单完成: {}ms (API执行: {}ms)", total_duration_ms, exec_duration_ms);
+                info!("   ⏱️ 总耗时: {}ms (从发现机会到下单完成)", total_duration_ms);
+                info!("   ⏱️ API延迟: Kalshi={}ms, Poly={}ms (并发执行总耗时: {}ms)", 
+                    kalshi_latency_ms, poly_latency_ms, exec_duration_ms);
             }
             info!("   Kalshi: {:?}", kalshi_result.unwrap());
             info!("   Polymarket: {:?}", poly_result.unwrap());
@@ -808,13 +834,14 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
             // Still increment count even on partial failure to track attempts
             if let Ok(new_count) = service.ws_manager.increment_trade_count() {
                 info!("⚠️ [自动下单] 部分成功，已记录 {}/{} 次", new_count, auto_state.max_trade_count);
+                info!("   ⏱️ API延迟: Kalshi={}ms, Poly={}ms", kalshi_latency_ms, poly_latency_ms);
             }
             error!("❌ [自动下单] 部分失败:");
             if let Some(err) = &kalshi_error {
-                error!("   Kalshi 失败: {}", err);
+                error!("   Kalshi 失败 ({}ms): {}", kalshi_latency_ms, err);
             }
             if let Some(err) = &poly_error {
-                error!("   Polymarket 失败: {}", err);
+                error!("   Polymarket 失败 ({}ms): {}", poly_latency_ms, err);
             }
         }
         
