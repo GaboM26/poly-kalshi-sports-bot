@@ -321,3 +321,18 @@ pub async fn cancel_polymarket_order(
         }
     }
 }
+
+/// Get auto-trade queue status
+pub async fn get_auto_trade_queue(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let service = state.service.read().await;
+    let queue: Vec<String> = service.ws_manager.auto_trade_queue.read().iter().cloned().collect();
+    let is_executing = service.ws_manager.is_auto_trading.load(std::sync::atomic::Ordering::Relaxed);
+    
+    Json(serde_json::json!({
+        "queue": queue,
+        "queue_length": queue.len(),
+        "is_executing": is_executing
+    }))
+}

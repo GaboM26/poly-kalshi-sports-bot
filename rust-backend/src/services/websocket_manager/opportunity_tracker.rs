@@ -121,4 +121,15 @@ impl WebSocketManager {
             .find(|o| o.market_key() == key)
             .cloned()
     }
+
+    /// Get tracking record and duration by key
+    pub fn get_tracking_record(&self, key: &str) -> Option<(ArbitrageTrackingRecord, i64)> {
+        let now = Utc::now();
+        let tracking = self.active_tracking.read();
+        
+        tracking.get(key).map(|record| {
+            let duration_ms = now.signed_duration_since(record.start_time).num_milliseconds();
+            (record.clone(), duration_ms)
+        })
+    }
 }

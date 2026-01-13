@@ -13,8 +13,9 @@ mod opportunity_tracker;
 mod auto_trade;
 mod market_lifecycle;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
@@ -92,6 +93,10 @@ pub struct WebSocketManager {
     pub(crate) recorded_skip_reasons: Arc<RwLock<std::collections::HashSet<String>>>,
     /// Set of market keys excluded from auto-trade (user-defined)
     pub(crate) excluded_markets: Arc<RwLock<std::collections::HashSet<String>>>,
+    /// Auto-trade queue: market keys waiting to be executed
+    pub auto_trade_queue: Arc<RwLock<VecDeque<String>>>,
+    /// Flag indicating if an auto-trade is currently being executed
+    pub is_auto_trading: Arc<AtomicBool>,
 }
 
 impl WebSocketManager {
@@ -133,6 +138,8 @@ impl WebSocketManager {
             confirmed_ended_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
             recorded_skip_reasons: Arc::new(RwLock::new(std::collections::HashSet::new())),
             excluded_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            auto_trade_queue: Arc::new(RwLock::new(VecDeque::new())),
+            is_auto_trading: Arc::new(AtomicBool::new(false)),
         }
     }
 

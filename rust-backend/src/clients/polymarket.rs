@@ -592,8 +592,10 @@ impl PolymarketClient {
                 }
             }
             
-            // Add 5% slippage buffer
-            let usdc_with_slippage = total_usdc * 1.05;
+            // Add fixed 1 cent slippage per token (0.01 * tokens)
+            // This is more conservative than 5% and consistent with Kalshi strategy
+            let slippage_buffer = tokens * 0.01;
+            let usdc_with_slippage = total_usdc + slippage_buffer;
             self.market_buy(token_id, usdc_with_slippage).await
         } else {
             self.market_sell(token_id, tokens).await

@@ -193,19 +193,65 @@ pub async fn create_app(config: Config) -> Result<Router> {
         }
     });
 
-    // Spawn auto-trade checker (every 200ms for faster response)
-    let state_for_auto_trade = state.clone();
-    let metrics_for_auto_trade = metrics.clone();
+    // Spawn auto-trade queue checker (every 200ms for faster response)
+    let state_for_queue = state.clone();
+    let metrics_for_queue = metrics.clone();
     tokio::spawn(async move {
-        info!("🤖 自动下单检查任务启动，间隔 200ms");
+        info!("📋 自动下单队列检查任务启动，间隔 200ms");
         
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(200));
         
         loop {
             interval.tick().await;
             
-            // Check and execute auto-trade
-            check_and_execute_auto_trade(&state_for_auto_trade, &metrics_for_auto_trade).await;
+            // Check and add opportunities to queue
+            check_and_queue_auto_trade(&state_for_queue, &metrics_for_queue).await;
+        }
+    });
+
+    // Spawn auto-trade executor (processes queue with 1s interval)
+    let state_for_executor = state.clone();
+    let metrics_for_executor = metrics.clone();
+    tokio::spawn(async move {
+        info!("🚀 自动下单执行器启动，机会间隔 1 秒");
+        
+        loop {
+            let service = state_for_executor.service.read().await;
+            
+            // Check if already executing
+            if service.ws_manager.is_auto_trading.load(std::sync::atomic::Ordering::Relaxed) {
+                drop(service);
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                continue;
+            }
+            
+            // Get next opportunity from queue
+            let key = {
+                let mut queue = service.ws_manager.auto_trade_queue.write();
+                queue.pop_front()
+            };
+            
+            if let Some(key) = key {
+                // Mark as executing
+                service.ws_manager.is_auto_trading.store(true, std::sync::atomic::Ordering::Relaxed);
+                
+                info!("🎯 [自动下单执行器] 开始处理: {}", key);
+                
+                // Execute the opportunity
+                execute_single_auto_trade(&service, &state_for_executor, &metrics_for_executor, &key).await;
+                
+                // Mark as done
+                service.ws_manager.is_auto_trading.store(false, std::sync::atomic::Ordering::Relaxed);
+                
+                drop(service);
+                
+                info!("⏱️  [自动下单执行器] 等待 1 秒后处理下一个机会");
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            } else {
+                // Queue empty, wait a bit
+                drop(service);
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
         }
     });
 
@@ -272,6 +318,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
         .route("/api/auto-trade/excluded", get(routes::get_excluded_markets))
         .route("/api/auto-trade/exclude", post(routes::exclude_market))
         .route("/api/auto-trade/unexclude", post(routes::unexclude_market))
+        .route("/api/auto-trade/queue", get(routes::get_auto_trade_queue))
         // App settings (hot-updatable)
         .route("/api/settings", get(routes::get_app_settings))
         .route("/api/settings", put(routes::update_app_settings))
@@ -361,8 +408,8 @@ fn calculate_contracts_to_trade(
     Some(contracts.min(max_contracts))
 }
 
-/// Check and execute auto-trade for eligible opportunities
-async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<PerformanceMetrics>) {
+/// Check and add eligible opportunities to auto-trade queue
+async fn check_and_queue_auto_trade(state: &Arc<AppState>, _metrics: &Arc<PerformanceMetrics>) {
     let service = state.service.read().await;
     
     // Get auto-trade state
@@ -380,19 +427,57 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
     // Get active tracking records
     let tracking_records = service.ws_manager.get_active_tracking_for_auto_trade();
     
-    for (key, record, duration_ms) in tracking_records {
+    // Add eligible opportunities to queue
+    for (key, _record, duration_ms) in tracking_records {
         // Check eligibility
-        let (eligible, reason) = service.ws_manager.check_auto_trade_eligibility(&key, duration_ms);
+        let (eligible, _reason) = service.ws_manager.check_auto_trade_eligibility(&key, duration_ms);
         
         if !eligible {
             continue;
         }
         
-        // Get current opportunity data
-        let opportunity = match service.ws_manager.get_opportunity_by_key(&key) {
-            Some(opp) => opp,
-            None => continue,
-        };
+        // Add to queue if not already queued
+        let mut queue = service.ws_manager.auto_trade_queue.write();
+        if !queue.contains(&key) {
+            queue.push_back(key.clone());
+            info!("📋 [自动下单队列] 添加机会: {}", key);
+        }
+    }
+}
+
+/// Execute auto-trade for a single opportunity (extracted from original for loop)
+async fn execute_single_auto_trade(
+    service: &ArbitrageService,
+    state: &Arc<AppState>,
+    metrics: &Arc<PerformanceMetrics>,
+    key: &str,
+) {
+    // Revalidate opportunity (may have expired)
+    let (record, duration_ms) = match service.ws_manager.get_tracking_record(key) {
+        Some((r, d)) => (r, d),
+        None => {
+            info!("⚠️  [自动下单] 机会已不存在: {}", key);
+            return;
+        }
+    };
+    
+    // Recheck eligibility
+    let auto_state = service.ws_manager.get_auto_trade_state();
+    let (eligible, reason) = service.ws_manager.check_auto_trade_eligibility(key, duration_ms);
+    
+    if !eligible {
+        info!("⚠️  [自动下单] 机会不再符合条件: {} - {}", key, reason);
+        return;
+    }
+    
+    // Get current opportunity data
+    let opportunity = match service.ws_manager.get_opportunity_by_key(key) {
+        Some(opp) => opp,
+        None => {
+            info!("⚠️  [自动下单] 机会数据不存在: {}", key);
+            return;
+        }
+    };
         
         info!("🤖 [自动下单] 检测到符合条件的套利机会:");
         info!("   事件: {} - {}", record.event_name, record.team_name);
@@ -422,7 +507,7 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
                         opportunity.profit_margin, duration_ms, &skip_reason,
                     );
                 }
-                continue;
+                return;
             }
         };
         
@@ -468,7 +553,7 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
                         opportunity.profit_margin, duration_ms, &skip_reason,
                     );
                 }
-                continue;
+                return;
             }
         };
         
@@ -502,7 +587,7 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
                     opportunity.profit_margin, duration_ms, &skip_reason,
                 );
             }
-            continue;
+            return;
         }
         
         // === Balance check from local cache (no API call needed) ===
@@ -529,7 +614,7 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
                             opportunity.profit_margin, duration_ms, &skip_reason,
                         );
                     }
-                    continue;
+                    return;
                 }
                 if p_bal < poly_required {
                     let skip_reason = format!(
@@ -547,7 +632,7 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
                             opportunity.profit_margin, duration_ms, &skip_reason,
                         );
                     }
-                    continue;
+                    return;
                 }
                 info!("   ✅ 余额检查通过: Kalshi ${:.2}/{:.2}, Poly ${:.2}/{:.2}",
                     kalshi_required, k_bal, poly_required, p_bal);
@@ -578,7 +663,7 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
                     opportunity.profit_margin, duration_ms, &validation_reason,
                 );
             }
-            continue;
+            return;
         }
         
         info!("   ✅ [深度/价格检查] {}", validation_reason);
@@ -608,7 +693,7 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
                     opportunity.profit_margin, duration_ms, &skip_reason,
                 );
             }
-            continue;
+            return;
         }
         
         info!("   📊 订单计算 ({} {} 合约, 使用最新价格):", 
@@ -844,10 +929,6 @@ async fn check_and_execute_auto_trade(state: &Arc<AppState>, metrics: &Arc<Perfo
                 error!("   Polymarket 失败 ({}ms): {}", poly_latency_ms, err);
             }
         }
-        
-        // Only process one opportunity per cycle to avoid overwhelming the system
-        break;
-    }
 }
 
 /// Clean up ended markets by unsubscribing from WebSocket feeds
