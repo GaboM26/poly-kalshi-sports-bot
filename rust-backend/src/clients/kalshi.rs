@@ -296,28 +296,24 @@ impl KalshiClient {
         Ok((events, markets))
     }
 
-    /// Place an order with IOC (Immediate or Cancel) - fill immediately at best available prices
+    /// Place a market order - fill immediately at best available prices
     pub async fn place_order(
         &self,
         ticker: &str,
         side: &str,
         outcome: &str,
         count: i32,
-        price: i32, // in cents - max price willing to pay
+        _price: i32, // 市价单不需要价格，保留参数以兼容现有调用
     ) -> Result<Value> {
         let action = if side == "buy" { "buy" } else { "sell" };
-        let yes_price = if outcome == "yes" { price } else { 100 - price };
         
-        // 使用 IOC (Immediate or Cancel) 订单类型
-        // 立即以最优价格成交可成交的部分，未成交部分取消，不会产生挂单
+        // 使用市价单，按当前最优价格立即成交
         let body = json!({
             "ticker": ticker,
             "action": action,
             "side": outcome,
             "count": count,
-            "type": "limit",
-            "yes_price": yes_price,
-            "time_in_force": "ioc",
+            "type": "market",
         });
 
         self.post("/portfolio/orders", &body).await
