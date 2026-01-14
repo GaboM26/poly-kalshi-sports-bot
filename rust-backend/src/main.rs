@@ -8,7 +8,6 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 
 mod api;
 mod clients;
-mod clob;
 mod config;
 mod core;
 mod models;

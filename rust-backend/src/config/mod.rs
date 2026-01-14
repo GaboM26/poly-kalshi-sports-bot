@@ -22,49 +22,25 @@ fn default_kalshi_base_url() -> String {
 
 /// Polymarket API configuration
 ///
-/// For Magic Link users, only need to configure:
-/// - private_key: Controller private key (from https://reveal.magic.link/polymarket)
-/// - wallet_address: Smart Wallet address (from polymarket.com/settings)
-///
-/// API credentials are automatically derived.
+/// Order placement is handled by a separate Python service using the official SDK.
+/// Configure `order_service_url` to point to the Python order service.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PolymarketConfig {
-    /// Controller private key
-    #[serde(default)]
-    pub private_key: String,
-    /// Smart Wallet address
-    #[serde(default)]
-    pub wallet_address: String,
-
     /// Gamma API base URL
     #[serde(default = "default_poly_base_url")]
     pub base_url: String,
-    /// CLOB API URL
-    #[serde(default = "default_clob_url")]
-    pub clob_url: String,
-    /// Signature type (1 = Magic Link user)
-    #[serde(default = "default_signature_type")]
-    pub signature_type: u8,
 
-    /// API credentials (auto-derived, no manual configuration needed)
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default)]
-    pub api_secret: String,
-    #[serde(default)]
-    pub api_passphrase: String,
+    /// Python order service URL (handles all order placement)
+    #[serde(default = "default_order_service_url")]
+    pub order_service_url: String,
 }
 
 fn default_poly_base_url() -> String {
     "https://gamma-api.polymarket.com".to_string()
 }
 
-fn default_clob_url() -> String {
-    "https://clob.polymarket.com".to_string()
-}
-
-fn default_signature_type() -> u8 {
-    1
+fn default_order_service_url() -> String {
+    "http://127.0.0.1:8001".to_string()
 }
 
 /// Application settings

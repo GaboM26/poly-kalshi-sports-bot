@@ -16,29 +16,15 @@ YOUR_KALSHI_PRIVATE_KEY_HERE
 base_url = "https://api.elections.kalshi.com/trade-api/v2"
 
 [polymarket]
-# Polymarket 配置（Magic Link 用户只需配置这两项）
+# Polymarket 配置
 # 
-# 1. 私钥 - 从 https://reveal.magic.link/polymarket 获取
-private_key = "0xYOUR_PRIVATE_KEY_HERE"
-# 
-# 2. Smart Wallet 地址 - 从 polymarket.com/settings 查看（资金存放地址）
-wallet_address = "0xYOUR_WALLET_ADDRESS_HERE"
-#
-# API 凭据会自动派生，无需手动配置
-
-# Gamma API 基础 URL（市场数据）
+# Gamma API 基础 URL（用于获取市场数据）
 base_url = "https://gamma-api.polymarket.com"
 
-# CLOB API URL（订单操作）
-clob_url = "https://clob.polymarket.com"
-
-# 签名类型（1 = Magic Link 用户，0 = EOA，2 = Gnosis Safe）
-signature_type = 1
-
-# 以下字段为自动派生的 API 凭据，留空即可
-api_key = ""
-api_secret = ""
-api_passphrase = ""
+# Python 下单服务地址（订单通过此服务提交）
+# Polymarket 下单由单独的 Python 服务处理，使用官方 py-clob-client SDK
+# 私钥和钱包地址等凭据在 Python 服务中配置
+order_service_url = "http://127.0.0.1:8001"
 
 # [settings] 和 [auto_trade] 配置已迁移到数据库
 # 可在前端界面实时修改，无需重启服务

@@ -3,7 +3,7 @@
 //! Handles Polymarket API interactions including:
 //! - Market data retrieval from Gamma API
 //! - WebSocket price subscription
-//! - Order placement via CLOB client
+//! - Order placement via Python order service
 //! - Local orderbook maintenance for depth queries
 
 use std::collections::HashMap;
@@ -14,16 +14,15 @@ use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::RwLock;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
-use crate::clob::{ApiCreds, ClobClient, MarketOrderArgs, LimitOrderArgs, OrderType, Side, SignatureType};
 use crate::config::PolymarketConfig;
 use crate::core::normalize_team_name;
 use crate::models::{Platform, PolymarketEvent, PolymarketMarket, PriceUpdate};
-use crate::utils;
 
 /// Polymarket order book structure (price, size)
 #[derive(Debug, Clone, Default)]
@@ -78,7 +77,45 @@ impl PolyOrderBook {
 
 const POLY_WS_URL: &str = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
 
-/// Position data for aggregation
+// ==================== Python Order Service Types ====================
+
+/// Market order request to Python service
+#[derive(Debug, Serialize)]
+struct MarketOrderRequest {
+    token_id: String,
+    side: String,
+    amount: f64,
+    order_type: Option<String>,
+}
+
+/// Limit order request to Python service
+#[derive(Debug, Serialize)]
+struct LimitOrderRequest {
+    token_id: String,
+    side: String,
+    price: f64,
+    size: f64,
+    order_type: Option<String>,
+}
+
+/// Cancel order request to Python service
+#[derive(Debug, Serialize)]
+struct CancelOrderRequest {
+    order_id: String,
+}
+
+/// Order response from Python service
+#[derive(Debug, Deserialize)]
+struct OrderResponse {
+    success: bool,
+    order_id: Option<String>,
+    status: Option<String>,
+    error: Option<String>,
+    data: Option<Value>,
+}
+
+/// Position data for aggregation (internal use)
+#[allow(dead_code)]
 struct PositionData {
     asset_id: String,
     market: String,
@@ -100,8 +137,6 @@ pub enum PolyWsCommand {
 pub struct PolymarketClient {
     pub config: PolymarketConfig,
     http: Client,
-    /// CLOB client for order operations
-    clob: Option<Arc<ClobClient>>,
     /// Order book cache: token_id -> PolyOrderBook
     orderbook_cache: Arc<RwLock<HashMap<String, PolyOrderBook>>>,
     /// Channel sender for dynamic subscriptions/unsubscriptions
@@ -114,7 +149,6 @@ impl PolymarketClient {
         Self {
             config,
             http: Client::new(),
-            clob: None,
             orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
             command_tx: Arc::new(RwLock::new(None)),
         }
@@ -125,68 +159,48 @@ impl PolymarketClient {
         self.orderbook_cache.read().get(token_id).cloned()
     }
 
-    /// Initialize CLOB client with API credentials
+    /// Initialize client (check if Python order service is available)
     pub async fn init_clob(&mut self) -> Result<()> {
-        if self.config.private_key.is_empty() {
-            return Ok(()); // No private key, skip CLOB initialization
-        }
-
-        let funder = if self.config.wallet_address.is_empty() {
-            None
-        } else {
-            Some(self.config.wallet_address.as_str())
-        };
-
-        let sig_type = match self.config.signature_type {
-            1 => SignatureType::PolyProxy,
-            2 => SignatureType::PolyGnosisSafe,
-            _ => SignatureType::Eoa,
-        };
-
-        // Create L1 client first
-        let mut clob = ClobClient::with_l1_auth(
-            &self.config.clob_url,
-            137, // Polygon mainnet
-            &self.config.private_key,
-            Some(sig_type),
-            funder,
-        )?;
-
-        // Try to derive or create API credentials
-        if self.config.api_key.is_empty() {
-            info!("正在派生 Polymarket API 凭证...");
-            match clob.create_or_derive_api_creds(Some(0)).await {
-                Ok(creds) => {
-                    info!("成功派生 API 凭证");
-                    clob.set_api_creds(creds);
-                }
-                Err(e) => {
-                    warn!("派生 API 凭证失败: {}. 订单下单功能已禁用.", e);
-                }
+        // Check if Python order service is running
+        let health_url = format!("{}/health", self.config.order_service_url);
+        match self.http.get(&health_url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                info!("✅ Polymarket Python 下单服务已连接: {}", self.config.order_service_url);
             }
-        } else {
-            // Use configured credentials
-            clob.set_api_creds(ApiCreds {
-                api_key: self.config.api_key.clone(),
-                api_secret: self.config.api_secret.clone(),
-                api_passphrase: self.config.api_passphrase.clone(),
-            });
+            Ok(resp) => {
+                warn!("⚠️ Polymarket Python 下单服务返回非成功状态: {}", resp.status());
+            }
+            Err(e) => {
+                warn!("⚠️ Polymarket Python 下单服务未运行: {}. 下单功能将不可用.", e);
+            }
         }
-
-        self.clob = Some(Arc::new(clob));
         Ok(())
     }
 
-    /// Get account balance
+    /// Get account balance via Python service
     pub async fn get_balance(&self) -> Result<f64> {
-        let clob = self
-            .clob
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
+        let url = format!("{}/balance", self.config.order_service_url);
+        let resp = self.http.get(&url)
+            .send()
+            .await
+            .context("调用 Python 下单服务失败")?;
 
-        let balance = clob.as_ref().get_balance_allowance().await?;
-        let balance_val: f64 = balance.balance.parse().unwrap_or(0.0);
-        Ok(balance_val / 1_000_000.0) // USDC has 6 decimals
+        if !resp.status().is_success() {
+            anyhow::bail!("获取余额失败: HTTP {}", resp.status());
+        }
+
+        let data: Value = resp.json().await?;
+        if data.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let balance = data.get("balance")
+                .and_then(|b| b.get("balance"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            Ok(balance / 1_000_000.0) // USDC has 6 decimals
+        } else {
+            let error = data.get("error").and_then(|v| v.as_str()).unwrap_or("Unknown error");
+            anyhow::bail!("获取余额失败: {}", error)
+        }
     }
 
     /// Get NBA events and markets from Gamma API
@@ -394,7 +408,7 @@ impl PolymarketClient {
     }
 
     // ========================================================================
-    // HIGH-LEVEL ORDER PLACEMENT API (Recommended)
+    // ORDER PLACEMENT API (via Python service)
     // ========================================================================
 
     /// Market buy - buy tokens worth a specific USDC amount
@@ -402,38 +416,38 @@ impl PolymarketClient {
     /// # Arguments
     /// * `token_id` - The token/asset ID to buy
     /// * `usdc_amount` - Amount of USDC to spend
-    ///
-    /// # Example
-    /// ```ignore
-    /// // Spend $100 USDC to buy as many tokens as possible
-    /// client.market_buy(token_id, 100.0).await?;
-    /// ```
     pub async fn market_buy(&self, token_id: &str, usdc_amount: f64) -> Result<Value> {
         let token_short = &token_id[..20.min(token_id.len())];
         info!("════════════════════════════════════════════════════════════");
         info!("🎯 [市价买入] token={}..., usdc_amount={:.4}", token_short, usdc_amount);
         info!("════════════════════════════════════════════════════════════");
 
-        let clob = self
-            .clob
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
-
-        let args = MarketOrderArgs {
+        let url = format!("{}/order/market", self.config.order_service_url);
+        let request = MarketOrderRequest {
             token_id: token_id.to_string(),
+            side: "buy".to_string(),
             amount: usdc_amount,
-            side: Side::Buy,
-            price: None,
-            fee_rate_bps: None,
-            nonce: None,
-            order_type: Some(OrderType::Fak),  // FAK: 尽可能成交，剩余取消
+            order_type: Some("FAK".to_string()),
         };
 
-        let response = clob.as_ref().create_and_post_market_order(&args).await?;
-        info!("   ✅ 市价买入成功!");
-        info!("════════════════════════════════════════════════════════════");
+        let resp = self.http.post(&url)
+            .json(&request)
+            .send()
+            .await
+            .context("调用 Python 下单服务失败")?;
 
-        Ok(serde_json::to_value(response)?)
+        let response: OrderResponse = resp.json().await?;
+
+        if response.success {
+            info!("   ✅ 市价买入成功! order_id={:?}", response.order_id);
+            info!("════════════════════════════════════════════════════════════");
+            Ok(response.data.unwrap_or(json!({"success": true, "order_id": response.order_id})))
+        } else {
+            let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
+            error!("   ❌ 市价买入失败: {}", error);
+            info!("════════════════════════════════════════════════════════════");
+            anyhow::bail!("市价买入失败: {}", error)
+        }
     }
 
     /// Market sell - sell a specific number of tokens
@@ -441,38 +455,38 @@ impl PolymarketClient {
     /// # Arguments
     /// * `token_id` - The token/asset ID to sell
     /// * `tokens` - Number of tokens to sell
-    ///
-    /// # Example
-    /// ```ignore
-    /// // Sell 50 tokens at market price
-    /// client.market_sell(token_id, 50.0).await?;
-    /// ```
     pub async fn market_sell(&self, token_id: &str, tokens: f64) -> Result<Value> {
         let token_short = &token_id[..20.min(token_id.len())];
         info!("════════════════════════════════════════════════════════════");
         info!("🎯 [市价卖出] token={}..., tokens={:.4}", token_short, tokens);
         info!("════════════════════════════════════════════════════════════");
 
-        let clob = self
-            .clob
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
-
-        let args = MarketOrderArgs {
+        let url = format!("{}/order/market", self.config.order_service_url);
+        let request = MarketOrderRequest {
             token_id: token_id.to_string(),
-            amount: tokens,  // For SELL, amount = tokens
-            side: Side::Sell,
-            price: None,
-            fee_rate_bps: None,
-            nonce: None,
-            order_type: Some(OrderType::Fak),  // FAK: 尽可能成交，剩余取消
+            side: "sell".to_string(),
+            amount: tokens,
+            order_type: Some("FAK".to_string()),
         };
 
-        let response = clob.as_ref().create_and_post_market_order(&args).await?;
-        info!("   ✅ 市价卖出成功!");
-        info!("════════════════════════════════════════════════════════════");
+        let resp = self.http.post(&url)
+            .json(&request)
+            .send()
+            .await
+            .context("调用 Python 下单服务失败")?;
 
-        Ok(serde_json::to_value(response)?)
+        let response: OrderResponse = resp.json().await?;
+
+        if response.success {
+            info!("   ✅ 市价卖出成功! order_id={:?}", response.order_id);
+            info!("════════════════════════════════════════════════════════════");
+            Ok(response.data.unwrap_or(json!({"success": true, "order_id": response.order_id})))
+        } else {
+            let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
+            error!("   ❌ 市价卖出失败: {}", error);
+            info!("════════════════════════════════════════════════════════════");
+            anyhow::bail!("市价卖出失败: {}", error)
+        }
     }
 
     /// Limit buy - place a limit buy order at a specific price
@@ -481,38 +495,39 @@ impl PolymarketClient {
     /// * `token_id` - The token/asset ID to buy
     /// * `price` - Price per token (0.0 to 1.0)
     /// * `size` - Number of tokens to buy
-    ///
-    /// # Example
-    /// ```ignore
-    /// // Buy 100 tokens at $0.45 each
-    /// client.limit_buy(token_id, 0.45, 100.0).await?;
-    /// ```
     pub async fn limit_buy(&self, token_id: &str, price: f64, size: f64) -> Result<Value> {
         let token_short = &token_id[..20.min(token_id.len())];
         info!("════════════════════════════════════════════════════════════");
         info!("🎯 [限价买入] token={}..., price={:.4}, size={:.4}", token_short, price, size);
         info!("════════════════════════════════════════════════════════════");
 
-        let clob = self
-            .clob
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
-
-        let args = LimitOrderArgs {
+        let url = format!("{}/order/limit", self.config.order_service_url);
+        let request = LimitOrderRequest {
             token_id: token_id.to_string(),
+            side: "buy".to_string(),
             price,
             size,
-            side: Side::Buy,
-            fee_rate_bps: None,
-            nonce: None,
-            expiration: None,
+            order_type: Some("GTC".to_string()),
         };
 
-        let response = clob.as_ref().create_and_post_limit_order(&args, OrderType::Gtc).await?;
-        info!("   ✅ 限价买入订单已提交!");
-        info!("════════════════════════════════════════════════════════════");
+        let resp = self.http.post(&url)
+            .json(&request)
+            .send()
+            .await
+            .context("调用 Python 下单服务失败")?;
 
-        Ok(serde_json::to_value(response)?)
+        let response: OrderResponse = resp.json().await?;
+
+        if response.success {
+            info!("   ✅ 限价买入订单已提交! order_id={:?}", response.order_id);
+            info!("════════════════════════════════════════════════════════════");
+            Ok(response.data.unwrap_or(json!({"success": true, "order_id": response.order_id})))
+        } else {
+            let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
+            error!("   ❌ 限价买入失败: {}", error);
+            info!("════════════════════════════════════════════════════════════");
+            anyhow::bail!("限价买入失败: {}", error)
+        }
     }
 
     /// Limit sell - place a limit sell order at a specific price
@@ -521,38 +536,39 @@ impl PolymarketClient {
     /// * `token_id` - The token/asset ID to sell
     /// * `price` - Price per token (0.0 to 1.0)
     /// * `size` - Number of tokens to sell
-    ///
-    /// # Example
-    /// ```ignore
-    /// // Sell 100 tokens at $0.55 each
-    /// client.limit_sell(token_id, 0.55, 100.0).await?;
-    /// ```
     pub async fn limit_sell(&self, token_id: &str, price: f64, size: f64) -> Result<Value> {
         let token_short = &token_id[..20.min(token_id.len())];
         info!("════════════════════════════════════════════════════════════");
         info!("🎯 [限价卖出] token={}..., price={:.4}, size={:.4}", token_short, price, size);
         info!("════════════════════════════════════════════════════════════");
 
-        let clob = self
-            .clob
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
-
-        let args = LimitOrderArgs {
+        let url = format!("{}/order/limit", self.config.order_service_url);
+        let request = LimitOrderRequest {
             token_id: token_id.to_string(),
+            side: "sell".to_string(),
             price,
             size,
-            side: Side::Sell,
-            fee_rate_bps: None,
-            nonce: None,
-            expiration: None,
+            order_type: Some("GTC".to_string()),
         };
 
-        let response = clob.as_ref().create_and_post_limit_order(&args, OrderType::Gtc).await?;
-        info!("   ✅ 限价卖出订单已提交!");
-        info!("════════════════════════════════════════════════════════════");
+        let resp = self.http.post(&url)
+            .json(&request)
+            .send()
+            .await
+            .context("调用 Python 下单服务失败")?;
 
-        Ok(serde_json::to_value(response)?)
+        let response: OrderResponse = resp.json().await?;
+
+        if response.success {
+            info!("   ✅ 限价卖出订单已提交! order_id={:?}", response.order_id);
+            info!("════════════════════════════════════════════════════════════");
+            Ok(response.data.unwrap_or(json!({"success": true, "order_id": response.order_id})))
+        } else {
+            let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
+            error!("   ❌ 限价卖出失败: {}", error);
+            info!("════════════════════════════════════════════════════════════");
+            anyhow::bail!("限价卖出失败: {}", error)
+        }
     }
 
     // ========================================================================
@@ -570,30 +586,29 @@ impl PolymarketClient {
     ) -> Result<Value> {
         // Route to the appropriate high-level method
         if side.to_lowercase() == "buy" {
-            // For BUY with tokens, we need to calculate USDC amount
-            // This is a rough estimate - actual will depend on order book
-            let clob = self
-                .clob
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
-            
-            // Get order book to estimate cost
-            let orderbook = clob.as_ref().get_order_book(token_id).await?;
+            // For BUY with tokens, estimate USDC amount using local orderbook cache
+            let orderbook = self.get_orderbook(token_id);
             let mut total_usdc = 0.0;
             let mut remaining = tokens;
             
-            // Estimate USDC needed (asks are sorted high to low, best ask at last)
-            for (price, size) in orderbook.asks.iter().rev() {
-                let fill = (*size).min(remaining);
-                total_usdc += fill * price;
-                remaining -= fill;
-                if remaining <= 0.0 {
-                    break;
+            if let Some(book) = orderbook {
+                // Estimate USDC needed (asks are sorted high to low, best ask at last)
+                for (price, size) in book.asks.iter().rev() {
+                    let fill = (*size).min(remaining);
+                    total_usdc += fill * price;
+                    remaining -= fill;
+                    if remaining <= 0.0 {
+                        break;
+                    }
                 }
             }
             
+            // If no orderbook, estimate with 0.5 price
+            if total_usdc == 0.0 {
+                total_usdc = tokens * 0.5;
+            }
+            
             // Add fixed 1 cent slippage per token (0.01 * tokens)
-            // This is more conservative than 5% and consistent with Kalshi strategy
             let slippage_buffer = tokens * 0.01;
             let usdc_with_slippage = total_usdc + slippage_buffer;
             self.market_buy(token_id, usdc_with_slippage).await
@@ -619,108 +634,55 @@ impl PolymarketClient {
         }
     }
 
-    /// Get open orders
+    /// Get open orders via Python service
     pub async fn get_open_orders(&self) -> Result<Value> {
-        let clob = self
-            .clob
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
+        let url = format!("{}/orders", self.config.order_service_url);
+        let resp = self.http.get(&url)
+            .send()
+            .await
+            .context("调用 Python 下单服务失败")?;
 
-        let orders = clob.as_ref().get_orders().await?;
-        Ok(serde_json::to_value(orders)?)
+        if !resp.status().is_success() {
+            anyhow::bail!("获取订单失败: HTTP {}", resp.status());
+        }
+
+        let data: Value = resp.json().await?;
+        if data.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+            Ok(data.get("orders").cloned().unwrap_or(json!([])))
+        } else {
+            let error = data.get("error").and_then(|v| v.as_str()).unwrap_or("Unknown error");
+            anyhow::bail!("获取订单失败: {}", error)
+        }
     }
 
-    /// Get positions
+    /// Get positions (placeholder - returns empty for now)
     pub async fn get_positions(&self) -> Result<Value> {
-        // If CLOB client is not initialized, return empty positions (graceful degradation)
-        let clob = match self.clob.as_ref() {
-            Some(c) => c,
-            None => {
-                info!("⚠️ [Polymarket] CLOB 客户端未初始化，返回空持仓");
-                return Ok(json!([]));
-            }
-        };
-
-        // Get all trades to calculate positions
-        let trades = match clob.as_ref().get_trades().await {
-            Ok(t) => t,
-            Err(e) => {
-                info!("⚠️ [Polymarket] 无法获取交易历史: {}", e);
-                return Ok(json!([]));
-            }
-        };
-
-        if trades.is_empty() {
-            info!("✅ [Polymarket] 无交易历史，持仓为空");
-            return Ok(json!([]));
-        }
-
-        // Aggregate positions from trades
-        use std::collections::HashMap;
-        let mut positions: HashMap<String, PositionData> = HashMap::new();
-
-        for trade in &trades {
-            let asset_id = &trade.asset_id;
-            let side_str = &trade.side;
-            let size: f64 = trade.size.parse().unwrap_or(0.0);
-            let price: f64 = trade.price.parse().unwrap_or(0.0);
-
-            let pos = positions.entry(asset_id.clone()).or_insert(PositionData {
-                asset_id: asset_id.clone(),
-                market: trade.market.clone(),
-                outcome: trade.outcome.as_ref().map(|s| s.clone()).unwrap_or_default(),
-                size: 0.0,
-                total_cost: 0.0,
-                trade_count: 0,
-            });
-
-            // BUY increases position, SELL decreases
-            if side_str.to_uppercase() == "BUY" {
-                pos.size += size;
-                pos.total_cost += size * price;
-            } else {
-                pos.size -= size;
-                pos.total_cost -= size * price;
-            }
-            pos.trade_count += 1;
-        }
-
-        // Filter and format positions
-        const MIN_POSITION_SIZE: f64 = 0.5;
-        let mut result = Vec::new();
-
-        for pos in positions.values() {
-            if pos.size.abs() >= MIN_POSITION_SIZE {
-                let avg_price = if pos.size != 0.0 {
-                    (pos.total_cost / pos.size).max(0.0).min(1.0)
-                } else {
-                    0.0
-                };
-
-                result.push(json!({
-                    "asset": pos.asset_id,
-                    "conditionId": pos.market,
-                    "outcome": pos.outcome,
-                    "size": pos.size.to_string(),
-                    "avgPrice": avg_price.to_string(),
-                    "tradeCount": pos.trade_count,
-                }));
-            }
-        }
-
-        info!("✅ [Polymarket] 从 {} 笔交易聚合出 {} 个持仓", trades.len(), result.len());
-        Ok(json!(result))
+        // TODO: Implement via Python service if needed
+        info!("⚠️ [Polymarket] get_positions 暂未实现，返回空持仓");
+        Ok(json!([]))
     }
 
-    /// Cancel an order
+    /// Cancel an order via Python service
     pub async fn cancel_order(&self, order_id: &str) -> Result<Value> {
-        let clob = self
-            .clob
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("CLOB client not initialized"))?;
+        let url = format!("{}/order/cancel", self.config.order_service_url);
+        let request = CancelOrderRequest {
+            order_id: order_id.to_string(),
+        };
 
-        let response = clob.as_ref().cancel(order_id).await?;
-        Ok(serde_json::to_value(response).unwrap_or(serde_json::json!({"success": true})))
+        let resp = self.http.post(&url)
+            .json(&request)
+            .send()
+            .await
+            .context("调用 Python 下单服务失败")?;
+
+        let response: OrderResponse = resp.json().await?;
+
+        if response.success {
+            Ok(json!({"success": true, "order_id": order_id}))
+        } else {
+            let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
+            anyhow::bail!("取消订单失败: {}", error)
+        }
     }
 
     /// Subscribe to additional tokens dynamically (hot subscription)
