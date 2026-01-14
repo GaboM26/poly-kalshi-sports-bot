@@ -85,6 +85,7 @@ struct MarketOrderRequest {
     token_id: String,
     side: String,
     amount: f64,
+    price: Option<f64>,  // Rust计算的价格（包含滑点），避免Python重复获取订单簿
     order_type: Option<String>,
 }
 
@@ -112,6 +113,7 @@ struct OrderResponse {
     status: Option<String>,
     error: Option<String>,
     data: Option<Value>,
+    latency_ms: Option<i64>,  // Python服务内部的API调用延迟
 }
 
 /// Position data for aggregation (internal use)
@@ -420,6 +422,22 @@ impl PolymarketClient {
         let token_short = &token_id[..20.min(token_id.len())];
         info!("════════════════════════════════════════════════════════════");
         info!("🎯 [市价买入] token={}..., usdc_amount={:.4}", token_short, usdc_amount);
+        
+        // 从本地订单簿缓存获取价格并计算滑点
+        let price = if let Some(book) = self.get_orderbook(token_id) {
+            if let Some((best_ask, _)) = book.best_ask() {
+                let price_with_slippage = (best_ask + 0.01).min(0.99);
+                info!("   📊 使用本地订单簿: best_ask={:.4}, 下单价={:.4} (+0.01滑点)", best_ask, price_with_slippage);
+                Some(price_with_slippage)
+            } else {
+                warn!("   ⚠️ 本地订单簿无卖单，Python将从API获取");
+                None
+            }
+        } else {
+            warn!("   ⚠️ 本地订单簿不存在，Python将从API获取");
+            None
+        };
+        
         info!("════════════════════════════════════════════════════════════");
 
         let url = format!("{}/order/market", self.config.order_service_url);
@@ -427,6 +445,7 @@ impl PolymarketClient {
             token_id: token_id.to_string(),
             side: "buy".to_string(),
             amount: usdc_amount,
+            price,  // 传递Rust计算的价格
             order_type: Some("FAK".to_string()),
         };
 
@@ -459,6 +478,22 @@ impl PolymarketClient {
         let token_short = &token_id[..20.min(token_id.len())];
         info!("════════════════════════════════════════════════════════════");
         info!("🎯 [市价卖出] token={}..., tokens={:.4}", token_short, tokens);
+        
+        // 从本地订单簿缓存获取价格并计算滑点
+        let price = if let Some(book) = self.get_orderbook(token_id) {
+            if let Some((best_bid, _)) = book.best_bid() {
+                let price_with_slippage = (best_bid - 0.01).max(0.01);
+                info!("   📊 使用本地订单簿: best_bid={:.4}, 下单价={:.4} (-0.01滑点)", best_bid, price_with_slippage);
+                Some(price_with_slippage)
+            } else {
+                warn!("   ⚠️ 本地订单簿无买单，Python将从API获取");
+                None
+            }
+        } else {
+            warn!("   ⚠️ 本地订单簿不存在，Python将从API获取");
+            None
+        };
+        
         info!("════════════════════════════════════════════════════════════");
 
         let url = format!("{}/order/market", self.config.order_service_url);
@@ -466,6 +501,7 @@ impl PolymarketClient {
             token_id: token_id.to_string(),
             side: "sell".to_string(),
             amount: tokens,
+            price,  // 传递Rust计算的价格
             order_type: Some("FAK".to_string()),
         };
 

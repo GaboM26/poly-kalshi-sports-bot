@@ -6,6 +6,7 @@ Polymarket Order Service - FastAPI服务
 
 import os
 import logging
+import time
 from typing import Optional
 from contextlib import asynccontextmanager
 
@@ -35,6 +36,7 @@ class MarketOrderRequest(BaseModel):
     token_id: str
     side: str  # "buy" or "sell"
     amount: float  # BUY: USDC金额, SELL: token数量
+    price: Optional[float] = None  # 可选：由Rust传递的价格（避免重复获取订单簿）
     order_type: Optional[str] = "FAK"  # GTC, FOK, FAK
 
 
@@ -59,6 +61,7 @@ class OrderResponse(BaseModel):
     status: Optional[str] = None
     error: Optional[str] = None
     data: Optional[dict] = None
+    latency_ms: Optional[int] = None  # API调用延迟（毫秒）
 
 
 # ==================== 配置加载 ====================
@@ -180,28 +183,30 @@ async def place_market_order(request: MarketOrderRequest):
         }
         order_type = order_type_map.get(request.order_type.upper(), OrderType.FAK)
         
-        # 获取市场信息
-        tick_size = clob_client.get_tick_size(request.token_id)
-        neg_risk = clob_client.get_neg_risk(request.token_id)
-        orderbook = clob_client.get_order_book(request.token_id)
-        
-        logger.info(f"市场信息: tick_size={tick_size}, neg_risk={neg_risk}")
-        
-        # 计算价格
-        if side == BUY:
-            if not orderbook.asks:
-                return OrderResponse(success=False, error="订单簿没有卖单")
-            # 取best_ask价格，加5%滑点
-            best_ask_price = float(orderbook.asks[-1].price)
-            price = min(best_ask_price * 1.05, 0.99)
+        # 计算价格：优先使用Rust传递的价格，否则从订单簿获取
+        if request.price is not None:
+            # Rust已经计算好价格（包含滑点），直接使用
+            price = min(max(request.price, 0.01), 0.99)  # 确保在有效范围内
+            logger.info(f"使用Rust传递的价格: {price}")
         else:
-            if not orderbook.bids:
-                return OrderResponse(success=False, error="订单簿没有买单")
-            # 取best_bid价格，减5%滑点
-            best_bid_price = float(orderbook.bids[-1].price)
-            price = max(best_bid_price * 0.95, 0.01)
-        
-        logger.info(f"计算价格: {price}")
+            # 兼容模式：从订单簿获取价格（旧逻辑）
+            logger.info("未提供价格，从订单簿获取...")
+            orderbook = clob_client.get_order_book(request.token_id)
+            
+            if side == BUY:
+                if not orderbook.asks:
+                    return OrderResponse(success=False, error="订单簿没有卖单")
+                # 取best_ask价格，加0.01固定滑点（与Kalshi的+1¢策略一致）
+                best_ask_price = float(orderbook.asks[-1].price)
+                price = min(best_ask_price + 0.01, 0.99)
+            else:
+                if not orderbook.bids:
+                    return OrderResponse(success=False, error="订单簿没有买单")
+                # 取best_bid价格，减0.01固定滑点
+                best_bid_price = float(orderbook.bids[-1].price)
+                price = max(best_bid_price - 0.01, 0.01)
+            
+            logger.info(f"计算价格: {price}")
         
         # 创建市价单参数
         market_order_args = MarketOrderArgs(
@@ -214,11 +219,13 @@ async def place_market_order(request: MarketOrderRequest):
             order_type=order_type,
         )
         
-        # 创建并提交订单
+        # 创建并提交订单（测量延迟）
+        api_start = time.time()
         signed_order = clob_client.create_market_order(market_order_args)
         response = clob_client.post_order(signed_order, order_type)
+        latency_ms = int((time.time() - api_start) * 1000)
         
-        logger.info(f"订单响应: {response}")
+        logger.info(f"订单响应: {response} (延迟: {latency_ms}ms)")
         
         # 解析响应
         order_id = response.get('orderID') or response.get('order_id')
@@ -228,7 +235,8 @@ async def place_market_order(request: MarketOrderRequest):
             success=True,
             order_id=order_id,
             status=status,
-            data=response
+            data=response,
+            latency_ms=latency_ms
         )
         
     except Exception as e:
@@ -266,11 +274,13 @@ async def place_limit_order(request: LimitOrderRequest):
             expiration=0,
         )
         
-        # 创建并提交订单
+        # 创建并提交订单（测量延迟）
+        api_start = time.time()
         signed_order = clob_client.create_order(order_args)
         response = clob_client.post_order(signed_order, order_type)
+        latency_ms = int((time.time() - api_start) * 1000)
         
-        logger.info(f"订单响应: {response}")
+        logger.info(f"订单响应: {response} (延迟: {latency_ms}ms)")
         
         order_id = response.get('orderID') or response.get('order_id')
         status = response.get('status', 'unknown')
@@ -279,7 +289,8 @@ async def place_limit_order(request: LimitOrderRequest):
             success=True,
             order_id=order_id,
             status=status,
-            data=response
+            data=response,
+            latency_ms=latency_ms
         )
         
     except Exception as e:
@@ -296,13 +307,19 @@ async def cancel_order(request: CancelOrderRequest):
     try:
         logger.info(f"取消订单: {request.order_id}")
         
+        # 测量延迟
+        api_start = time.time()
         response = clob_client.cancel(request.order_id)
+        latency_ms = int((time.time() - api_start) * 1000)
+        
+        logger.info(f"取消订单响应: {response} (延迟: {latency_ms}ms)")
         
         return OrderResponse(
             success=True,
             order_id=request.order_id,
             status="cancelled",
-            data=response if isinstance(response, dict) else {"result": response}
+            data=response if isinstance(response, dict) else {"result": response},
+            latency_ms=latency_ms
         )
         
     except Exception as e:

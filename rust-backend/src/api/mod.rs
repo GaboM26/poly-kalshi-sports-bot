@@ -679,6 +679,26 @@ async fn execute_single_auto_trade(
         let poly_amount = contracts_to_trade as f64 * current_p_price;
         let total_bet = kalshi_bet + kalshi_fee + poly_amount;
         
+        // Check if either side price exceeds 0.90 (90 cents) - avoid late-stage markets
+        if current_k_price > 0.90 || current_p_price > 0.90 {
+            let skip_reason = format!(
+                "价格过高风险 - Kalshi: {:.4}, Polymarket: {:.4} (任一方超过0.90)",
+                current_k_price, current_p_price
+            );
+            info!("   ⚠️ {}", skip_reason);
+            if service.ws_manager.should_record_skip(&key, &skip_reason) {
+                let storage = service.ws_manager.get_storage();
+                let _ = storage.save_skipped_auto_trade_record(
+                    &record.event_name, &record.team_name,
+                    &record.kalshi_market_id, &record.polymarket_market_id,
+                    &opportunity.kalshi_side, &opportunity.polymarket_side,
+                    contracts_to_trade, current_k_price, current_p_price,
+                    opportunity.profit_margin, duration_ms, &skip_reason,
+                );
+            }
+            return;
+        }
+        
         // Re-verify total doesn't exceed max_amount with updated prices
         if total_bet > auto_state.max_amount {
             let skip_reason = format!("更新价格后总投入 ${:.2} 超过限额 ${:.2}", total_bet, auto_state.max_amount);
