@@ -36,6 +36,7 @@ class MarketOrderRequest(BaseModel):
     token_id: str
     side: str  # "buy" or "sell"
     amount: float  # BUY: USDC金额, SELL: token数量
+    price: Optional[float] = None  # 可选：由Rust传递的价格（避免重复获取订单簿）
     order_type: Optional[str] = "FAK"  # GTC, FOK, FAK
 
 
@@ -182,28 +183,30 @@ async def place_market_order(request: MarketOrderRequest):
         }
         order_type = order_type_map.get(request.order_type.upper(), OrderType.FAK)
         
-        # 获取市场信息
-        tick_size = clob_client.get_tick_size(request.token_id)
-        neg_risk = clob_client.get_neg_risk(request.token_id)
-        orderbook = clob_client.get_order_book(request.token_id)
-        
-        logger.info(f"市场信息: tick_size={tick_size}, neg_risk={neg_risk}")
-        
-        # 计算价格
-        if side == BUY:
-            if not orderbook.asks:
-                return OrderResponse(success=False, error="订单簿没有卖单")
-            # 取best_ask价格，加0.01固定滑点（与Kalshi的+1¢策略一致）
-            best_ask_price = float(orderbook.asks[-1].price)
-            price = min(best_ask_price + 0.01, 0.99)
+        # 计算价格：优先使用Rust传递的价格，否则从订单簿获取
+        if request.price is not None:
+            # Rust已经计算好价格（包含滑点），直接使用
+            price = min(max(request.price, 0.01), 0.99)  # 确保在有效范围内
+            logger.info(f"使用Rust传递的价格: {price}")
         else:
-            if not orderbook.bids:
-                return OrderResponse(success=False, error="订单簿没有买单")
-            # 取best_bid价格，减0.01固定滑点
-            best_bid_price = float(orderbook.bids[-1].price)
-            price = max(best_bid_price - 0.01, 0.01)
-        
-        logger.info(f"计算价格: {price}")
+            # 兼容模式：从订单簿获取价格（旧逻辑）
+            logger.info("未提供价格，从订单簿获取...")
+            orderbook = clob_client.get_order_book(request.token_id)
+            
+            if side == BUY:
+                if not orderbook.asks:
+                    return OrderResponse(success=False, error="订单簿没有卖单")
+                # 取best_ask价格，加0.01固定滑点（与Kalshi的+1¢策略一致）
+                best_ask_price = float(orderbook.asks[-1].price)
+                price = min(best_ask_price + 0.01, 0.99)
+            else:
+                if not orderbook.bids:
+                    return OrderResponse(success=False, error="订单簿没有买单")
+                # 取best_bid价格，减0.01固定滑点
+                best_bid_price = float(orderbook.bids[-1].price)
+                price = max(best_bid_price - 0.01, 0.01)
+            
+            logger.info(f"计算价格: {price}")
         
         # 创建市价单参数
         market_order_args = MarketOrderArgs(

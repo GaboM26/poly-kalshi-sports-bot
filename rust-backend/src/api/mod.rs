@@ -799,14 +799,46 @@ async fn execute_single_auto_trade(
         // Record execution start time for measuring order latency
         let exec_start = Instant::now();
         
-        // Execute both orders CONCURRENTLY using tokio::join!
-        // This minimizes time difference between the two orders
-        info!("🚀 [并发执行订单] Kalshi + Polymarket...");
-        info!("   Kalshi: {} 合约 @ {}¢", kalshi_contracts, kalshi_price_cents);
+        // Execute orders SEQUENTIALLY: Polymarket first, then Kalshi
+        // This ensures Poly order is confirmed before placing Kalshi order
+        info!("🚀 [串行执行订单] 先 Polymarket，成功后再 Kalshi...");
         info!("   Poly: {} tokens, 预计USDC={:.4}", contracts_to_trade, poly_amount);
+        info!("   Kalshi: {} 合约 @ {}¢", kalshi_contracts, kalshi_price_cents);
         
-        // Wrap each future with individual timing
-        let kalshi_future = {
+        // Step 1: Place Polymarket order first
+        let poly_start = Instant::now();
+        let poly_result = service.polymarket_client.place_market_order_by_tokens(
+            &poly_token,
+            "buy",
+            contracts_to_trade as f64,
+        ).await;
+        let poly_latency_ms = poly_start.elapsed().as_millis() as i64;
+        
+        // Check if Poly order succeeded
+        let poly_success = poly_result.is_ok();
+        let (poly_order_id, poly_error) = match &poly_result {
+            Ok(res) => {
+                let order_id = res.get("order_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let status = res.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+                
+                // Check if order actually matched
+                if status.to_uppercase() == "MATCHED" {
+                    info!("✅ Poly订单成功成交: order_id={:?}, status={}", order_id, status);
+                    (order_id, None)
+                } else {
+                    warn!("⚠️ Poly订单未成交: status={}, 取消Kalshi下单", status);
+                    (order_id, Some(format!("订单状态为 {}, 未立即成交", status)))
+                }
+            },
+            Err(e) => {
+                warn!("❌ Poly订单失败: {}, 取消Kalshi下单", e);
+                (None, Some(e.to_string()))
+            }
+        };
+        
+        // Step 2: Only place Kalshi order if Poly succeeded AND matched
+        let (kalshi_result, kalshi_latency_ms) = if poly_success && poly_error.is_none() {
+            info!("🎯 Poly订单已成交，继续下Kalshi订单...");
             let kalshi_start = Instant::now();
             let result = service.kalshi_client.place_order(
                 &record.kalshi_market_id,
@@ -814,33 +846,15 @@ async fn execute_single_auto_trade(
                 &opportunity.kalshi_side,
                 kalshi_contracts,
                 kalshi_price_cents,
-            );
-            async move {
-                let res = result.await;
-                let duration = kalshi_start.elapsed().as_millis() as i64;
-                (res, duration)
-            }
+            ).await;
+            let duration = kalshi_start.elapsed().as_millis() as i64;
+            (result, duration)
+        } else {
+            warn!("🚫 Poly订单未成功，跳过Kalshi下单");
+            (Err(anyhow::anyhow!("Poly订单未成功，已取消")), 0)
         };
         
-        let poly_future = {
-            let poly_start = Instant::now();
-            let result = service.polymarket_client.place_market_order_by_tokens(
-                &poly_token,
-                "buy",
-                contracts_to_trade as f64,
-            );
-            async move {
-                let res = result.await;
-                let duration = poly_start.elapsed().as_millis() as i64;
-                (res, duration)
-            }
-        };
-        
-        // Wait for both orders to complete concurrently
-        let ((kalshi_result, kalshi_latency_ms), (poly_result, poly_latency_ms)) = 
-            tokio::join!(kalshi_future, poly_future);
-        
-        // Calculate total execution time (max of both, since concurrent)
+        // Calculate total execution time
         let exec_duration_ms = exec_start.elapsed().as_millis() as i64;
         
         // Calculate total time from opportunity detection to order completion
@@ -848,18 +862,16 @@ async fn execute_single_auto_trade(
         
         // Extract results for logging and recording
         let kalshi_success = kalshi_result.is_ok();
-        let poly_success = poly_result.is_ok();
+        // poly_success already determined above based on MATCHED status
+        let poly_success = poly_result.is_ok() && poly_error.is_none();
         
-        // Extract order IDs and errors
+        // Extract Kalshi order ID and error
         let (kalshi_order_id, kalshi_error) = match &kalshi_result {
             Ok(res) => (res.get("order_id").and_then(|v| v.as_str()).map(|s| s.to_string()), None),
             Err(e) => (None, Some(e.to_string())),
         };
         
-        let (poly_order_id, poly_error) = match &poly_result {
-            Ok(res) => (res.get("order_id").and_then(|v| v.as_str()).map(|s| s.to_string()), None),
-            Err(e) => (None, Some(e.to_string())),
-        };
+        // poly_order_id and poly_error already extracted above
         
         // Save trade record to database (using current validated prices)
         // Calculate actual profit margin based on current prices

@@ -7,6 +7,7 @@ Polymarket Order Service - FastAPI服务
 import os
 import logging
 import time
+import asyncio
 from typing import Optional
 from contextlib import asynccontextmanager
 
@@ -86,6 +87,35 @@ def init_clob_client():
     """初始化CLOB客户端"""
     global clob_client
     
+    # === 修复 HTTP 客户端配置，防止长期运行超时 ===
+    import httpx
+    from py_clob_client.http_helpers import helpers
+    
+    # 配置更健壮的 HTTP 客户端
+    timeout = httpx.Timeout(
+        connect=10.0,   # 连接超时 10 秒
+        read=30.0,      # 读取超时 30 秒
+        write=10.0,     # 写入超时 10 秒
+        pool=5.0        # 连接池获取超时 5 秒
+    )
+    
+    limits = httpx.Limits(
+        max_keepalive_connections=5,  # 最多保持 5 个 keep-alive 连接
+        max_connections=10,            # 最大连接数 10
+        keepalive_expiry=30.0          # keep-alive 连接 30 秒后过期
+    )
+    
+    # 替换全局 HTTP 客户端
+    helpers._http_client = httpx.Client(
+        http2=True,
+        timeout=timeout,
+        limits=limits,
+        transport=httpx.HTTPTransport(retries=2)  # 自动重试 2 次
+    )
+    
+    logger.info("✅ HTTP 客户端配置完成: timeout=30s, keepalive_expiry=30s, retries=2")
+    # === 修复部分结束 ===
+    
     config = load_config()
     poly_config = config.get('polymarket', {})
     
@@ -122,6 +152,44 @@ def init_clob_client():
     return clob_client
 
 
+# ==================== 后台任务 ====================
+
+async def periodic_http_client_refresh():
+    """每 30 分钟重建一次 HTTP 客户端，防止连接僵死"""
+    while True:
+        await asyncio.sleep(1800)  # 30 分钟
+        try:
+            from py_clob_client.http_helpers import helpers
+            import httpx
+            
+            # 关闭旧客户端
+            old_client = helpers._http_client
+            if old_client:
+                old_client.close()
+            
+            # 创建新客户端
+            timeout = httpx.Timeout(
+                connect=10.0,
+                read=30.0,
+                write=10.0,
+                pool=5.0
+            )
+            limits = httpx.Limits(
+                max_keepalive_connections=5,
+                max_connections=10,
+                keepalive_expiry=30.0
+            )
+            helpers._http_client = httpx.Client(
+                http2=True,
+                timeout=timeout,
+                limits=limits,
+                transport=httpx.HTTPTransport(retries=2)
+            )
+            logger.info("🔄 HTTP 客户端已定期重建（防止连接僵死）")
+        except Exception as e:
+            logger.error(f"重建 HTTP 客户端失败: {e}")
+
+
 # ==================== FastAPI应用 ====================
 
 @asynccontextmanager
@@ -136,9 +204,14 @@ async def lifespan(app: FastAPI):
         logger.error(f"CLOB客户端初始化失败: {e}")
         raise
     
+    # 启动定期刷新任务
+    refresh_task = asyncio.create_task(periodic_http_client_refresh())
+    logger.info("✅ 已启动 HTTP 客户端定期刷新任务（每 30 分钟）")
+    
     yield
     
     # 关闭时清理
+    refresh_task.cancel()
     logger.info("关闭Polymarket下单服务...")
 
 
@@ -219,10 +292,59 @@ async def place_market_order(request: MarketOrderRequest):
             order_type=order_type,
         )
         
-        # 创建并提交订单（测量延迟）
+        # 创建并提交订单（测量延迟）- 添加重试逻辑
         api_start = time.time()
         signed_order = clob_client.create_market_order(market_order_args)
-        response = clob_client.post_order(signed_order, order_type)
+        
+        # 添加重试机制，处理超时问题
+        max_retries = 3
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = clob_client.post_order(signed_order, order_type)
+                break
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                
+                # 如果是超时错误，尝试重建 HTTP 客户端
+                if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                    logger.warning(f"⚠️  检测到超时错误 (尝试 {attempt + 1}/{max_retries}): {error_msg}")
+                    
+                    if attempt < max_retries - 1:
+                        # 重建 HTTP 客户端
+                        from py_clob_client.http_helpers import helpers
+                        import httpx
+                        
+                        old_client = helpers._http_client
+                        if old_client:
+                            old_client.close()
+                        
+                        timeout = httpx.Timeout(
+                            connect=10.0,
+                            read=30.0,
+                            write=10.0,
+                            pool=5.0
+                        )
+                        limits = httpx.Limits(
+                            max_keepalive_connections=5,
+                            max_connections=10,
+                            keepalive_expiry=30.0
+                        )
+                        helpers._http_client = httpx.Client(
+                            http2=True,
+                            timeout=timeout,
+                            limits=limits,
+                            transport=httpx.HTTPTransport(retries=2)
+                        )
+                        logger.info("🔄 已重建 HTTP 客户端，重试中...")
+                        time.sleep(1)  # 等待 1 秒后重试
+                    else:
+                        raise last_error
+                else:
+                    # 非超时错误，直接抛出
+                    raise
+        
         latency_ms = int((time.time() - api_start) * 1000)
         
         logger.info(f"订单响应: {response} (延迟: {latency_ms}ms)")
@@ -231,8 +353,17 @@ async def place_market_order(request: MarketOrderRequest):
         order_id = response.get('orderID') or response.get('order_id')
         status = response.get('status', 'unknown')
         
+        # 检查订单状态：只有 MATCHED 才算成功
+        # delayed 状态表示订单未立即成交，视为失败
+        is_success = status.upper() == 'MATCHED'
+        
+        if not is_success:
+            logger.warning(f"⚠️ 订单状态为 {status}，未立即成交，视为失败")
+            if status == 'delayed':
+                logger.warning(f"   订单 {order_id} 可能因价格不够激进而未成交")
+        
         return OrderResponse(
-            success=True,
+            success=is_success,
             order_id=order_id,
             status=status,
             data=response,
@@ -274,10 +405,59 @@ async def place_limit_order(request: LimitOrderRequest):
             expiration=0,
         )
         
-        # 创建并提交订单（测量延迟）
+        # 创建并提交订单（测量延迟）- 添加重试逻辑
         api_start = time.time()
         signed_order = clob_client.create_order(order_args)
-        response = clob_client.post_order(signed_order, order_type)
+        
+        # 添加重试机制，处理超时问题
+        max_retries = 3
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = clob_client.post_order(signed_order, order_type)
+                break
+            except Exception as e:
+                last_error = e
+                error_msg = str(e)
+                
+                # 如果是超时错误，尝试重建 HTTP 客户端
+                if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                    logger.warning(f"⚠️  检测到超时错误 (尝试 {attempt + 1}/{max_retries}): {error_msg}")
+                    
+                    if attempt < max_retries - 1:
+                        # 重建 HTTP 客户端
+                        from py_clob_client.http_helpers import helpers
+                        import httpx
+                        
+                        old_client = helpers._http_client
+                        if old_client:
+                            old_client.close()
+                        
+                        timeout = httpx.Timeout(
+                            connect=10.0,
+                            read=30.0,
+                            write=10.0,
+                            pool=5.0
+                        )
+                        limits = httpx.Limits(
+                            max_keepalive_connections=5,
+                            max_connections=10,
+                            keepalive_expiry=30.0
+                        )
+                        helpers._http_client = httpx.Client(
+                            http2=True,
+                            timeout=timeout,
+                            limits=limits,
+                            transport=httpx.HTTPTransport(retries=2)
+                        )
+                        logger.info("🔄 已重建 HTTP 客户端，重试中...")
+                        time.sleep(1)  # 等待 1 秒后重试
+                    else:
+                        raise last_error
+                else:
+                    # 非超时错误，直接抛出
+                    raise
+        
         latency_ms = int((time.time() - api_start) * 1000)
         
         logger.info(f"订单响应: {response} (延迟: {latency_ms}ms)")
@@ -285,8 +465,17 @@ async def place_limit_order(request: LimitOrderRequest):
         order_id = response.get('orderID') or response.get('order_id')
         status = response.get('status', 'unknown')
         
+        # 检查订单状态：只有 MATCHED 才算成功
+        # delayed 状态表示订单未立即成交，视为失败
+        is_success = status.upper() == 'MATCHED'
+        
+        if not is_success:
+            logger.warning(f"⚠️ 订单状态为 {status}，未立即成交，视为失败")
+            if status == 'delayed':
+                logger.warning(f"   订单 {order_id} 可能因价格不够激进而未成交")
+        
         return OrderResponse(
-            success=True,
+            success=is_success,
             order_id=order_id,
             status=status,
             data=response,

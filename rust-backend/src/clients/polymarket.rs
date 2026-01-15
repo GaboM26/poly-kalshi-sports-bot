@@ -426,8 +426,8 @@ impl PolymarketClient {
         // 从本地订单簿缓存获取价格并计算滑点
         let price = if let Some(book) = self.get_orderbook(token_id) {
             if let Some((best_ask, _)) = book.best_ask() {
-                let price_with_slippage = (best_ask + 0.01).min(0.99);
-                info!("   📊 使用本地订单簿: best_ask={:.4}, 下单价={:.4} (+0.01滑点)", best_ask, price_with_slippage);
+                let price_with_slippage = (best_ask + 0.02).min(0.99);
+                info!("   📊 使用本地订单簿: best_ask={:.4}, 下单价={:.4} (+0.02滑点)", best_ask, price_with_slippage);
                 Some(price_with_slippage)
             } else {
                 warn!("   ⚠️ 本地订单簿无卖单，Python将从API获取");
@@ -482,8 +482,8 @@ impl PolymarketClient {
         // 从本地订单簿缓存获取价格并计算滑点
         let price = if let Some(book) = self.get_orderbook(token_id) {
             if let Some((best_bid, _)) = book.best_bid() {
-                let price_with_slippage = (best_bid - 0.01).max(0.01);
-                info!("   📊 使用本地订单簿: best_bid={:.4}, 下单价={:.4} (-0.01滑点)", best_bid, price_with_slippage);
+                let price_with_slippage = (best_bid - 0.02).max(0.01);
+                info!("   📊 使用本地订单簿: best_bid={:.4}, 下单价={:.4} (-0.02滑点)", best_bid, price_with_slippage);
                 Some(price_with_slippage)
             } else {
                 warn!("   ⚠️ 本地订单簿无买单，Python将从API获取");
@@ -644,10 +644,11 @@ impl PolymarketClient {
                 total_usdc = tokens * 0.5;
             }
             
-            // Add fixed 1 cent slippage per token (0.01 * tokens)
-            let slippage_buffer = tokens * 0.01;
-            let usdc_with_slippage = total_usdc + slippage_buffer;
-            self.market_buy(token_id, usdc_with_slippage).await
+            // 不要将滑点加到下单金额上！
+            // 滑点应该只影响最高接受价格，由 market_buy 中的 price_with_slippage 处理
+            // 下单金额保持为实际需要的 USDC 数量
+            info!("   💰 预计花费: {:.4} USDC 买入 {:.2} tokens", total_usdc, tokens);
+            self.market_buy(token_id, total_usdc).await
         } else {
             self.market_sell(token_id, tokens).await
         }
