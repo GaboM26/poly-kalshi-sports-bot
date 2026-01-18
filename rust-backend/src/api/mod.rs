@@ -699,6 +699,26 @@ async fn execute_single_auto_trade(
             return;
         }
         
+        // Check if either side price is below 0.10 (10 cents) - avoid low-probability markets
+        if current_k_price < 0.10 || current_p_price < 0.10 {
+            let skip_reason = format!(
+                "价格过低风险 - Kalshi: {:.4}, Polymarket: {:.4} (任一方低于0.10)",
+                current_k_price, current_p_price
+            );
+            info!("   ⚠️ {}", skip_reason);
+            if service.ws_manager.should_record_skip(&key, &skip_reason) {
+                let storage = service.ws_manager.get_storage();
+                let _ = storage.save_skipped_auto_trade_record(
+                    &record.event_name, &record.team_name,
+                    &record.kalshi_market_id, &record.polymarket_market_id,
+                    &opportunity.kalshi_side, &opportunity.polymarket_side,
+                    contracts_to_trade, current_k_price, current_p_price,
+                    opportunity.profit_margin, duration_ms, &skip_reason,
+                );
+            }
+            return;
+        }
+        
         // Re-verify total doesn't exceed max_amount with updated prices
         if total_bet > auto_state.max_amount {
             let skip_reason = format!("更新价格后总投入 ${:.2} 超过限额 ${:.2}", total_bet, auto_state.max_amount);
@@ -795,6 +815,10 @@ async fn execute_single_auto_trade(
         
         // Mark as auto-traded BEFORE executing (to prevent duplicate orders)
         service.ws_manager.mark_as_auto_traded(&key);
+        
+        // End tracking for this opportunity (mark as completed in arbitrage_tracking table)
+        // This ensures the tracking record has end_time set and can be queried later
+        service.storage.track_end(&key);
         
         // Record execution start time for measuring order latency
         let exec_start = Instant::now();

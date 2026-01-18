@@ -23,7 +23,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-
+deploy/*
 # Rust
 rust-backend/target/
 **/*.rs.bk
@@ -34,6 +34,7 @@ node_modules/
 web/dist/
 *.tar.gz
 prod-log/*
+scripts/*
 
 # IDE
 .vscode/
