@@ -23,7 +23,13 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-deploy/*
+deploy/polytaoli
+deploy/*.tar.gz
+
+# Debug scripts
+debug*.py
+debug.log
+
 # Rust
 rust-backend/target/
 **/*.rs.bk
@@ -64,6 +70,7 @@ arbitrage_tracking_history.json
 
 # Config files (may contain sensitive info)
 config.toml
+poly-order-service/config.toml
 
 # OS files
 .DS_Store
