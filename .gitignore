@@ -47,6 +47,9 @@ py-clob-client/
 
 # Logs
 *.log
+logs/
+rust-backend/logs/
+prod-log/
 
 # Environment
 .env

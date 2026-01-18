@@ -14,7 +14,6 @@ arbitrage_history.db
 
 # 配置文件（包含敏感信息，使用符号链接）
 config.toml
-
 # IDE
 .vscode/
 .idea/
@@ -24,6 +23,7 @@ config.toml
 
 # 日志文件
 *.log
+logs/
 
 # 环境变量
 .env
