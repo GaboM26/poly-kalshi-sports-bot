@@ -70,7 +70,10 @@ arbitrage_tracking_history.json
 
 # Config files (may contain sensitive info)
 config.toml
+*.toml.backup
 poly-order-service/config.toml
+rust-backend/config.toml*
+python-backend/config.toml
 
 # OS files
 .DS_Store
