@@ -29,7 +29,7 @@ pub async fn ws_handler(
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let (mut sender, mut receiver) = socket.split();
 
-    info!("新的 WebSocket 客户端已连接");
+    info!("New WebSocket client connected");
 
     // Create channel for outgoing messages
     let (tx, mut rx) = mpsc::channel::<String>(100);
@@ -174,7 +174,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                     break;
                 }
                 Err(e) => {
-                    error!("WebSocket 错误: {}", e);
+                    error!("WebSocket error: {}", e);
                     break;
                 }
                 _ => {}
@@ -192,5 +192,5 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     metrics_task.abort();
     send_task.abort();
 
-    info!("WebSocket 客户端已断开连接");
+    info!("WebSocket client disconnected");
 }

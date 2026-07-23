@@ -133,13 +133,13 @@ pub struct AutoTradeConfig {
     /// Whether auto-trade is enabled by default
     #[serde(default = "default_auto_trade_enabled")]
     pub enabled: bool,
-    /// Maximum amount per trade in USD (自动下单单次最大金额)
+    /// Maximum amount per automated trade in USD
     #[serde(default = "default_auto_trade_max_amount")]
     pub max_amount: f64,
-    /// Maximum trade count (自动下单最大执行次数)
+    /// Maximum automated trade count
     #[serde(default = "default_auto_trade_max_count")]
     pub max_trade_count: i32,
-    /// Minimum duration for opportunity in milliseconds (套利机会持续时间阈值)
+    /// Minimum opportunity duration in milliseconds
     #[serde(default = "default_auto_trade_min_duration")]
     pub min_duration_ms: i64,
 }

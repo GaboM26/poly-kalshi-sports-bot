@@ -44,7 +44,7 @@ export interface WsMessage {
   timestamp?: string;
 }
 
-// 性能监控相关类型
+// Performance monitoring types
 export interface OperationStats {
   name: string;
   count: number;
@@ -63,7 +63,7 @@ export interface MetricsReport {
   api_latency: ApiLatency;
 }
 
-// 匹配市场数据（包含实时价格）
+// Matched market data, including real-time prices
 export interface MatchedMarketData {
   event_name: string;
   team_name: string;
@@ -81,13 +81,13 @@ export interface MatchedMarketData {
   both_ready: boolean;
   confidence: number;
   end_time?: string;
-  // 套利相关
+  // Arbitrage fields
   has_opportunity: boolean;
   profit_margin: number;
-  expected_profit: number;  // 净利润（扣除费用后）
-  gross_profit?: number;    // 毛利润（扣除费用前）
-  kalshi_contracts?: number;  // Kalshi 合约数量
-  kalshi_fee?: number;      // Kalshi 交易费用
+  expected_profit: number;  // Net profit after fees
+  gross_profit?: number;    // Gross profit before fees
+  kalshi_contracts?: number;  // Number of Kalshi contracts
+  kalshi_fee?: number;      // Kalshi trading fee
   arbitrage_type?: string;
 }
 
@@ -97,7 +97,7 @@ export interface LogEntry {
   message: string;
 }
 
-// 套利追踪记录
+// Arbitrage tracking record
 export interface ProfitHistoryEntry {
   time: string;
   profit_margin: number;
@@ -113,13 +113,13 @@ export interface TrackingRecord {
   start_time: string;
   end_time: string | null;
   duration_seconds: number | null;
-  duration_ms: number | null;  // 毫秒级持续时间
+  duration_ms: number | null;  // Duration in milliseconds
   max_profit_margin: number;
   max_profit_time: string | null;
   profit_history: ProfitHistoryEntry[];
-  // 深度信息
-  poly_ask_depth: number;  // Polymarket ask 深度 (USD)
-  kalshi_ask_depth: number;  // Kalshi ask 深度 (contracts)
+  // Depth information
+  poly_ask_depth: number;  // Polymarket ask depth (USD)
+  kalshi_ask_depth: number;  // Kalshi ask depth (contracts)
 }
 
 export interface ActiveTracking {
@@ -137,7 +137,7 @@ export interface TrackingStats {
   recent_completed: TrackingRecord[];
 }
 
-// 数据覆盖率
+// Data coverage
 export interface DataCoverage {
   total_markets: number;
   kalshi_ready: number;
@@ -152,7 +152,7 @@ export interface DataCoverage {
   polymarket_latency_ms?: number;
 }
 
-// 账户余额
+// Account balances
 export interface PlatformBalance {
   available: boolean;
   balance?: number;
@@ -169,9 +169,9 @@ export interface AccountBalance {
   polymarket: PlatformBalance;
 }
 
-// ==================== 交易相关类型 ====================
+// ==================== Trading Types ====================
 
-// Kalshi 订单
+// Kalshi order
 export interface KalshiOrder {
   order_id: string;
   user_id?: string;
@@ -194,7 +194,7 @@ export interface KalshiOrder {
   last_update_time?: string;
 }
 
-// Kalshi 持仓
+// Kalshi position
 export interface KalshiPosition {
   ticker: string;
   event_ticker?: string;
@@ -206,7 +206,7 @@ export interface KalshiPosition {
   realized_pnl?: number;
 }
 
-// Kalshi 下单请求
+// Kalshi order request
 export interface KalshiOrderRequest {
   ticker: string;
   side: 'yes' | 'no';
@@ -214,17 +214,17 @@ export interface KalshiOrderRequest {
   count: number;
 }
 
-// 兼容旧代码
+// Backward compatibility
 export type OrderRequest = KalshiOrderRequest;
 
-// Polymarket 下单请求
+// Polymarket order request
 export interface PolymarketOrderRequest {
   token_id: string;
   side: 'buy' | 'sell';
-  amount: number;  // USDC 金额
+  amount: number;  // USDC amount
 }
 
-// 下单响应
+// Order response
 export interface OrderResponse {
   success: boolean;
   order?: KalshiOrder;
@@ -232,7 +232,7 @@ export interface OrderResponse {
   error?: string;
 }
 
-// Polymarket 下单响应
+// Polymarket order response
 export interface PolymarketOrderResponse {
   success: boolean;
   order_id?: string;
@@ -243,7 +243,7 @@ export interface PolymarketOrderResponse {
   error?: string;
 }
 
-// Polymarket 订单
+// Polymarket order
 export interface PolymarketOrder {
   id: string;
   status: string;
@@ -260,7 +260,7 @@ export interface PolymarketOrder {
   order_type: string;
 }
 
-// Polymarket 持仓
+// Polymarket position
 export interface PolymarketPosition {
   id?: string;
   asset?: string;
@@ -273,44 +273,44 @@ export interface PolymarketPosition {
   pnl?: string;
   pnlPercent?: string;
   title?: string;
-  // 可能有其他字段，根据 API 响应动态处理
+  // Additional fields may be handled dynamically from the API response.
   [key: string]: unknown;
 }
 
-// 统一持仓类型（用于合并展示）
+// Unified position type for combined display
 export interface UnifiedPosition {
   id: string;
   platform: 'kalshi' | 'polymarket';
-  ticker: string;        // Kalshi ticker 或 Poly conditionId
-  title?: string;        // 市场标题
-  size: number;          // 持仓数量
+  ticker: string;        // Kalshi ticker or Polymarket condition ID
+  title?: string;        // Market title
+  size: number;          // Position size
   side?: 'yes' | 'no' | 'buy' | 'sell';
-  avgPrice?: number;     // 平均价格
-  curPrice?: number;     // 当前价格
-  value?: number;        // 持仓价值
-  pnl?: number;          // 盈亏
-  pnlPercent?: number;   // 盈亏百分比
+  avgPrice?: number;     // Average price
+  curPrice?: number;     // Current price
+  value?: number;        // Position value
+  pnl?: number;          // Profit and loss
+  pnlPercent?: number;   // Profit and loss percentage
 }
 
-// 订单列表响应
+// Orders list response
 export interface OrdersResponse {
   orders: KalshiOrder[];
   error?: string;
 }
 
-// Polymarket 订单列表响应
+// Polymarket orders list response
 export interface PolymarketOrdersResponse {
   orders: PolymarketOrder[];
   error?: string;
 }
 
-// 持仓列表响应
+// Positions list response
 export interface PositionsResponse {
   positions: KalshiPosition[];
   error?: string;
 }
 
-// 套利执行请求
+// Arbitrage execution request
 export interface ArbitrageExecuteRequest {
   kalshi_ticker: string;
   kalshi_side: 'yes' | 'no';
@@ -321,7 +321,7 @@ export interface ArbitrageExecuteRequest {
   poly_amount: number;
 }
 
-// 套利执行响应
+// Arbitrage execution response
 export interface ArbitrageExecuteResponse {
   success: boolean;
   error?: string;
@@ -342,7 +342,7 @@ export interface ArbitrageExecuteResponse {
   };
 }
 
-// 订单簿深度
+// Order book depth
 export interface SideDepth {
   price?: number;
   size?: number;

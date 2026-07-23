@@ -1,17 +1,17 @@
-# Polymarket 下单服务配置
+# Polymarket order service configuration
 # 
-# 此配置文件用于 Python 下单服务
-# 包含 Polymarket 账户凭据
+# This configuration file is used by the Python order service.
+# Contains Polymarket account credentials.
 
 [polymarket]
-# 私钥 - 从 https://reveal.magic.link/polymarket 获取
+# Private key - obtain it from https://reveal.magic.link/polymarket
 private_key = "0x8d3d049e3714bc5fe4bcf6d0e990326445be3381615e6e25648b2e81ef2edf21"
 
-# Smart Wallet 地址 - 从 polymarket.com/settings 查看
+# Smart Wallet address - view it at polymarket.com/settings
 wallet_address = "0x85B634AA874fd6a5E1a80ec9a64fDAbb395201D4"
 
 # CLOB API URL
 clob_url = "https://clob.polymarket.com"
 
-# 签名类型（1 = Magic Link 用户）
+# Signature type (1 = Magic Link user)
 signature_type = 1

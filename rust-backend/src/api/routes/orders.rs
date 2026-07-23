@@ -40,7 +40,7 @@ pub async fn place_kalshi_order(
         }))
         .into_response(),
         Err(e) => {
-            error!("下 Kalshi 订单失败: {}", e);
+            error!("Failed to place Kalshi order: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -78,7 +78,7 @@ pub async fn place_polymarket_order(
         }))
         .into_response(),
         Err(e) => {
-            error!("下 Polymarket 订单失败: {}", e);
+            error!("Failed to place Polymarket order: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -151,7 +151,7 @@ pub async fn execute_arbitrage(
     if poly_depth < min_poly_depth {
         return Json(serde_json::json!({
             "success": false,
-            "error": format!("Polymarket 深度不足: 需要 {:.2} USD, 可用 {:.2} USD", min_poly_depth, poly_depth),
+            "error": format!("Insufficient Polymarket depth: {:.2} USD required, {:.2} USD available", min_poly_depth, poly_depth),
             "poly_depth": poly_depth,
             "required_depth": min_poly_depth
         }))
@@ -170,7 +170,7 @@ pub async fn execute_arbitrage(
     if kalshi_depth < min_kalshi_depth {
         return Json(serde_json::json!({
             "success": false,
-            "error": format!("Kalshi 深度不足: 需要 {} 合约, 可用 {} 合约", min_kalshi_depth, kalshi_depth),
+            "error": format!("Insufficient Kalshi depth: {} contracts required, {} contracts available", min_kalshi_depth, kalshi_depth),
             "kalshi_depth": kalshi_depth,
             "required_depth": min_kalshi_depth
         }))
@@ -234,7 +234,7 @@ pub async fn get_kalshi_orders(
         }))
         .into_response(),
         Err(e) => {
-            error!("获取 Kalshi 订单失败: {}", e);
+            error!("Failed to get Kalshi orders: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -257,7 +257,7 @@ pub async fn get_polymarket_orders(State(state): State<Arc<AppState>>) -> impl I
         }))
         .into_response(),
         Err(e) => {
-            error!("获取 Polymarket 订单失败: {}", e);
+            error!("Failed to get Polymarket orders: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -283,7 +283,7 @@ pub async fn cancel_kalshi_order(
         }))
         .into_response(),
         Err(e) => {
-            error!("取消 Kalshi 订单失败: {}", e);
+            error!("Failed to cancel Kalshi order: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -309,7 +309,7 @@ pub async fn cancel_polymarket_order(
         }))
         .into_response(),
         Err(e) => {
-            error!("取消 Polymarket 订单失败: {}", e);
+            error!("Failed to cancel Polymarket order: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({

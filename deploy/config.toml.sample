@@ -1,4 +1,4 @@
-# 预测市场套利程序配置文件
+# Prediction Market Arbitrage Application Configuration
 
 [kalshi]
 api_key = "775ab5b1-d017-437b-9d51-4b62636a6df8"
@@ -32,65 +32,65 @@ e/VQGYOnvZAAXr4qQrDUXutA5LqwOOHprwasYcYc6YMhuDfS1yroOsDcOkr2bqws
 base_url = "https://api.elections.kalshi.com/trade-api/v2"
 
 [polymarket]
-# Polymarket 配置
+# Polymarket configuration
 # 
-# 1. 私钥 - 从 https://reveal.magic.link/polymarket 获取
+# 1. Private key - obtain it from https://reveal.magic.link/polymarket
 private_key = "0x8d3d049e3714bc5fe4bcf6d0e990326445be3381615e6e25648b2e81ef2edf21"
 # 
-# 2. Smart Wallet 地址 - 从 polymarket.com/settings 查看（资金存放地址）
+# 2. Smart Wallet address - view it at polymarket.com/settings (the address holding funds)
 wallet_address = "0x85B634AA874fd6a5E1a80ec9a64fDAbb395201D4"
 #
-# API 凭据会自动派生，无需手动配置
+# API credentials are derived automatically; no manual configuration is required.
 
-# Gamma API 基础 URL
+# Gamma API base URL
 base_url = "https://gamma-api.polymarket.com"
 
-# Python 下单服务地址（订单通过此服务提交）
+# Python order service URL (orders are submitted through this service)
 order_service_url = "http://127.0.0.1:8001"
 
-# [settings] 和 [auto_trade] 配置已迁移到数据库
-# 可在前端界面实时修改，无需重启服务
-# 以下为初始默认值（首次启动时写入数据库）
+# The [settings] and [auto_trade] configuration has moved to the database.
+# It can be changed in real time through the frontend without restarting the service.
+# The following are initial defaults, written to the database at first startup.
 
 [settings]
-# 数据刷新间隔（秒）
+# Data refresh interval (seconds)
 refresh_interval = 5
-# 显示套利机会的最小利润率（%）
+# Minimum profit margin (%) for displaying arbitrage opportunities
 min_profit_margin = 1.0
-# 套利计算使用的默认金额（美元）
+# Default amount (USD) used for arbitrage calculations
 default_bet_amount = 10.0
-# 开始追踪记录的利润率阈值（%）
+# Profit-margin threshold (%) for starting tracking
 tracking_threshold = 2.0
 
 [auth]
-# 登录认证配置
+# Login authentication configuration
 username = "admin"
 password = "DACsxc8531@@"
-# JWT 密钥（请修改为随机字符串）
+# JWT key (change this to a random string)
 secret_key = "your-secret-key-change-this-in-production-min-32-chars-long"
-# Token 过期时间（小时）
+# Token expiration time (hours)
 token_expire_hours = 24
 
 [auto_trade]
-# 自动下单功能默认关闭
+# Automated trading is disabled by default
 enabled = false
-# 自动下单单次最大金额（美元）
+# Maximum amount (USD) per automated trade
 max_amount = 10.0
-# 自动下单最大执行次数
+# Maximum number of automated trades
 max_trade_count = 2
-# 套利机会持续时间阈值（毫秒）
+# Arbitrage opportunity duration threshold (milliseconds)
 min_duration_ms = 500
 
 
 [telegram]
-# Telegram 通知配置（自动下单通知）
-# 默认关闭，需要时启用
+# Telegram notification configuration (automated-trade notifications)
+# Disabled by default; enable when needed.
 enabled = true
 
-# Telegram Bot Token（从 @BotFather 获取）
+# Telegram Bot Token (obtain it from @BotFather)
 bot_token = "8534665491:AAEYBT3ZQC-N63ThwwGRCUNQT0BP6_OZlqI"
 
-# Telegram Chat ID（群组或频道 ID）
-# 获取方式：将 bot 添加到群组后，发送消息，然后访问
+# Telegram Chat ID (group or channel ID)
+# To obtain it, add the bot to a group, send a message, then visit
 # https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
 chat_id = "-1003242331044"

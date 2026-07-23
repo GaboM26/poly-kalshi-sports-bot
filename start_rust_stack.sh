@@ -1,27 +1,27 @@
 #!/bin/bash
 
-# Polytaoli Rust 后端 + Python 下单服务 + 前端启动脚本
+# Startup script for the Polytaoli Rust backend, Python order service, and frontend
 
-echo "🚀 启动 Polytaoli (Rust 后端版本)"
+echo "🚀 Starting Polytaoli (Rust backend version)"
 echo "=================================="
 
-# 检查是否在正确的目录
+# Verify the script is running from the project root.
 if [ ! -d "rust-backend" ] || [ ! -d "web" ]; then
-    echo "❌ 错误: 请在项目根目录运行此脚本"
+    echo "❌ Error: run this script from the project root"
     exit 1
 fi
 
-# 存储所有 PID
+# Store all process IDs.
 PIDS=""
 
-# 启动 Python Polymarket 下单服务
+# Start the Python Polymarket order service.
 echo ""
-echo "🐍 启动 Python 下单服务 (端口 8001)..."
+echo "🐍 Starting Python order service (port 8001)..."
 cd poly-order-service
 
-# 检查 Python 依赖
+# Check Python dependencies.
 if [ ! -f ".venv/bin/python" ]; then
-    echo "📦 创建 Python 虚拟环境..."
+    echo "📦 Creating Python virtual environment..."
     python3 -m venv .venv
     source .venv/bin/activate
     pip install -r requirements.txt
@@ -29,92 +29,92 @@ else
     source .venv/bin/activate
 fi
 
-# 启动 Python 服务
+# Start the Python service.
 python main.py &
 PYTHON_PID=$!
 PIDS="$PYTHON_PID"
-echo "✅ Python 下单服务已启动 (PID: $PYTHON_PID)"
+echo "✅ Python order service started (PID: $PYTHON_PID)"
 
-# 等待 Python 服务启动
-echo "⏳ 等待 Python 服务启动..."
+# Wait for the Python service to start.
+echo "⏳ Waiting for the Python service to start..."
 sleep 3
 
-# 检查 Python 服务
+# Check the Python service.
 if ! curl -s http://localhost:8001/health > /dev/null; then
-    echo "⚠️ 警告: Python 下单服务可能未完全启动，继续..."
+    echo "⚠️ Warning: the Python order service may not be fully started; continuing..."
 fi
 
 cd ..
 
-# 启动 Rust 后端
+# Start the Rust backend.
 echo ""
-echo "📦 启动 Rust 后端 (端口 8000)..."
+echo "📦 Starting Rust backend (port 8000)..."
 cd rust-backend
 
-# 检查配置文件
+# Check the configuration file.
 if [ ! -f "config.toml" ]; then
-    echo "⚠️  警告: config.toml 不存在，从示例文件复制..."
+    echo "⚠️  Warning: config.toml does not exist; copying the example file..."
     if [ -f "config.example.toml" ]; then
         cp config.example.toml config.toml
-        echo "✅ 已创建 config.toml，请编辑配置文件后重新运行"
+        echo "✅ Created config.toml; edit it, then run this again"
         kill $PIDS 2>/dev/null
         exit 1
     else
-        echo "❌ 错误: config.example.toml 也不存在"
+        echo "❌ Error: config.example.toml does not exist either"
         kill $PIDS 2>/dev/null
         exit 1
     fi
 fi
 
-# 在后台启动 Rust 后端
+# Start the Rust backend in the background.
 cargo run --release &
 RUST_PID=$!
 PIDS="$PIDS $RUST_PID"
-echo "✅ Rust 后端已启动 (PID: $RUST_PID)"
+echo "✅ Rust backend started (PID: $RUST_PID)"
 
-# 等待后端启动
-echo "⏳ 等待后端启动..."
+# Wait for the backend to start.
+echo "⏳ Waiting for the backend to start..."
 sleep 5
 
-# 检查后端是否正常运行
+# Check that the backend is healthy.
 if ! curl -s http://localhost:8000/api/health > /dev/null; then
-    echo "❌ 错误: Rust 后端启动失败"
+    echo "❌ Error: failed to start the Rust backend"
     kill $PIDS 2>/dev/null
     exit 1
 fi
 
-echo "✅ Rust 后端健康检查通过"
+echo "✅ Rust backend health check passed"
 
-# 启动前端
+# Start the frontend.
 cd ../web
 echo ""
-echo "🌐 启动前端 (端口 5173)..."
+echo "🌐 Starting frontend (port 5173)..."
 
-# 检查 node_modules
+# Check for node_modules.
 if [ ! -d "node_modules" ]; then
-    echo "📦 安装前端依赖..."
+    echo "📦 Installing frontend dependencies..."
     npm install
 fi
 
-# 启动前端开发服务器
+# Start the frontend development server.
 npm run dev &
 WEB_PID=$!
 PIDS="$PIDS $WEB_PID"
-echo "✅ 前端已启动 (PID: $WEB_PID)"
+echo "✅ Frontend started (PID: $WEB_PID)"
 
 echo ""
 echo "=================================="
-echo "✅ 启动完成！"
+echo "✅ Startup complete!"
 echo ""
-echo "🐍 Python 下单服务: http://localhost:8001"
-echo "📊 Rust 后端: http://localhost:8000"
-echo "🌐 前端界面: http://localhost:5173"
+echo "🐍 Python order service: http://localhost:8001"
+echo "📊 Rust backend: http://localhost:8000"
+echo "🌐 Frontend: http://localhost:5173"
 echo ""
-echo "按 Ctrl+C 停止所有服务"
+echo "Press Ctrl+C to stop all services"
 echo "=================================="
 
-# 捕获 Ctrl+C 信号
-trap "echo ''; echo '🛑 正在停止服务...'; kill $PIDS 2>/dev/null; exit 0" INT
+# Handle Ctrl+C.
+trap "echo ''; echo '🛑 Stopping services...'; kill $PIDS 2>/dev/null; exit 0" INT
 
-# 等待
+# Wait for child processes.
 wait

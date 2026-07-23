@@ -11,22 +11,22 @@ interface OpportunityListProps {
 type SortOption = 'profit' | 'event' | 'team';
 
 export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '' }: OpportunityListProps) {
-  // 追踪价格变化用于高亮动画
+  // Track price changes for highlight animations.
   const [flashingCells, setFlashingCells] = useState<Set<string>>(new Set());
   const prevPricesRef = useRef<Map<string, { k_yes: number; k_no: number; p_yes: number; p_no: number }>>(new Map());
   
-  // 排序选项
+  // Sort option.
   const [sortBy, setSortBy] = useState<SortOption>('profit');
   
-  // 执行状态
+  // Execution state.
   const [executingKey, setExecutingKey] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<{ key: string; success: boolean; message: string } | null>(null);
   
-  // 排除市场状态
+  // Excluded market state.
   const [excludedMarkets, setExcludedMarkets] = useState<Set<string>>(new Set());
   const [excludingKey, setExcludingKey] = useState<string | null>(null);
   
-  // 获取排除市场列表
+  // Fetch excluded markets.
   const fetchExcludedMarkets = useCallback(async () => {
     if (!apiBaseUrl) return;
     try {
@@ -34,11 +34,11 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
       const data = await res.json();
       setExcludedMarkets(new Set(data.excluded_markets || []));
     } catch (err) {
-      console.error('获取排除列表失败:', err);
+      console.error('Failed to fetch excluded markets:', err);
     }
   }, [apiBaseUrl]);
   
-  // 初始加载排除列表
+  // Initially load excluded markets.
   useEffect(() => {
     fetchExcludedMarkets();
   }, [fetchExcludedMarkets]);
@@ -53,7 +53,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
     return `${eventName}_${teamName}`;
   };
   
-  // 排除/取消排除市场
+  // Exclude or unexclude a market.
   const handleToggleExclude = async (market: MatchedMarketData, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!apiBaseUrl) return;
@@ -76,7 +76,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
       });
       
       if (res.ok) {
-        // 更新本地状态
+        // Update local state.
         setExcludedMarkets(prev => {
           const next = new Set(prev);
           if (isExcluded) {
@@ -88,13 +88,13 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
         });
       }
     } catch (err) {
-      console.error('排除操作失败:', err);
+      console.error('Failed to update market exclusion:', err);
     } finally {
       setExcludingKey(null);
     }
   };
   
-  // 执行套利
+  // Execute arbitrage.
   const handleExecute = async (market: MatchedMarketData, executionKey: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!market.has_opportunity || !apiBaseUrl) return;
@@ -103,12 +103,12 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
     setLastResult(null);
     
     try {
-      // 解析策略类型
+      // Determine the strategy type.
       // K↑ P↓ = Kalshi Yes + Polymarket No
       // K↓ P↑ = Kalshi No + Polymarket Yes
       const isKalshiYes = market.arbitrage_type?.includes('KalshiYes');
       
-      // 计算下注金额 (假设总投资 $10 用于测试)
+      // Calculate bet amounts (assume a $10 total investment for testing).
       const totalBet = 10;
       const impliedSum = (isKalshiYes ? market.kalshi_yes_price : market.kalshi_no_price) +
                          (isKalshiYes ? market.poly_no_price : market.poly_yes_price);
@@ -120,15 +120,15 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
       const kalshiBet = guaranteedReturn * kalshiPrice;
       const polyBet = guaranteedReturn * polyPrice;
       
-      // 构建请求 - 需要获取正确的 token_id
-      // 注意：polymarket_market_id 是 condition_id，需要找到对应的 token_id
-      // 这里简化处理，使用 market_id 作为 token_id（实际可能需要从后端获取）
+      // Build the request; the correct token_id is required.
+      // polymarket_market_id is the condition ID, so its matching token ID is needed.
+      // This simplified implementation uses market_id as token_id; production may need a backend lookup.
       const request: ArbitrageExecuteRequest = {
         kalshi_ticker: market.kalshi_market_id,
         kalshi_side: isKalshiYes ? 'yes' : 'no',
         kalshi_bet: kalshiBet,
         kalshi_price: kalshiPrice,
-        poly_token_id: market.polymarket_market_id, // TODO: 需要正确的 token_id
+        poly_token_id: market.polymarket_market_id, // TODO: use the correct token ID
         poly_side: 'buy',
         poly_amount: polyBet
       };
@@ -136,7 +136,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
       const result = await executeArbitrage(apiBaseUrl, request);
       
       if (result.success) {
-        setLastResult({ key: executionKey, success: true, message: '套利执行成功！' });
+        setLastResult({ key: executionKey, success: true, message: 'Arbitrage executed successfully!' });
       } else {
         const errors = [];
         if (!result.kalshi.success) errors.push(`K: ${result.kalshi.error}`);
@@ -144,7 +144,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
         setLastResult({ key: executionKey, success: false, message: errors.join('; ') });
       }
     } catch (err) {
-      setLastResult({ key: executionKey, success: false, message: err instanceof Error ? err.message : '执行失败' });
+      setLastResult({ key: executionKey, success: false, message: err instanceof Error ? err.message : 'Execution failed' });
     } finally {
       setExecutingKey(null);
     }
@@ -154,7 +154,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
     const newFlashing = new Set<string>();
     
     matchedMarkets.forEach((m) => {
-      // 使用更唯一的 key：kalshi_market_id + polymarket_market_id
+      // Use a more unique key: kalshi_market_id + polymarket_market_id.
       const key = `${m.kalshi_market_id}_${m.polymarket_market_id}`;
       const prev = prevPricesRef.current.get(key);
       
@@ -167,7 +167,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
         }
       }
       
-      // 更新缓存
+      // Update cache.
       prevPricesRef.current.set(key, {
         k_yes: m.kalshi_yes_price,
         k_no: m.kalshi_no_price,
@@ -178,7 +178,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
     
     if (newFlashing.size > 0) {
       setFlashingCells(newFlashing);
-      // 清除闪烁状态
+      // Clear flashing state.
       const timer = setTimeout(() => setFlashingCells(new Set()), 500);
       return () => clearTimeout(timer);
     }
@@ -194,14 +194,14 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
     );
   }
 
-  // 统计有套利机会的数量
+  // Count arbitrage opportunities.
   const oppCount = matchedMarkets.filter(m => m.has_opportunity).length;
 
-  // 排序市场
+  // Sort markets.
   const sortedMarkets = [...matchedMarkets].sort((a, b) => {
     switch (sortBy) {
       case 'profit':
-        // 按利润率降序（有套利机会的排在前面）
+        // Descending profit margin, with opportunities first.
         if (a.has_opportunity && !b.has_opportunity) return -1;
         if (!a.has_opportunity && b.has_opportunity) return 1;
         if (a.has_opportunity && b.has_opportunity) {
@@ -210,11 +210,11 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
         return a.event_name.localeCompare(b.event_name);
       
       case 'event':
-        // 按事件名称字母序
+        // Alphabetically by event name.
         return a.event_name.localeCompare(b.event_name);
       
       case 'team':
-        // 按队伍名称字母序
+        // Alphabetically by team name.
         return (a.team_name || '').localeCompare(b.team_name || '');
       
       default:
@@ -224,9 +224,9 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
 
   return (
     <div className="overflow-hidden flex flex-col h-full text-xs">
-      {/* 排序选择器 */}
+      {/* Sort selector */}
       <div className="px-2 py-1 bg-[--bg-tertiary] border-b border-[--border-color] flex items-center justify-between flex-shrink-0">
-        <span className="text-[10px] text-[--text-muted]">排序:</span>
+        <span className="text-[10px] text-[--text-muted]">Sort:</span>
         <div className="flex gap-1">
           <button
             onClick={() => setSortBy('profit')}
@@ -236,7 +236,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                 : 'bg-[--bg-secondary] text-[--text-secondary] hover:bg-[--bg-primary]'
             }`}
           >
-            💰 收益
+            💰 Profit
           </button>
           <button
             onClick={() => setSortBy('event')}
@@ -246,7 +246,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                 : 'bg-[--bg-secondary] text-[--text-secondary] hover:bg-[--bg-primary]'
             }`}
           >
-            📅 事件
+            📅 Event
           </button>
           <button
             onClick={() => setSortBy('team')}
@@ -256,12 +256,12 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                 : 'bg-[--bg-secondary] text-[--text-secondary] hover:bg-[--bg-primary]'
             }`}
           >
-            🏀 队伍
+            🏀 Team
           </button>
         </div>
       </div>
 
-      {/* 表格容器 - 可滚动 */}
+      {/* Scrollable table container */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
         <table className="w-full">
           <thead className="sticky top-0 bg-[--bg-secondary] z-10 text-[10px]">
@@ -277,9 +277,9 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
           </thead>
           <tbody>
             {sortedMarkets.map((market) => {
-              // 使用唯一的 key：kalshi_market_id + polymarket_market_id
+              // Use kalshi_market_id + polymarket_market_id as a unique key.
               const uniqueKey = `${market.kalshi_market_id}_${market.polymarket_market_id}`;
-              // 用于执行状态和排除检查的 key（包含日期以区分不同日期的比赛）
+              // Include the date in this key to differentiate games on different days.
               const marketKey = getMarketKey(market);
               const kalshiFlashing = flashingCells.has(`${uniqueKey}_kalshi`);
               const polyFlashing = flashingCells.has(`${uniqueKey}_poly`);
@@ -303,7 +303,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                         {market.event_name}
                       </span>
                       {market.game_date && (
-                        <span className="text-[9px] text-[--text-muted]" title={`比赛日期: ${market.game_date}`}>
+                        <span className="text-[9px] text-[--text-muted]" title={`Game date: ${market.game_date}`}>
                           {market.game_date}
                         </span>
                       )}
@@ -346,12 +346,12 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                     )}
                   </td>
 
-                  {/* Profit (净利润) */}
+                  {/* Profit (net) */}
                   <td className="text-right py-1 px-2">
                     {market.has_opportunity ? (
                       <div className={getProfitClass(market.profit_margin)}>
                         <span className="text-sm font-bold tabular-nums">{market.profit_margin.toFixed(2)}%</span>
-                        <div className="text-[9px] opacity-70 leading-none" title="净利润">${market.expected_profit.toFixed(2)}</div>
+                        <div className="text-[9px] opacity-70 leading-none" title="Net profit">${market.expected_profit.toFixed(2)}</div>
                       </div>
                     ) : (
                       <span className="text-[--text-muted] text-[10px]">-</span>
@@ -372,7 +372,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                                 : 'bg-[--accent-green]/20 text-[--accent-green] hover:bg-[--accent-green]/30'
                             }`}
                           >
-                            {executingKey === marketKey ? '...' : '执行'}
+                            {executingKey === marketKey ? '...' : 'Execute'}
                           </button>
                           {lastResult?.key === marketKey && (
                             <span className={`text-[9px] leading-none ${lastResult.success ? 'text-green-400' : 'text-red-400'}`}>
@@ -381,11 +381,11 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                           )}
                         </div>
                       ) : null}
-                      {/* 排除按钮 */}
+                      {/* Exclude button */}
                       <button
                         onClick={(e) => handleToggleExclude(market, e)}
                         disabled={excludingKey === marketKey || !apiBaseUrl}
-                        title={excludedMarkets.has(marketKey) ? '取消排除' : '排除此市场'}
+                        title={excludedMarkets.has(marketKey) ? 'Remove Exclusion' : 'Exclude This Market'}
                         className={`px-1 py-0.5 text-[9px] font-medium rounded transition-colors ${
                           excludingKey === marketKey
                             ? 'bg-gray-500/30 text-gray-400 cursor-wait'
@@ -405,7 +405,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
         </table>
       </div>
       
-      {/* 底部统计 */}
+      {/* Bottom statistics */}
       <div className="px-2 py-1 bg-[--bg-tertiary] border-t border-[--border-color] flex justify-between items-center text-[10px] text-[--text-muted] flex-shrink-0">
         <span>Total: {matchedMarkets.length}</span>
         <span className={oppCount > 0 ? 'text-[--accent-green]' : ''}>

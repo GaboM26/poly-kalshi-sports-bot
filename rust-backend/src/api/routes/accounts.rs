@@ -26,7 +26,7 @@ pub async fn get_kalshi_balance(State(state): State<Arc<AppState>>) -> impl Into
         }))
         .into_response(),
         Err(e) => {
-            error!("获取 Kalshi 余额失败: {}", e);
+            error!("Failed to get Kalshi balance: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -50,7 +50,7 @@ pub async fn get_polymarket_balance(State(state): State<Arc<AppState>>) -> impl 
         }))
         .into_response(),
         Err(e) => {
-            error!("获取 Polymarket 余额失败: {}", e);
+            error!("Failed to get Polymarket balance: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -114,7 +114,7 @@ pub async fn get_kalshi_positions(State(state): State<Arc<AppState>>) -> impl In
         }))
         .into_response(),
         Err(e) => {
-            error!("获取 Kalshi 持仓失败: {}", e);
+            error!("Failed to get Kalshi positions: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -137,7 +137,7 @@ pub async fn get_polymarket_positions(State(state): State<Arc<AppState>>) -> imp
         }))
         .into_response(),
         Err(e) => {
-            error!("获取 Polymarket 持仓失败: {}", e);
+            error!("Failed to get Polymarket positions: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -183,11 +183,11 @@ pub async fn login(
     let auth_config = &state.config.auth;
 
     if req.username != auth_config.username || req.password != auth_config.password {
-        error!("登录失败: 用户名或密码错误 (username: {})", req.username);
+        error!("Login failed: invalid username or password (username: {})", req.username);
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
-                "detail": "用户名或密码错误"
+                "detail": "Invalid username or password"
             })),
         )
             .into_response();
@@ -209,18 +209,18 @@ pub async fn login(
     ) {
         Ok(t) => t,
         Err(e) => {
-            error!("生成 JWT 失败: {}", e);
+            error!("Failed to generate JWT: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
-                    "detail": "生成 token 失败"
+                    "detail": "Failed to generate token"
                 })),
             )
                 .into_response();
         }
     };
 
-    info!("用户 {} 登录成功", req.username);
+    info!("User {} logged in successfully", req.username);
 
     Json(LoginResponse {
         access_token: token,
