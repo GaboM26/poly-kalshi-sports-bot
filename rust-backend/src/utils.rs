@@ -25,26 +25,23 @@ pub fn init_debug_log_path(workspace_root: Option<&str>) {
             })
             .unwrap_or_else(|| PathBuf::from("logs/debug.log"))
     };
-    
+
     // Ensure logs directory exists
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    
+
     let _ = DEBUG_LOG_PATH.set(path);
 }
 
 /// Get debug log path
 pub fn get_debug_log_path() -> PathBuf {
-    DEBUG_LOG_PATH
-        .get()
-        .cloned()
-        .unwrap_or_else(|| {
-            // Fallback if not initialized
-            let path = PathBuf::from("logs/debug.log");
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            path
-        })
+    DEBUG_LOG_PATH.get().cloned().unwrap_or_else(|| {
+        // Fallback if not initialized
+        let path = PathBuf::from("logs/debug.log");
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        path
+    })
 }

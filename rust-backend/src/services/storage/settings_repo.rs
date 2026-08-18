@@ -40,7 +40,7 @@ impl ArbitrageStorage {
     /// Get current application settings
     pub fn get_app_settings(&self) -> Result<AppSettings> {
         let conn = self.conn().lock();
-        
+
         let result = conn.query_row(
             "SELECT refresh_interval, min_profit_margin, default_bet_amount, tracking_threshold, updated_at
              FROM app_settings WHERE id = 1",
@@ -71,7 +71,7 @@ impl ArbitrageStorage {
         tracking_threshold: Option<f64>,
     ) -> Result<()> {
         let conn = self.conn().lock();
-        
+
         if let Some(interval) = refresh_interval {
             conn.execute(
                 "UPDATE app_settings SET refresh_interval = ?, updated_at = ? WHERE id = 1",
@@ -79,7 +79,7 @@ impl ArbitrageStorage {
             )?;
             info!("🔄 refresh_interval 已更新: {}秒", interval);
         }
-        
+
         if let Some(margin) = min_profit_margin {
             conn.execute(
                 "UPDATE app_settings SET min_profit_margin = ?, updated_at = ? WHERE id = 1",
@@ -87,7 +87,7 @@ impl ArbitrageStorage {
             )?;
             info!("🔄 min_profit_margin 已更新: {}%", margin);
         }
-        
+
         if let Some(amount) = default_bet_amount {
             conn.execute(
                 "UPDATE app_settings SET default_bet_amount = ?, updated_at = ? WHERE id = 1",
@@ -95,7 +95,7 @@ impl ArbitrageStorage {
             )?;
             info!("🔄 default_bet_amount 已更新: ${}", amount);
         }
-        
+
         if let Some(threshold) = tracking_threshold {
             conn.execute(
                 "UPDATE app_settings SET tracking_threshold = ?, updated_at = ? WHERE id = 1",
@@ -103,7 +103,7 @@ impl ArbitrageStorage {
             )?;
             info!("🔄 tracking_threshold 已更新: {}%", threshold);
         }
-        
+
         Ok(())
     }
 }

@@ -15,17 +15,17 @@ use super::ArbitrageStorage;
 pub struct AutoTradeState {
     pub enabled: bool,
     pub trade_count: i32,
-/// Maximum number of auto-trade executions
+    /// Maximum number of auto-trade executions
     pub max_trade_count: i32,
-/// Maximum trade amount per execution (USD)
+    /// Maximum trade amount per execution (USD)
     pub max_amount: f64,
-/// Minimum arbitrage opportunity duration threshold (milliseconds)
+    /// Minimum arbitrage opportunity duration threshold (milliseconds)
     pub min_duration_ms: i64,
-/// Whether flexible auto-trade mode is enabled
+    /// Whether flexible auto-trade mode is enabled
     pub flexible_mode: bool,
-/// Maximum contracts per trade
+    /// Maximum contracts per trade
     pub max_contracts: i32,
-/// Minimum required contracts; do not trade below this depth
+    /// Minimum required contracts; do not trade below this depth
     pub min_contracts: i32,
     pub last_trade_time: Option<String>,
     pub updated_at: Option<String>,
@@ -90,7 +90,7 @@ impl ArbitrageStorage {
     /// Get current auto-trade state
     pub fn get_auto_trade_state(&self) -> Result<AutoTradeState> {
         let conn = self.conn().lock();
-        
+
         let result = conn.query_row(
             "SELECT enabled, trade_count, max_trade_count, max_amount, min_duration_ms, 
                     flexible_mode, max_contracts, min_contracts, last_trade_time, updated_at
@@ -136,13 +136,13 @@ impl ArbitrageStorage {
             "UPDATE auto_trade_state SET trade_count = trade_count + 1, last_trade_time = ?, updated_at = ? WHERE id = 1",
             params![Utc::now().to_rfc3339(), Utc::now().to_rfc3339()],
         )?;
-        
+
         let new_count: i32 = conn.query_row(
             "SELECT trade_count FROM auto_trade_state WHERE id = 1",
             [],
             |row| row.get(0),
         )?;
-        
+
         info!("📈 Auto-trade count incremented: {}", new_count);
         Ok(new_count)
     }
@@ -170,7 +170,7 @@ impl ArbitrageStorage {
         min_contracts: Option<i32>,
     ) -> Result<()> {
         let conn = self.conn().lock();
-        
+
         if let Some(amount) = max_amount {
             conn.execute(
                 "UPDATE auto_trade_state SET max_amount = ?, updated_at = ? WHERE id = 1",
@@ -178,7 +178,7 @@ impl ArbitrageStorage {
             )?;
             info!("🔄 max_amount updated: {}", amount);
         }
-        
+
         if let Some(duration) = min_duration_ms {
             conn.execute(
                 "UPDATE auto_trade_state SET min_duration_ms = ?, updated_at = ? WHERE id = 1",
@@ -186,7 +186,7 @@ impl ArbitrageStorage {
             )?;
             info!("🔄 min_duration_ms updated: {}", duration);
         }
-        
+
         if let Some(max_count) = max_trade_count {
             conn.execute(
                 "UPDATE auto_trade_state SET max_trade_count = ?, updated_at = ? WHERE id = 1",
@@ -194,7 +194,7 @@ impl ArbitrageStorage {
             )?;
             info!("🔄 max_trade_count updated: {}", max_count);
         }
-        
+
         if let Some(flexible) = flexible_mode {
             conn.execute(
                 "UPDATE auto_trade_state SET flexible_mode = ?, updated_at = ? WHERE id = 1",
@@ -202,7 +202,7 @@ impl ArbitrageStorage {
             )?;
             info!("🔄 flexible_mode updated: {}", flexible);
         }
-        
+
         if let Some(max_c) = max_contracts {
             conn.execute(
                 "UPDATE auto_trade_state SET max_contracts = ?, updated_at = ? WHERE id = 1",
@@ -210,7 +210,7 @@ impl ArbitrageStorage {
             )?;
             info!("🔄 max_contracts updated: {}", max_c);
         }
-        
+
         if let Some(min_c) = min_contracts {
             conn.execute(
                 "UPDATE auto_trade_state SET min_contracts = ?, updated_at = ? WHERE id = 1",
@@ -218,7 +218,7 @@ impl ArbitrageStorage {
             )?;
             info!("🔄 min_contracts updated: {}", min_c);
         }
-        
+
         Ok(())
     }
 
@@ -251,14 +251,14 @@ impl ArbitrageStorage {
         poly_latency_ms: i64,
     ) -> Result<i64> {
         let conn = self.conn().lock();
-        
+
         // Determine status based on success flags
         let status = if kalshi_success && polymarket_success {
             "executed"
         } else {
             "partial"
         };
-        
+
         conn.execute(
             "INSERT INTO auto_trade_history (
                 event_name, team_name, kalshi_market_id, polymarket_market_id,
@@ -297,7 +297,7 @@ impl ArbitrageStorage {
                 Utc::now().to_rfc3339(),
             ],
         )?;
-        
+
         let id = conn.last_insert_rowid();
         info!("📝 Auto-trade record saved: ID={}, event={}, status={}, K:{}/P:{}, latency: K={}ms/P={}ms", 
             id, event_name, status,
@@ -326,12 +326,14 @@ impl ArbitrageStorage {
         skip_reason: &str,
     ) -> Result<i64> {
         let conn = self.conn().lock();
-        
+
         // Calculate estimated amounts for reference
-        let kalshi_fee = (0.07 * kalshi_contracts as f64 * kalshi_price * (1.0 - kalshi_price) * 100.0).ceil() / 100.0;
+        let kalshi_fee =
+            (0.07 * kalshi_contracts as f64 * kalshi_price * (1.0 - kalshi_price) * 100.0).ceil()
+                / 100.0;
         let polymarket_amount = kalshi_contracts as f64 * polymarket_price;
         let total_amount = kalshi_contracts as f64 * kalshi_price + kalshi_fee + polymarket_amount;
-        
+
         conn.execute(
             "INSERT INTO auto_trade_history (
                 event_name, team_name, kalshi_market_id, polymarket_market_id,
@@ -367,9 +369,12 @@ impl ArbitrageStorage {
                 Utc::now().to_rfc3339(),
             ],
         )?;
-        
+
         let id = conn.last_insert_rowid();
-        info!("📝 Auto-trade skip record: ID={}, event={}, reason={}", id, event_name, skip_reason);
+        info!(
+            "📝 Auto-trade skip record: ID={}, event={}, reason={}",
+            id, event_name, skip_reason
+        );
         Ok(id)
     }
 
@@ -415,7 +420,9 @@ impl ArbitrageStorage {
                     polymarket_error: row.get(21)?,
                     kalshi_latency_ms: row.get::<_, Option<i64>>(22).ok().flatten(),
                     poly_latency_ms: row.get::<_, Option<i64>>(23).ok().flatten(),
-                    status: row.get::<_, Option<String>>(24)?.unwrap_or_else(|| "executed".to_string()),
+                    status: row
+                        .get::<_, Option<String>>(24)?
+                        .unwrap_or_else(|| "executed".to_string()),
                     skip_reason: row.get(25)?,
                     created_at: row.get(26)?,
                 })

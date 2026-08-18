@@ -22,16 +22,12 @@ pub fn generate_market_key(
 ) -> String {
     match game_date {
         Some(date) => format!(
-            "{}_{}_{}", 
-            event_name.to_uppercase(), 
-            date.format("%Y-%m-%d"), 
+            "{}_{}_{}",
+            event_name.to_uppercase(),
+            date.format("%Y-%m-%d"),
             team_name.to_uppercase()
         ),
-        None => format!(
-            "{}_{}", 
-            event_name.to_uppercase(), 
-            team_name.to_uppercase()
-        ),
+        None => format!("{}_{}", event_name.to_uppercase(), team_name.to_uppercase()),
     }
 }
 
@@ -129,10 +125,7 @@ impl PolymarketMarket {
             // yes = B wins, no = A wins
             Ok((self.price_b, self.price_a))
         } else {
-            Err(format!(
-                "Team {} not in market {}",
-                team, self.event_name
-            ))
+            Err(format!("Team {} not in market {}", team, self.event_name))
         }
     }
 

@@ -14,7 +14,7 @@ use crate::clients::{KalshiClient, PolymarketClient};
 use crate::config::Config;
 use crate::core::{EventMatcher, SubscriptionInfo};
 use crate::models::{ArbitrageOpportunity, MatchedEvent, MatchedMarket, PriceUpdate, SystemStats};
-use crate::services::{ArbitrageStorage, WebSocketManager, PerformanceMetrics, Operation};
+use crate::services::{ArbitrageStorage, Operation, PerformanceMetrics, WebSocketManager};
 
 /// Arbitrage service
 pub struct ArbitrageService {
@@ -61,7 +61,7 @@ impl ArbitrageService {
 
         // Set clients for orderbook depth queries
         ws_manager.set_clients(kalshi_client.clone(), polymarket_client.clone());
-        
+
         // Load excluded markets from database
         ws_manager.load_excluded_markets();
 
@@ -84,15 +84,11 @@ impl ArbitrageService {
         info!("🔍 Fetching market data from both platforms...");
 
         // Fetch data from both platforms
-        let (kalshi_events, kalshi_markets) = self
-            .kalshi_client
-            .get_nba_events_and_markets()
-            .await?;
+        let (kalshi_events, kalshi_markets) =
+            self.kalshi_client.get_nba_events_and_markets().await?;
 
-        let (polymarket_events, polymarket_markets) = self
-            .polymarket_client
-            .get_nba_events_and_markets()
-            .await?;
+        let (polymarket_events, polymarket_markets) =
+            self.polymarket_client.get_nba_events_and_markets().await?;
 
         info!(
             "📊 Loaded: Kalshi {} events/{} markets, Polymarket {} events/{} markets",
@@ -110,7 +106,8 @@ impl ArbitrageService {
             &polymarket_events,
             &polymarket_markets,
         );
-        self.metrics.record(Operation::MarketMatch, match_start.elapsed());
+        self.metrics
+            .record(Operation::MarketMatch, match_start.elapsed());
 
         self.matched_events = matched_events;
         self.matched_markets = matched_markets.clone();
@@ -127,7 +124,10 @@ impl ArbitrageService {
     }
 
     /// Start WebSocket connections for real-time updates
-    pub async fn start_websocket_connections(&self, price_tx: mpsc::Sender<PriceUpdate>) -> Result<()> {
+    pub async fn start_websocket_connections(
+        &self,
+        price_tx: mpsc::Sender<PriceUpdate>,
+    ) -> Result<()> {
         let (kalshi_tickers, poly_tokens) = self.ws_manager.get_subscription_ids();
 
         info!(
@@ -150,7 +150,10 @@ impl ArbitrageService {
                     .connect_websocket(kalshi_tickers_clone.clone(), price_tx_kalshi.clone())
                     .await
                 {
-                    error!("Kalshi WebSocket error: {}. Reconnecting in 5 seconds...", e);
+                    error!(
+                        "Kalshi WebSocket error: {}. Reconnecting in 5 seconds...",
+                        e
+                    );
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             }
@@ -164,7 +167,10 @@ impl ArbitrageService {
                     .connect_websocket(poly_tokens_clone.clone(), price_tx_poly.clone())
                     .await
                 {
-                    error!("Polymarket WebSocket error: {}. Reconnecting in 5 seconds...", e);
+                    error!(
+                        "Polymarket WebSocket error: {}. Reconnecting in 5 seconds...",
+                        e
+                    );
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             }
@@ -178,7 +184,8 @@ impl ArbitrageService {
         let ws_manager = self.ws_manager.clone();
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
+            let mut interval =
+                tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
 
             loop {
                 interval.tick().await;
@@ -188,7 +195,10 @@ impl ArbitrageService {
                     info!(
                         "📊 Periodic scan: found {} arbitrage opportunities, best: {:.2}%",
                         opportunities.len(),
-                        opportunities.first().map(|o| o.profit_margin).unwrap_or(0.0)
+                        opportunities
+                            .first()
+                            .map(|o| o.profit_margin)
+                            .unwrap_or(0.0)
                     );
                 }
             }
@@ -241,7 +251,10 @@ impl ArbitrageService {
     }
 
     /// Get arbitrage history
-    pub fn get_arbitrage_history(&self, limit: usize) -> Result<Vec<crate::models::ArbitrageTrackingRecord>> {
+    pub fn get_arbitrage_history(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::models::ArbitrageTrackingRecord>> {
         self.storage.get_history(limit)
     }
 
@@ -267,29 +280,23 @@ impl ArbitrageService {
         info!("   Scan state before scan: {} matched markets", old_count);
 
         // 2. Fetch fresh market data
-        let (kalshi_events, kalshi_markets) = match self
-            .kalshi_client
-            .get_nba_events_and_markets()
-            .await
-        {
-            Ok(data) => data,
-            Err(e) => {
-                error!("❌ Failed to fetch Kalshi market data: {}", e);
-                return Ok((Vec::new(), SubscriptionInfo::empty()));
-            }
-        };
+        let (kalshi_events, kalshi_markets) =
+            match self.kalshi_client.get_nba_events_and_markets().await {
+                Ok(data) => data,
+                Err(e) => {
+                    error!("❌ Failed to fetch Kalshi market data: {}", e);
+                    return Ok((Vec::new(), SubscriptionInfo::empty()));
+                }
+            };
 
-        let (polymarket_events, polymarket_markets) = match self
-            .polymarket_client
-            .get_nba_events_and_markets()
-            .await
-        {
-            Ok(data) => data,
-            Err(e) => {
-                error!("❌ Failed to fetch Polymarket market data: {}", e);
-                return Ok((Vec::new(), SubscriptionInfo::empty()));
-            }
-        };
+        let (polymarket_events, polymarket_markets) =
+            match self.polymarket_client.get_nba_events_and_markets().await {
+                Ok(data) => data,
+                Err(e) => {
+                    error!("❌ Failed to fetch Polymarket market data: {}", e);
+                    return Ok((Vec::new(), SubscriptionInfo::empty()));
+                }
+            };
 
         info!(
             "   Scan state after scan: Kalshi {} events/{} markets, Polymarket {} events/{} markets",
@@ -307,7 +314,8 @@ impl ArbitrageService {
             &polymarket_events,
             &polymarket_markets,
         );
-        self.metrics.record(Operation::MarketMatch, match_start.elapsed());
+        self.metrics
+            .record(Operation::MarketMatch, match_start.elapsed());
 
         // 4. Find new matched markets
         let mut new_matched_markets = Vec::new();
@@ -333,7 +341,10 @@ impl ArbitrageService {
             info!("      {}. {} ({})", i + 1, mm.event_name, mm.team_name);
         }
         if new_matched_markets.len() > 5 {
-            info!("      ... {} more new markets", new_matched_markets.len() - 5);
+            info!(
+                "      ... {} more new markets",
+                new_matched_markets.len() - 5
+            );
         }
 
         // 6. Generate subscription info for new markets only

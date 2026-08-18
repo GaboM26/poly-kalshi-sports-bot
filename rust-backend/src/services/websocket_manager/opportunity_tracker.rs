@@ -5,8 +5,8 @@
 use chrono::Utc;
 use tracing::info;
 
-use crate::models::{ArbitrageOpportunity, ArbitrageTrackingRecord};
 use super::WebSocketManager;
+use crate::models::{ArbitrageOpportunity, ArbitrageTrackingRecord};
 
 impl WebSocketManager {
     /// Track a high-profit opportunity
@@ -101,14 +101,18 @@ impl WebSocketManager {
     }
 
     /// Get active tracking records for auto-trade checking
-    pub fn get_active_tracking_for_auto_trade(&self) -> Vec<(String, ArbitrageTrackingRecord, i64)> {
+    pub fn get_active_tracking_for_auto_trade(
+        &self,
+    ) -> Vec<(String, ArbitrageTrackingRecord, i64)> {
         let now = Utc::now();
         let tracking = self.active_tracking.read();
-        
+
         tracking
             .iter()
             .map(|(key, record)| {
-                let duration_ms = now.signed_duration_since(record.start_time).num_milliseconds();
+                let duration_ms = now
+                    .signed_duration_since(record.start_time)
+                    .num_milliseconds();
                 (key.clone(), record.clone(), duration_ms)
             })
             .collect()
@@ -117,18 +121,18 @@ impl WebSocketManager {
     /// Get current opportunity by key
     pub fn get_opportunity_by_key(&self, key: &str) -> Option<ArbitrageOpportunity> {
         let opps = self.opportunities.read();
-        opps.iter()
-            .find(|o| o.market_key() == key)
-            .cloned()
+        opps.iter().find(|o| o.market_key() == key).cloned()
     }
 
     /// Get tracking record and duration by key
     pub fn get_tracking_record(&self, key: &str) -> Option<(ArbitrageTrackingRecord, i64)> {
         let now = Utc::now();
         let tracking = self.active_tracking.read();
-        
+
         tracking.get(key).map(|record| {
-            let duration_ms = now.signed_duration_since(record.start_time).num_milliseconds();
+            let duration_ms = now
+                .signed_duration_since(record.start_time)
+                .num_milliseconds();
             (record.clone(), duration_ms)
         })
     }

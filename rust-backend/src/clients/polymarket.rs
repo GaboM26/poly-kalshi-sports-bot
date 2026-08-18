@@ -59,7 +59,6 @@ impl PolyOrderBook {
         }
         depth
     }
-
 }
 
 const POLY_WS_URL: &str = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
@@ -117,7 +116,7 @@ struct MarketOrderRequest {
     outcome: String,
     side: String,
     amount: f64,
-    price: Option<f64>,  // Rust计算的价格（包含滑点），避免Python重复获取订单簿
+    price: Option<f64>, // Rust计算的价格（包含滑点），避免Python重复获取订单簿
     order_type: Option<String>,
 }
 
@@ -187,10 +186,16 @@ impl PolymarketClient {
         let health_url = format!("{}/health", self.config.order_service_url);
         match self.http.get(&health_url).send().await {
             Ok(resp) if resp.status().is_success() => {
-                info!("✅ Polymarket Python order service connected: {}", self.config.order_service_url);
+                info!(
+                    "✅ Polymarket Python order service connected: {}",
+                    self.config.order_service_url
+                );
             }
             Ok(resp) => {
-                warn!("⚠️ Polymarket Python order service returned a non-success status: {}", resp.status());
+                warn!(
+                    "⚠️ Polymarket Python order service returned a non-success status: {}",
+                    resp.status()
+                );
             }
             Err(e) => {
                 warn!("⚠️ Polymarket Python order service is not running: {}. Order placement will be unavailable.", e);
@@ -203,7 +208,9 @@ impl PolymarketClient {
     pub async fn get_balance(&self) -> Result<f64> {
         let base_url = self.config.order_service_url.trim_end_matches('/');
         let url = format!("{}/account/snapshot", base_url);
-        let resp = self.http.get(&url)
+        let resp = self
+            .http
+            .get(&url)
             .send()
             .await
             .context("Failed to reach the Python order service")?;
@@ -213,8 +220,13 @@ impl PolymarketClient {
         }
 
         let data: Value = resp.json().await?;
-        if data.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-            let balance = data.get("balance")
+        if data
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            let balance = data
+                .get("balance")
                 .and_then(|v| v.as_f64())
                 .or_else(|| {
                     data.get("snapshot")
@@ -223,7 +235,10 @@ impl PolymarketClient {
                 .unwrap_or(0.0);
             Ok(balance)
         } else {
-            let error = data.get("error").and_then(|v| v.as_str()).unwrap_or("Unknown error");
+            let error = data
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error");
             anyhow::bail!("Failed to get balance: {}", error)
         }
     }
@@ -307,9 +322,7 @@ impl PolymarketClient {
                         continue;
                     }
 
-                    let question = market_data["question"]
-                        .as_str()
-                        .unwrap_or(event_title);
+                    let question = market_data["question"].as_str().unwrap_or(event_title);
 
                     // Get outcomes and prices
                     let outcomes_str = market_data["outcomes"].as_str();
@@ -370,7 +383,8 @@ impl PolymarketClient {
                     }
 
                     // Filter Over/Under markets
-                    if outcomes[0].to_lowercase() == "over" || outcomes[0].to_lowercase() == "under" {
+                    if outcomes[0].to_lowercase() == "over" || outcomes[0].to_lowercase() == "under"
+                    {
                         continue;
                     }
 
@@ -456,8 +470,11 @@ impl PolymarketClient {
     pub async fn market_buy(&self, token_id: &str, usdc_amount: f64) -> Result<Value> {
         let token_short = &token_id[..20.min(token_id.len())];
         info!("════════════════════════════════════════════════════════════");
-        info!("🎯 [市价买入] token={}..., usdc_amount={:.4}", token_short, usdc_amount);
-        
+        info!(
+            "🎯 [市价买入] token={}..., usdc_amount={:.4}",
+            token_short, usdc_amount
+        );
+
         // 从本地订单簿缓存获取价格并计算滑点
         let price = if let Some(book) = self.get_orderbook(token_id) {
             if let Some((best_ask, _)) = book.best_ask() {
@@ -472,7 +489,7 @@ impl PolymarketClient {
             warn!("   ⚠️ 本地订单簿不存在，Python将从API获取");
             None
         };
-        
+
         info!("════════════════════════════════════════════════════════════");
 
         let url = format!("{}/order/market", self.config.order_service_url);
@@ -481,11 +498,13 @@ impl PolymarketClient {
             outcome: "yes".to_string(),
             side: "buy".to_string(),
             amount: usdc_amount,
-            price,  // 传递Rust计算的价格
+            price, // 传递Rust计算的价格
             order_type: Some("FAK".to_string()),
         };
 
-        let resp = self.http.post(&url)
+        let resp = self
+            .http
+            .post(&url)
             .json(&request)
             .send()
             .await
@@ -494,11 +513,18 @@ impl PolymarketClient {
         let response: OrderResponse = resp.json().await?;
 
         if response.success {
-            info!("   ✅ Market buy succeeded! order_id={:?}", response.order_id);
+            info!(
+                "   ✅ Market buy succeeded! order_id={:?}",
+                response.order_id
+            );
             info!("════════════════════════════════════════════════════════════");
-            Ok(response.data.unwrap_or(json!({"success": true, "order_id": response.order_id})))
+            Ok(response
+                .data
+                .unwrap_or(json!({"success": true, "order_id": response.order_id})))
         } else {
-            let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
+            let error = response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
             error!("   ❌ Market buy failed: {}", error);
             info!("════════════════════════════════════════════════════════════");
             anyhow::bail!("Market buy failed: {}", error)
@@ -513,8 +539,11 @@ impl PolymarketClient {
     pub async fn market_sell(&self, token_id: &str, tokens: f64) -> Result<Value> {
         let token_short = &token_id[..20.min(token_id.len())];
         info!("════════════════════════════════════════════════════════════");
-        info!("🎯 [市价卖出] token={}..., tokens={:.4}", token_short, tokens);
-        
+        info!(
+            "🎯 [市价卖出] token={}..., tokens={:.4}",
+            token_short, tokens
+        );
+
         // 从本地订单簿缓存获取价格并计算滑点
         let price = if let Some(book) = self.get_orderbook(token_id) {
             if let Some((best_bid, _)) = book.best_bid() {
@@ -529,7 +558,7 @@ impl PolymarketClient {
             warn!("   ⚠️ 本地订单簿不存在，Python将从API获取");
             None
         };
-        
+
         info!("════════════════════════════════════════════════════════════");
 
         let url = format!("{}/order/market", self.config.order_service_url);
@@ -538,11 +567,13 @@ impl PolymarketClient {
             outcome: "yes".to_string(),
             side: "sell".to_string(),
             amount: tokens,
-            price,  // 传递Rust计算的价格
+            price, // 传递Rust计算的价格
             order_type: Some("FAK".to_string()),
         };
 
-        let resp = self.http.post(&url)
+        let resp = self
+            .http
+            .post(&url)
             .json(&request)
             .send()
             .await
@@ -551,11 +582,18 @@ impl PolymarketClient {
         let response: OrderResponse = resp.json().await?;
 
         if response.success {
-            info!("   ✅ Market sell succeeded! order_id={:?}", response.order_id);
+            info!(
+                "   ✅ Market sell succeeded! order_id={:?}",
+                response.order_id
+            );
             info!("════════════════════════════════════════════════════════════");
-            Ok(response.data.unwrap_or(json!({"success": true, "order_id": response.order_id})))
+            Ok(response
+                .data
+                .unwrap_or(json!({"success": true, "order_id": response.order_id})))
         } else {
-            let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
+            let error = response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
             error!("   ❌ Market sell failed: {}", error);
             info!("════════════════════════════════════════════════════════════");
             anyhow::bail!("Market sell failed: {}", error)
@@ -581,7 +619,7 @@ impl PolymarketClient {
             let orderbook = self.get_orderbook(token_id);
             let mut total_usdc = 0.0;
             let mut remaining = tokens;
-            
+
             if let Some(book) = orderbook {
                 // Estimate USDC needed (asks are sorted high to low, best ask at last)
                 for (price, size) in book.asks.iter().rev() {
@@ -593,16 +631,19 @@ impl PolymarketClient {
                     }
                 }
             }
-            
+
             // If no orderbook, estimate with 0.5 price
             if total_usdc == 0.0 {
                 total_usdc = tokens * 0.5;
             }
-            
+
             // 不要将滑点加到下单金额上！
             // 滑点应该只影响最高接受价格，由 market_buy 中的 price_with_slippage 处理
             // 下单金额保持为实际需要的 USDC 数量
-            info!("   💰 Estimated cost: {:.4} USDC to buy {:.2} tokens", total_usdc, tokens);
+            info!(
+                "   💰 Estimated cost: {:.4} USDC to buy {:.2} tokens",
+                total_usdc, tokens
+            );
             self.market_buy(token_id, total_usdc).await
         } else {
             self.market_sell(token_id, tokens).await
@@ -638,7 +679,9 @@ impl PolymarketClient {
             price: None,
             order_type: Some("FAK".to_string()),
         };
-        let resp = self.http.post(&url)
+        let resp = self
+            .http
+            .post(&url)
             .json(&request)
             .send()
             .await
@@ -646,11 +689,15 @@ impl PolymarketClient {
         let response: OrderResponse = resp.json().await?;
 
         if response.success {
-            Ok(response.data.unwrap_or(json!({"success": true, "order_id": response.order_id})))
+            Ok(response
+                .data
+                .unwrap_or(json!({"success": true, "order_id": response.order_id})))
         } else {
             anyhow::bail!(
                 "Polymarket US market order failed: {}",
-                response.error.unwrap_or_else(|| "Unknown error".to_string())
+                response
+                    .error
+                    .unwrap_or_else(|| "Unknown error".to_string())
             )
         }
     }
@@ -658,7 +705,9 @@ impl PolymarketClient {
     /// Get open orders via Python service
     pub async fn get_open_orders(&self) -> Result<Value> {
         let url = format!("{}/orders", self.config.order_service_url);
-        let resp = self.http.get(&url)
+        let resp = self
+            .http
+            .get(&url)
             .send()
             .await
             .context("调用 Python 下单服务失败")?;
@@ -668,10 +717,17 @@ impl PolymarketClient {
         }
 
         let data: Value = resp.json().await?;
-        if data.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if data
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             Ok(data.get("orders").cloned().unwrap_or(json!([])))
         } else {
-            let error = data.get("error").and_then(|v| v.as_str()).unwrap_or("Unknown error");
+            let error = data
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error");
             anyhow::bail!("Failed to get order: {}", error)
         }
     }
@@ -679,7 +735,9 @@ impl PolymarketClient {
     /// Get positions (placeholder - returns empty for now)
     pub async fn get_positions(&self) -> Result<Value> {
         let url = format!("{}/positions", self.config.order_service_url);
-        let response = self.http.get(&url)
+        let response = self
+            .http
+            .get(&url)
             .send()
             .await
             .context("Failed to reach the Python order service")?;
@@ -689,10 +747,17 @@ impl PolymarketClient {
         }
 
         let data: Value = response.json().await?;
-        if data.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if data
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             Ok(data.get("positions").cloned().unwrap_or_else(|| json!([])))
         } else {
-            let error = data.get("error").and_then(|v| v.as_str()).unwrap_or("Unknown error");
+            let error = data
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error");
             anyhow::bail!("Failed to get positions: {}", error)
         }
     }
@@ -704,7 +769,9 @@ impl PolymarketClient {
             order_id: order_id.to_string(),
         };
 
-        let resp = self.http.post(&url)
+        let resp = self
+            .http
+            .post(&url)
             .json(&request)
             .send()
             .await
@@ -715,7 +782,9 @@ impl PolymarketClient {
         if response.success {
             Ok(json!({"success": true, "order_id": order_id}))
         } else {
-            let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
+            let error = response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
             anyhow::bail!("Failed to cancel order: {}", error)
         }
     }
@@ -733,7 +802,10 @@ impl PolymarketClient {
         if let Some(tx) = tx {
             match tx.send(PolyWsCommand::Subscribe(token_ids.clone())).await {
                 Ok(_) => {
-                    info!("🔌 [Polymarket] Sending hot-subscription request for {} tokens", token_ids.len());
+                    info!(
+                        "🔌 [Polymarket] Sending hot-subscription request for {} tokens",
+                        token_ids.len()
+                    );
                     Ok(true)
                 }
                 Err(e) => {
@@ -761,7 +833,10 @@ impl PolymarketClient {
         if let Some(tx) = tx {
             match tx.send(PolyWsCommand::Unsubscribe(token_ids.clone())).await {
                 Ok(_) => {
-                    info!("🔌 [Polymarket] Sending unsubscribe request for {} tokens", token_ids.len());
+                    info!(
+                        "🔌 [Polymarket] Sending unsubscribe request for {} tokens",
+                        token_ids.len()
+                    );
                     Ok(true)
                 }
                 Err(e) => {
@@ -799,9 +874,7 @@ impl PolymarketClient {
             "type": "market"
         });
 
-        write
-            .send(Message::Text(subscribe_msg.to_string()))
-            .await?;
+        write.send(Message::Text(subscribe_msg.to_string())).await?;
 
         info!("Subscribed to {} Polymarket tokens", token_ids.len());
 
@@ -887,47 +960,47 @@ impl PolymarketClient {
     }
 
     /// Parse WebSocket message and update orderbook cache
-    /// 
+    ///
     /// Supports two message formats (matching Python implementation):
     /// 1. `book` (initial orderbook snapshot): { "event_type": "book", "asset_id": "...", "bids": [...], "asks": [...] }
     /// 2. `price_change` (real-time updates): { "event_type": "price_change", "price_changes": [{ "asset_id": "...", "price": "...", "size": "...", "side": "..." }, ...] }
-    /// 
+    ///
     /// Returns a Vec because price_change messages can contain multiple asset updates.
     fn parse_ws_message(
         text: &str,
         orderbook_cache: &Arc<RwLock<HashMap<String, PolyOrderBook>>>,
     ) -> Vec<PriceUpdate> {
         let mut updates = Vec::new();
-        
+
         // Parse JSON - handle both single object and array format
         let raw_data: Value = match serde_json::from_str(text) {
             Ok(v) => v,
             Err(_) => return updates,
         };
-        
+
         // Handle array format (WebSocket may return [{...}] instead of {...})
         let items: Vec<Value> = if raw_data.is_array() {
             raw_data.as_array().unwrap().clone()
         } else {
             vec![raw_data]
         };
-        
+
         for data in items {
             if let Some(parsed) = Self::parse_single_message(&data, orderbook_cache) {
                 updates.extend(parsed);
             }
         }
-        
+
         updates
     }
-    
+
     /// Parse a single message object
     fn parse_single_message(
         data: &Value,
         orderbook_cache: &Arc<RwLock<HashMap<String, PolyOrderBook>>>,
     ) -> Option<Vec<PriceUpdate>> {
         let event_type = data.get("event_type").and_then(|v| v.as_str())?;
-        
+
         match event_type {
             "book" => Self::parse_book_message(data, orderbook_cache),
             "price_change" => Self::parse_price_change_message(data, orderbook_cache),
@@ -935,9 +1008,9 @@ impl PolymarketClient {
             _ => None,
         }
     }
-    
+
     /// Parse book message (initial orderbook snapshot)
-    /// 
+    ///
     /// Format: { "event_type": "book", "asset_id": "...", "bids": [...], "asks": [...] }
     /// - bids: sorted ascending by price, best bid (highest) is last
     /// - asks: sorted descending by price, best ask (lowest) is last
@@ -948,33 +1021,35 @@ impl PolymarketClient {
         let asset_id = data.get("asset_id").and_then(|v| v.as_str())?.to_string();
         let bids = data.get("bids").and_then(|v| v.as_array())?;
         let asks = data.get("asks").and_then(|v| v.as_array())?;
-        
+
         // Build orderbook from snapshot
         let mut book = PolyOrderBook::default();
-        
+
         for entry in bids {
             if let Some((price, size)) = Self::extract_price_size_from_entry(entry) {
                 book.bids.push((price, size));
             }
         }
-        
+
         for entry in asks {
             if let Some((price, size)) = Self::extract_price_size_from_entry(entry) {
                 book.asks.push((price, size));
             }
         }
-        
+
         // Sort: bids ascending by price, asks descending by price
-        book.bids.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        book.asks.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        
+        book.bids
+            .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        book.asks
+            .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
         // Get best prices for PriceUpdate
         let yes_bid = book.best_bid().map(|(p, _)| p);
         let yes_ask = book.best_ask().map(|(p, _)| p);
-        
+
         // Store in cache
         orderbook_cache.write().insert(asset_id.clone(), book);
-        
+
         Some(vec![PriceUpdate {
             platform: Platform::Polymarket,
             market_id: asset_id,
@@ -985,9 +1060,9 @@ impl PolymarketClient {
             timestamp: Utc::now(),
         }])
     }
-    
+
     /// Parse price_change message (real-time price updates)
-    /// 
+    ///
     /// Format: { "event_type": "price_change", "price_changes": [{ "asset_id": "...", "price": "...", "size": "...", "side": "BUY"|"SELL", "best_bid": "...", "best_ask": "..." }, ...] }
     fn parse_price_change_message(
         data: &Value,
@@ -995,30 +1070,39 @@ impl PolymarketClient {
     ) -> Option<Vec<PriceUpdate>> {
         let price_changes = data.get("price_changes").and_then(|v| v.as_array())?;
         let mut updates = Vec::new();
-        
+
         for change in price_changes {
             let asset_id = match change.get("asset_id").and_then(|v| v.as_str()) {
                 Some(id) => id.to_string(),
                 None => continue,
             };
-            
+
             // Update orderbook cache with price/size/side delta
-            let delta_price = change.get("price").and_then(|v| Self::parse_string_or_number(v));
-            let delta_size = change.get("size").and_then(|v| Self::parse_string_or_number(v));
+            let delta_price = change
+                .get("price")
+                .and_then(|v| Self::parse_string_or_number(v));
+            let delta_size = change
+                .get("size")
+                .and_then(|v| Self::parse_string_or_number(v));
             let delta_side = change.get("side").and_then(|v| v.as_str());
-            
+
             if let (Some(price), Some(size), Some(side)) = (delta_price, delta_size, delta_side) {
                 let mut cache = orderbook_cache.write();
-                let book = cache.entry(asset_id.clone()).or_insert_with(PolyOrderBook::default);
-                
+                let book = cache
+                    .entry(asset_id.clone())
+                    .or_insert_with(PolyOrderBook::default);
+
                 let book_side = if side.to_uppercase() == "BUY" {
                     &mut book.bids
                 } else {
                     &mut book.asks
                 };
-                
+
                 // Find existing price level and update or insert
-                if let Some(pos) = book_side.iter().position(|(p, _)| (*p - price).abs() < 0.0001) {
+                if let Some(pos) = book_side
+                    .iter()
+                    .position(|(p, _)| (*p - price).abs() < 0.0001)
+                {
                     if size <= 0.0 {
                         // Remove level if size is 0
                         book_side.remove(pos);
@@ -1031,28 +1115,40 @@ impl PolymarketClient {
                     book_side.push((price, size));
                     // Re-sort: bids ascending, asks descending
                     if side.to_uppercase() == "BUY" {
-                        book_side.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                        book_side.sort_by(|a, b| {
+                            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                        });
                     } else {
-                        book_side.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                        book_side.sort_by(|a, b| {
+                            b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+                        });
                     }
                 }
             }
-            
+
             // Parse best_bid/best_ask for PriceUpdate (fallback to cache if not provided)
             let raw_best_bid = change.get("best_bid");
             let raw_best_ask = change.get("best_ask");
             let parsed_bid = raw_best_bid.and_then(|v| Self::parse_string_or_number(v));
             let parsed_ask = raw_best_ask.and_then(|v| Self::parse_string_or_number(v));
-            
+
             // 重要修复: 始终从本地订单簿缓存获取 best_ask
             // Polymarket 的 price_change 消息中的 best_ask 字段不可信（可能是过时的）
             // 我们自己维护的订单簿是通过 delta 更新的，更准确
-            let cache_bid_final = orderbook_cache.read().get(&asset_id).and_then(|b| b.best_bid()).map(|(p, _)| p);
-            let cache_ask_final = orderbook_cache.read().get(&asset_id).and_then(|b| b.best_ask()).map(|(p, _)| p);
-            
+            let cache_bid_final = orderbook_cache
+                .read()
+                .get(&asset_id)
+                .and_then(|b| b.best_bid())
+                .map(|(p, _)| p);
+            let cache_ask_final = orderbook_cache
+                .read()
+                .get(&asset_id)
+                .and_then(|b| b.best_ask())
+                .map(|(p, _)| p);
+
             let yes_bid = cache_bid_final.or(parsed_bid);
             let yes_ask = cache_ask_final.or(parsed_ask);
-            
+
             updates.push(PriceUpdate {
                 platform: Platform::Polymarket,
                 market_id: asset_id,
@@ -1063,27 +1159,31 @@ impl PolymarketClient {
                 timestamp: Utc::now(),
             });
         }
-        
+
         if updates.is_empty() {
             None
         } else {
             Some(updates)
         }
     }
-    
+
     /// Parse a value that can be string or number
     fn parse_string_or_number(v: &Value) -> Option<f64> {
         if v.is_null() {
             None
         } else if let Some(s) = v.as_str() {
-            if s.is_empty() { None } else { s.parse().ok() }
+            if s.is_empty() {
+                None
+            } else {
+                s.parse().ok()
+            }
         } else {
             v.as_f64()
         }
     }
-    
+
     /// Extract price from an orderbook entry
-    /// 
+    ///
     /// Entry can be either:
     /// - Object: { "price": "0.50", "size": "100" }
     /// - Array: [0.50, 100] (price, size)
@@ -1091,29 +1191,31 @@ impl PolymarketClient {
     fn extract_price_from_entry(entry: &Value) -> Option<f64> {
         if let Some(obj) = entry.as_object() {
             // Object format: { "price": "0.50", ... }
-            obj.get("price").and_then(|p| {
-                p.as_str().and_then(|s| s.parse().ok()).or(p.as_f64())
-            })
+            obj.get("price")
+                .and_then(|p| p.as_str().and_then(|s| s.parse().ok()).or(p.as_f64()))
         } else if let Some(arr) = entry.as_array() {
             // Array format: [price, size]
-            arr.first().and_then(|p| {
-                p.as_str().and_then(|s| s.parse().ok()).or(p.as_f64())
-            })
+            arr.first()
+                .and_then(|p| p.as_str().and_then(|s| s.parse().ok()).or(p.as_f64()))
         } else {
             None
         }
     }
 
     /// Extract price and size from an orderbook entry
-    /// 
+    ///
     /// Entry can be either:
     /// - Object: { "price": "0.50", "size": "100" }
     /// - Array: [price, size]
     fn extract_price_size_from_entry(entry: &Value) -> Option<(f64, f64)> {
         if let Some(obj) = entry.as_object() {
             // Object format: { "price": "0.50", "size": "100" }
-            let price = obj.get("price").and_then(|p| Self::parse_string_or_number(p))?;
-            let size = obj.get("size").and_then(|s| Self::parse_string_or_number(s))?;
+            let price = obj
+                .get("price")
+                .and_then(|p| Self::parse_string_or_number(p))?;
+            let size = obj
+                .get("size")
+                .and_then(|s| Self::parse_string_or_number(s))?;
             Some((price, size))
         } else if let Some(arr) = entry.as_array() {
             // Array format: [price, size]

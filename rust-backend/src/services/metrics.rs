@@ -8,7 +8,7 @@ use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Operation types for performance tracking
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +52,7 @@ impl AtomicMetric {
     fn record(&self, duration_ns: u64) {
         self.count.fetch_add(1, Ordering::Relaxed);
         self.total_ns.fetch_add(duration_ns, Ordering::Relaxed);
-        
+
         // Update max using compare-and-swap loop
         let mut current_max = self.max_ns.load(Ordering::Relaxed);
         while duration_ns > current_max {
@@ -114,15 +114,15 @@ pub struct PerformanceMetrics {
     arbitrage_calc: AtomicMetric,
     full_scan: AtomicMetric,
     market_match: AtomicMetric,
-    
+
     // API latencies (milliseconds)
     kalshi_api_latency_ms: AtomicU64,
     polymarket_api_latency_ms: AtomicU64,
-    
+
     // Flags to indicate if latency has been measured
     kalshi_latency_set: AtomicU64,
     polymarket_latency_set: AtomicU64,
-    
+
     // Balance cache (stored as cents to avoid floating point issues)
     kalshi_balance_cents: AtomicU64,
     polymarket_balance_cents: AtomicU64,
@@ -175,13 +175,15 @@ impl PerformanceMetrics {
 
     /// Set API latency for Kalshi
     pub fn set_kalshi_latency(&self, latency_ms: u64) {
-        self.kalshi_api_latency_ms.store(latency_ms, Ordering::Relaxed);
+        self.kalshi_api_latency_ms
+            .store(latency_ms, Ordering::Relaxed);
         self.kalshi_latency_set.store(1, Ordering::Relaxed);
     }
 
     /// Set API latency for Polymarket
     pub fn set_polymarket_latency(&self, latency_ms: u64) {
-        self.polymarket_api_latency_ms.store(latency_ms, Ordering::Relaxed);
+        self.polymarket_api_latency_ms
+            .store(latency_ms, Ordering::Relaxed);
         self.polymarket_latency_set.store(1, Ordering::Relaxed);
     }
 
@@ -195,7 +197,8 @@ impl PerformanceMetrics {
     /// Set cached balance for Polymarket (in dollars)
     pub fn set_polymarket_balance(&self, balance: f64) {
         let cents = (balance * 100.0) as u64;
-        self.polymarket_balance_cents.store(cents, Ordering::Relaxed);
+        self.polymarket_balance_cents
+            .store(cents, Ordering::Relaxed);
         self.polymarket_balance_set.store(1, Ordering::Relaxed);
     }
 
@@ -207,13 +210,13 @@ impl PerformanceMetrics {
         } else {
             None
         };
-        
+
         let polymarket = if self.polymarket_balance_set.load(Ordering::Relaxed) == 1 {
             Some(self.polymarket_balance_cents.load(Ordering::Relaxed) as f64 / 100.0)
         } else {
             None
         };
-        
+
         (kalshi, polymarket)
     }
 
@@ -224,14 +227,17 @@ impl PerformanceMetrics {
         } else {
             None
         };
-        
+
         let polymarket_ms = if self.polymarket_latency_set.load(Ordering::Relaxed) == 1 {
             Some(self.polymarket_api_latency_ms.load(Ordering::Relaxed))
         } else {
             None
         };
-        
-        ApiLatency { kalshi_ms, polymarket_ms }
+
+        ApiLatency {
+            kalshi_ms,
+            polymarket_ms,
+        }
     }
 
     /// Generate a metrics report
@@ -253,7 +259,7 @@ impl PerformanceMetrics {
                 0.0
             };
             let max_ms = max_ns as f64 / 1_000_000.0;
-            
+
             OperationStats {
                 name: op.name().to_string(),
                 count,
@@ -314,15 +320,17 @@ mod tests {
     #[test]
     fn test_record_timing() {
         let metrics = PerformanceMetrics::new();
-        
+
         metrics.record(Operation::ArbitrageCalc, Duration::from_millis(10));
         metrics.record(Operation::ArbitrageCalc, Duration::from_millis(20));
-        
+
         let report = metrics.report();
-        let arb_stats = report.operations.iter()
+        let arb_stats = report
+            .operations
+            .iter()
             .find(|s| s.name == "套利计算")
             .unwrap();
-        
+
         assert_eq!(arb_stats.count, 2);
         assert!(arb_stats.avg_ms >= 14.0 && arb_stats.avg_ms <= 16.0);
         assert!(arb_stats.max_ms >= 19.0 && arb_stats.max_ms <= 21.0);
@@ -331,17 +339,19 @@ mod tests {
     #[test]
     fn test_timing_guard() {
         let metrics = PerformanceMetrics::new();
-        
+
         {
             let _guard = metrics.start_timing(Operation::FullScan);
             thread::sleep(Duration::from_millis(5));
         }
-        
+
         let report = metrics.report();
-        let scan_stats = report.operations.iter()
+        let scan_stats = report
+            .operations
+            .iter()
             .find(|s| s.name == "全市场扫描")
             .unwrap();
-        
+
         assert_eq!(scan_stats.count, 1);
         assert!(scan_stats.avg_ms >= 4.0);
     }
@@ -349,16 +359,16 @@ mod tests {
     #[test]
     fn test_api_latency() {
         let metrics = PerformanceMetrics::new();
-        
+
         // Initially no latency
         let latency = metrics.get_api_latency();
         assert!(latency.kalshi_ms.is_none());
         assert!(latency.polymarket_ms.is_none());
-        
+
         // Set latencies
         metrics.set_kalshi_latency(45);
         metrics.set_polymarket_latency(120);
-        
+
         let latency = metrics.get_api_latency();
         assert_eq!(latency.kalshi_ms, Some(45));
         assert_eq!(latency.polymarket_ms, Some(120));
@@ -367,15 +377,17 @@ mod tests {
     #[test]
     fn test_reset() {
         let metrics = PerformanceMetrics::new();
-        
+
         metrics.record(Operation::ArbitrageCalc, Duration::from_millis(10));
         metrics.reset();
-        
+
         let report = metrics.report();
-        let arb_stats = report.operations.iter()
+        let arb_stats = report
+            .operations
+            .iter()
             .find(|s| s.name == "套利计算")
             .unwrap();
-        
+
         assert_eq!(arb_stats.count, 0);
     }
 }

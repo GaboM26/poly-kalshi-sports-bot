@@ -6,13 +6,15 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::params;
 
-use crate::models::ArbitrageTrackingRecord;
 use super::{ArbitrageStorage, StorageCommand};
+use crate::models::ArbitrageTrackingRecord;
 
 impl ArbitrageStorage {
     /// Start tracking an arbitrage opportunity
     pub fn track_start(&self, record: ArbitrageTrackingRecord) {
-        let _ = self.command_tx().try_send(StorageCommand::TrackStart(record));
+        let _ = self
+            .command_tx()
+            .try_send(StorageCommand::TrackStart(record));
     }
 
     /// Update tracking with new profit margin
@@ -50,7 +52,7 @@ impl ArbitrageStorage {
                     id: row.get(0)?,
                     event_name: row.get(1)?,
                     team_name: row.get(2)?,
-                    game_date: None,  // Not stored in old records
+                    game_date: None, // Not stored in old records
                     kalshi_market_id: row.get(3)?,
                     polymarket_market_id: row.get(4)?,
                     start_time: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
@@ -125,10 +127,14 @@ impl ArbitrageStorage {
         let order_clause = format!("{} {}", sort_field, sort_dir);
 
         // Count total matching records
-        let count_query = format!("SELECT COUNT(*) FROM arbitrage_tracking WHERE {}", where_clause);
+        let count_query = format!(
+            "SELECT COUNT(*) FROM arbitrage_tracking WHERE {}",
+            where_clause
+        );
         let total: i64 = {
             let mut stmt = conn.prepare(&count_query)?;
-            let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+            let params_refs: Vec<&dyn rusqlite::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
             stmt.query_row(&params_refs[..], |row| row.get(0))?
         };
 
@@ -232,9 +238,9 @@ impl ArbitrageStorage {
 
         // Duration stats (calculate from timestamps)
         let mut duration_stmt = conn.prepare(
-            "SELECT start_time, end_time FROM arbitrage_tracking WHERE end_time IS NOT NULL"
+            "SELECT start_time, end_time FROM arbitrage_tracking WHERE end_time IS NOT NULL",
         )?;
-        
+
         let durations: Vec<i64> = duration_stmt
             .query_map([], |row| {
                 let start: String = row.get(0)?;
@@ -262,7 +268,7 @@ impl ArbitrageStorage {
         let mut event_stmt = conn.prepare(
             "SELECT event_name, COUNT(*) as count, AVG(max_profit_margin) as avg_profit
              FROM arbitrage_tracking WHERE end_time IS NOT NULL
-             GROUP BY event_name ORDER BY count DESC LIMIT 10"
+             GROUP BY event_name ORDER BY count DESC LIMIT 10",
         )?;
         let top_events: Vec<serde_json::Value> = event_stmt
             .query_map([], |row| {
@@ -278,7 +284,7 @@ impl ArbitrageStorage {
         let mut team_stmt = conn.prepare(
             "SELECT team_name, COUNT(*) as count, AVG(max_profit_margin) as avg_profit
              FROM arbitrage_tracking WHERE end_time IS NOT NULL
-             GROUP BY team_name ORDER BY count DESC LIMIT 10"
+             GROUP BY team_name ORDER BY count DESC LIMIT 10",
         )?;
         let top_teams: Vec<serde_json::Value> = team_stmt
             .query_map([], |row| {

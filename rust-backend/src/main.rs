@@ -20,7 +20,7 @@ use crate::config::Config;
 async fn main() -> Result<()> {
     // Create the log directory.
     std::fs::create_dir_all("logs")?;
-    
+
     // Initialize the debug log path (using the current working directory).
     utils::init_debug_log_path(None);
 

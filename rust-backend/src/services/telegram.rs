@@ -27,9 +27,7 @@ impl TelegramClient {
 
     /// Check if Telegram notifications are enabled and configured
     pub fn is_enabled(&self) -> bool {
-        self.config.enabled 
-            && !self.config.bot_token.is_empty() 
-            && !self.config.chat_id.is_empty()
+        self.config.enabled && !self.config.bot_token.is_empty() && !self.config.chat_id.is_empty()
     }
 
     /// Send auto-trade notification
@@ -87,24 +85,21 @@ impl TelegramClient {
             "❌"
         };
 
-        let mut message = format!(
-            "{} Auto-trade notification\n\n",
-            status_icon
-        );
-        
+        let mut message = format!("{} Auto-trade notification\n\n", status_icon);
+
         message.push_str(&format!("Event: {}\n", event_name));
         message.push_str(&format!("Team: {}\n", team_name));
         message.push_str(&format!("Profit margin: {:.2}%\n", profit_margin));
         message.push_str(&format!("Amount invested: ${:.2}\n", total_amount));
         message.push_str(&format!("Expected profit: ${:.2}\n\n", expected_profit));
-        
+
         let kalshi_status = if kalshi_success {
             "✅ 成功".to_string()
         } else {
             format!("❌ Failed - {}", kalshi_error.unwrap_or("Unknown error"))
         };
         message.push_str(&format!("Kalshi: {}\n", kalshi_status));
-        
+
         let poly_status = if poly_success {
             "✅ 成功".to_string()
         } else {
@@ -128,11 +123,7 @@ impl TelegramClient {
             "parse_mode": "HTML",
         });
 
-        let response = self.http
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await?;
+        let response = self.http.post(&url).json(&payload).send().await?;
 
         if response.status().is_success() {
             info!("Telegram notification sent successfully");

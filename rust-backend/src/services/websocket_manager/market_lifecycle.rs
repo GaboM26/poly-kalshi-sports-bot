@@ -5,13 +5,12 @@
 use chrono::Utc;
 use tracing::{debug, info};
 
-use crate::core::EventMatcher;
 use super::{
-    WebSocketManager,
-    EXTREME_PRICE_THRESHOLD_KALSHI_HIGH, EXTREME_PRICE_THRESHOLD_KALSHI_LOW,
-    EXTREME_PRICE_THRESHOLD_POLY_HIGH, EXTREME_PRICE_THRESHOLD_POLY_LOW,
-    ENDED_DETECTION_DURATION_MINS,
+    WebSocketManager, ENDED_DETECTION_DURATION_MINS, EXTREME_PRICE_THRESHOLD_KALSHI_HIGH,
+    EXTREME_PRICE_THRESHOLD_KALSHI_LOW, EXTREME_PRICE_THRESHOLD_POLY_HIGH,
+    EXTREME_PRICE_THRESHOLD_POLY_LOW,
 };
+use crate::core::EventMatcher;
 
 impl WebSocketManager {
     /// Check if a market shows extreme prices indicating the game has ended
@@ -22,7 +21,7 @@ impl WebSocketManager {
         }
         let mm = &markets[idx];
         let market_key = mm.market_key();
-        
+
         if self.confirmed_ended_markets.read().contains(&market_key) {
             return true;
         }
@@ -45,15 +44,18 @@ impl WebSocketManager {
         if kalshi_extreme && poly_extreme {
             let now = Utc::now();
             let mut detection = self.ended_market_detection.write();
-            
+
             if let Some(first_detected) = detection.get(&market_key) {
                 let duration = now.signed_duration_since(*first_detected);
                 if duration.num_minutes() >= ENDED_DETECTION_DURATION_MINS {
                     drop(detection);
-                    self.confirmed_ended_markets.write().insert(market_key.clone());
+                    self.confirmed_ended_markets
+                        .write()
+                        .insert(market_key.clone());
                     info!(
                         "🏁 比赛已结束: {} (极端价格持续 {} 分钟)",
-                        market_key, duration.num_minutes()
+                        market_key,
+                        duration.num_minutes()
                     );
                     return true;
                 }
@@ -61,7 +63,11 @@ impl WebSocketManager {
                 detection.insert(market_key.clone(), now);
                 debug!(
                     "⏱️ 检测到极端价格: {} (Kalshi: {:.0}¢/{:.0}¢, Poly: {:.0}¢/{:.0}¢)",
-                    market_key, k_yes_ask * 100.0, k_no_ask * 100.0, p_yes * 100.0, p_no * 100.0
+                    market_key,
+                    k_yes_ask * 100.0,
+                    k_no_ask * 100.0,
+                    p_yes * 100.0,
+                    p_no * 100.0
                 );
             }
         } else {
@@ -76,21 +82,21 @@ impl WebSocketManager {
 
     /// Check if Kalshi prices are extreme (99/2 or 2/99)
     pub(crate) fn is_kalshi_price_extreme(&self, yes_ask: f64, no_ask: f64) -> bool {
-        let pattern1 = yes_ask >= EXTREME_PRICE_THRESHOLD_KALSHI_HIGH 
+        let pattern1 = yes_ask >= EXTREME_PRICE_THRESHOLD_KALSHI_HIGH
             && no_ask <= EXTREME_PRICE_THRESHOLD_KALSHI_LOW;
-        let pattern2 = yes_ask <= EXTREME_PRICE_THRESHOLD_KALSHI_LOW 
+        let pattern2 = yes_ask <= EXTREME_PRICE_THRESHOLD_KALSHI_LOW
             && no_ask >= EXTREME_PRICE_THRESHOLD_KALSHI_HIGH;
-        
+
         pattern1 || pattern2
     }
 
     /// Check if Polymarket prices are extreme (100/0 or 0/100)
     pub(crate) fn is_poly_price_extreme(&self, yes_price: f64, no_price: f64) -> bool {
-        let pattern1 = yes_price >= EXTREME_PRICE_THRESHOLD_POLY_HIGH 
+        let pattern1 = yes_price >= EXTREME_PRICE_THRESHOLD_POLY_HIGH
             && no_price <= EXTREME_PRICE_THRESHOLD_POLY_LOW;
-        let pattern2 = yes_price <= EXTREME_PRICE_THRESHOLD_POLY_LOW 
+        let pattern2 = yes_price <= EXTREME_PRICE_THRESHOLD_POLY_LOW
             && no_price >= EXTREME_PRICE_THRESHOLD_POLY_HIGH;
-        
+
         pattern1 || pattern2
     }
 
@@ -105,13 +111,13 @@ impl WebSocketManager {
             let markets = self.matched_markets.read();
             for (idx, mm) in markets.iter().enumerate() {
                 let market_key = mm.market_key();
-                
+
                 if self.check_market_ended(idx) {
                     indices_to_remove.push(idx);
                     market_keys_to_remove.push(market_key);
-                    
+
                     kalshi_to_unsub.push(mm.kalshi_market.market_id.clone());
-                    
+
                     if let Some(token) = mm.polymarket_market.get_token_for_team(&mm.team_name) {
                         poly_to_unsub.push(token.to_string());
                     }
@@ -153,7 +159,7 @@ impl WebSocketManager {
             for token in &poly_to_unsub {
                 lookup.remove(token);
             }
-            
+
             let markets = self.matched_markets.read();
             let matcher = EventMatcher::new(24);
             let new_sub_info = matcher.get_subscription_info(&markets);

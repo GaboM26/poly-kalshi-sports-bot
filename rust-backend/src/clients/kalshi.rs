@@ -30,7 +30,7 @@ use tracing::{error, info, warn};
 use crate::config::KalshiConfig;
 use crate::models::{KalshiEvent, KalshiMarket, Platform, PriceUpdate};
 
-const KALSHI_WS_URL: &str = "wss://api.elections.kalshi.com/trade-api/ws/v2";
+const KALSHI_WS_URL: &str = "wss://external-api-ws.kalshi.com/trade-api/ws/v2";
 
 /// Subscription command for Kalshi WebSocket
 #[derive(Debug, Clone)]
@@ -92,7 +92,9 @@ impl KalshiClient {
         // Parse RSA private key - 支持 PKCS#8 和 PKCS#1 两种格式
         let private_key = RsaPrivateKey::from_pkcs8_pem(&config.api_secret)
             .or_else(|_| RsaPrivateKey::from_pkcs1_pem(&config.api_secret))
-            .with_context(|| "Failed to parse Kalshi RSA private key (tried both PKCS#8 and PKCS#1 formats)")?;
+            .with_context(|| {
+                "Failed to parse Kalshi RSA private key (tried both PKCS#8 and PKCS#1 formats)"
+            })?;
         let signing_key = Arc::new(BlindedSigningKey::<Sha256>::new(private_key));
 
         Ok(Self {
@@ -194,96 +196,114 @@ impl KalshiClient {
     }
 
     /// Get NBA events and markets
-    pub async fn get_nba_events_and_markets(&self) -> Result<(Vec<KalshiEvent>, Vec<KalshiMarket>)>
-    {
+    pub async fn get_nba_events_and_markets(
+        &self,
+    ) -> Result<(Vec<KalshiEvent>, Vec<KalshiMarket>)> {
         let mut events = Vec::new();
         let mut markets = Vec::new();
 
-        // Get NBA events
-        let response = self
-            .get("/events?series_ticker=KXNBAGAME&status=open&with_nested_markets=true")
-            .await?;
-
-        let event_array = response["events"]
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("Invalid events response"))?;
-
-        for event_data in event_array {
-            let event_ticker = event_data["event_ticker"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-
-            // Extract team names from event_ticker (e.g., "KXNBAGAME-26JAN07CLELAL" -> "CLE", "LAL")
-            let team_names = extract_teams_from_ticker(&event_ticker);
-            if team_names.is_none() {
-                continue;
-            }
-            let (mut team_a, mut team_b) = team_names.unwrap();
-
-            // Standardize event name (alphabetical order)
-            if team_a > team_b {
-                std::mem::swap(&mut team_a, &mut team_b);
-            }
-            let event_name = format!("{}-{}", team_a, team_b);
-
-            // Parse start time from event ticker (Python-compatible approach)
-            // Format: KXNBA-26JAN08-DAL-UTA -> 2026-01-08
-            let start_time = extract_game_date_from_ticker(&event_ticker);
-
-            let mut event = KalshiEvent {
-                event_id: event_ticker.clone(),
-                name: event_name.clone(),
-                team_a: team_a.clone(),
-                team_b: team_b.clone(),
-                start_time,
-                category: "NBA".to_string(),
-                markets: Vec::new(),
-            };
-
-            // Parse markets
-            if let Some(market_array) = event_data["markets"].as_array() {
-                for market_data in market_array {
-                    let ticker = market_data["ticker"].as_str().unwrap_or("").to_string();
-
-                    // Extract team from ticker (e.g., "KXNBAGAME-26JAN07CLELAL-CLE" -> "CLE")
-                    let team_name = match extract_team_from_ticker(&ticker) {
-                        Some(t) => t,
-                        None => continue,
-                    };
-
-                    let opponent_name = if team_name.to_uppercase() == team_a.to_uppercase() {
-                        team_b.clone()
-                    } else {
-                        team_a.clone()
-                    };
-
-                    let yes_price = market_data["yes_ask"]
-                        .as_f64()
-                        .or_else(|| market_data["last_price"].as_f64())
-                        .unwrap_or(0.5)
-                        / 100.0;
-                    let no_price = 1.0 - yes_price;
-
-                    let market = KalshiMarket {
-                        market_id: ticker.clone(),
-                        event_id: event_ticker.clone(),
-                        event_name: event_name.clone(),
-                        team_name: team_name.clone(),
-                        opponent_name,
-                        yes_price,
-                        no_price,
-                        start_time,
-                        volume: market_data["volume"].as_f64(),
-                        liquidity: market_data["open_interest"].as_f64(),
-                    };
-
-                    event.markets.push(market.clone());
-                    markets.push(market);
+        // Kalshi paginates event results. Fetch every open NBA event before matching.
+        let mut cursor = None;
+        loop {
+            let path = {
+                let mut query = url::form_urlencoded::Serializer::new(String::new());
+                query.append_pair("series_ticker", "KXNBAGAME");
+                query.append_pair("status", "open");
+                query.append_pair("with_nested_markets", "true");
+                query.append_pair("limit", "200");
+                if let Some(cursor) = cursor.as_deref() {
+                    query.append_pair("cursor", cursor);
                 }
+                format!("/events?{}", query.finish())
+            };
+            let response = self.get(&path).await?;
+            let event_array = response["events"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("Invalid events response"))?;
+
+            for event_data in event_array {
+                let event_ticker = event_data["event_ticker"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+
+                // Extract team names from event_ticker (e.g., "KXNBAGAME-26JAN07CLELAL" -> "CLE", "LAL")
+                let team_names = extract_teams_from_ticker(&event_ticker);
+                if team_names.is_none() {
+                    continue;
+                }
+                let (mut team_a, mut team_b) = team_names.unwrap();
+
+                // Standardize event name (alphabetical order)
+                if team_a > team_b {
+                    std::mem::swap(&mut team_a, &mut team_b);
+                }
+                let event_name = format!("{}-{}", team_a, team_b);
+
+                // Parse start time from event ticker (Python-compatible approach)
+                // Format: KXNBA-26JAN08-DAL-UTA -> 2026-01-08
+                let start_time = extract_game_date_from_ticker(&event_ticker);
+
+                let mut event = KalshiEvent {
+                    event_id: event_ticker.clone(),
+                    name: event_name.clone(),
+                    team_a: team_a.clone(),
+                    team_b: team_b.clone(),
+                    start_time,
+                    category: "NBA".to_string(),
+                    markets: Vec::new(),
+                };
+
+                // Parse markets
+                if let Some(market_array) = event_data["markets"].as_array() {
+                    for market_data in market_array {
+                        let ticker = market_data["ticker"].as_str().unwrap_or("").to_string();
+
+                        // Extract team from ticker (e.g., "KXNBAGAME-26JAN07CLELAL-CLE" -> "CLE")
+                        let team_name = match extract_team_from_ticker(&ticker) {
+                            Some(t) => t,
+                            None => continue,
+                        };
+
+                        let opponent_name = if team_name.to_uppercase() == team_a.to_uppercase() {
+                            team_b.clone()
+                        } else {
+                            team_a.clone()
+                        };
+
+                        let yes_price = market_data["yes_ask"]
+                            .as_f64()
+                            .or_else(|| market_data["last_price"].as_f64())
+                            .unwrap_or(0.5)
+                            / 100.0;
+                        let no_price = 1.0 - yes_price;
+
+                        let market = KalshiMarket {
+                            market_id: ticker.clone(),
+                            event_id: event_ticker.clone(),
+                            event_name: event_name.clone(),
+                            team_name: team_name.clone(),
+                            opponent_name,
+                            yes_price,
+                            no_price,
+                            start_time,
+                            volume: market_data["volume"].as_f64(),
+                            liquidity: market_data["open_interest"].as_f64(),
+                        };
+
+                        event.markets.push(market.clone());
+                        markets.push(market);
+                    }
+                }
+
+                events.push(event);
             }
 
-            events.push(event);
+            let next_cursor = response["cursor"].as_str().unwrap_or_default();
+            if next_cursor.is_empty() {
+                break;
+            }
+            cursor = Some(next_cursor.to_string());
         }
 
         info!(
@@ -305,10 +325,10 @@ impl KalshiClient {
         price: i32, // 当前市场价格（美分），会在此基础上+1美分以保证成交
     ) -> Result<Value> {
         let action = if side == "buy" { "buy" } else { "sell" };
-        
+
         // 在当前价格基础上加1美分以保证成交，但不超过99美分
         let adjusted_price = (price + 1).min(99);
-        
+
         // 根据 outcome 决定使用 yes_price 还是 no_price
         // Kalshi API 要求市价单必须提供价格参数
         let mut body = json!({
@@ -318,7 +338,7 @@ impl KalshiClient {
             "count": count,
             "type": "market",
         });
-        
+
         if outcome == "yes" {
             body["yes_price"] = json!(adjusted_price);
         } else {
@@ -335,7 +355,7 @@ impl KalshiClient {
         } else {
             "/portfolio/orders".to_string()
         };
-        
+
         self.get(&path).await
     }
 
@@ -386,7 +406,10 @@ impl KalshiClient {
         if let Some(tx) = tx {
             match tx.send(KalshiWsCommand::Subscribe(tickers.clone())).await {
                 Ok(_) => {
-                    info!("🔌 [Kalshi] Sending hot-subscription request for {} markets", tickers.len());
+                    info!(
+                        "🔌 [Kalshi] Sending hot-subscription request for {} markets",
+                        tickers.len()
+                    );
                     Ok(true)
                 }
                 Err(e) => {
@@ -413,7 +436,10 @@ impl KalshiClient {
         if let Some(tx) = tx {
             match tx.send(KalshiWsCommand::Unsubscribe(tickers.clone())).await {
                 Ok(_) => {
-                    info!("🔌 [Kalshi] Sending unsubscribe request for {} markets", tickers.len());
+                    info!(
+                        "🔌 [Kalshi] Sending unsubscribe request for {} markets",
+                        tickers.len()
+                    );
                     Ok(true)
                 }
                 Err(e) => {
@@ -439,14 +465,12 @@ impl KalshiClient {
         // 使用 HTTP headers 传递认证信息（与 Python 版本一致）
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         let mut request = KALSHI_WS_URL.into_client_request()?;
-        request.headers_mut().insert(
-            "KALSHI-ACCESS-KEY",
-            self.config.api_key.parse().unwrap(),
-        );
-        request.headers_mut().insert(
-            "KALSHI-ACCESS-SIGNATURE",
-            signature.parse().unwrap(),
-        );
+        request
+            .headers_mut()
+            .insert("KALSHI-ACCESS-KEY", self.config.api_key.parse().unwrap());
+        request
+            .headers_mut()
+            .insert("KALSHI-ACCESS-SIGNATURE", signature.parse().unwrap());
         request.headers_mut().insert(
             "KALSHI-ACCESS-TIMESTAMP",
             timestamp.to_string().parse().unwrap(),
@@ -459,6 +483,8 @@ impl KalshiClient {
             .with_context(|| "连接 Kalshi WebSocket 失败")?;
 
         let (mut write, mut read) = ws_stream.split();
+        let mut pending_subscription_ids = HashMap::new();
+        let mut subscription_ids = HashMap::new();
 
         // Create channel for dynamic subscriptions/unsubscriptions
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<KalshiWsCommand>(100);
@@ -467,6 +493,7 @@ impl KalshiClient {
         // Subscribe to initial order books - 逐个订阅（与 Python 版本一致）
         let mut next_msg_id = 1;
         for ticker in tickers.iter() {
+            pending_subscription_ids.insert(next_msg_id, ticker.clone());
             let subscribe_msg = json!({
                 "id": next_msg_id,
                 "cmd": "subscribe",
@@ -477,9 +504,7 @@ impl KalshiClient {
             });
             next_msg_id += 1;
 
-            write
-                .send(Message::Text(subscribe_msg.to_string()))
-                .await?;
+            write.send(Message::Text(subscribe_msg.to_string())).await?;
         }
 
         info!("Subscribed to {} Kalshi markets", tickers.len());
@@ -493,6 +518,11 @@ impl KalshiClient {
                 msg = read.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
+                            Self::record_subscription(
+                                &text,
+                                &mut pending_subscription_ids,
+                                &mut subscription_ids,
+                            );
                             if let Some(update) = Self::parse_ws_message(&text, &orderbook_cache) {
                                 if price_tx.send(update).await.is_err() {
                                     warn!("Price update channel has closed");
@@ -521,6 +551,7 @@ impl KalshiClient {
                         KalshiWsCommand::Subscribe(new_tickers) => {
                             info!("🔌 [Kalshi] Processing hot subscription for {} new markets", new_tickers.len());
                             for ticker in new_tickers.iter() {
+                                pending_subscription_ids.insert(next_msg_id, ticker.clone());
                                 let subscribe_msg = json!({
                                     "id": next_msg_id,
                                     "cmd": "subscribe",
@@ -538,14 +569,25 @@ impl KalshiClient {
                             info!("✅ [Kalshi] Hot subscription completed for {} markets", new_tickers.len());
                         }
                         KalshiWsCommand::Unsubscribe(tickers_to_unsub) => {
-                            info!("🔌 [Kalshi] Processing unsubscribe for {} markets", tickers_to_unsub.len());
-                            for ticker in tickers_to_unsub.iter() {
+                            let ticker_count = tickers_to_unsub.len();
+                            info!("🔌 [Kalshi] Processing unsubscribe for {} markets", ticker_count);
+                            let subscription_ids_to_remove: Vec<u64> = tickers_to_unsub
+                                .iter()
+                                .filter_map(|ticker| {
+                                    let sid = subscription_ids.remove(ticker);
+                                    if sid.is_none() {
+                                        warn!("Kalshi subscription for {} is not active", ticker);
+                                    }
+                                    sid
+                                })
+                                .collect();
+
+                            if !subscription_ids_to_remove.is_empty() {
                                 let unsubscribe_msg = json!({
                                     "id": next_msg_id,
                                     "cmd": "unsubscribe",
                                     "params": {
-                                        "channels": ["orderbook_delta"],
-                                        "market_ticker": ticker
+                                        "sids": subscription_ids_to_remove
                                     }
                                 });
                                 next_msg_id += 1;
@@ -553,11 +595,11 @@ impl KalshiClient {
                                 if let Err(e) = write.send(Message::Text(unsubscribe_msg.to_string())).await {
                                     error!("❌ [Kalshi] Unsubscribe send failed: {}", e);
                                 }
-                                
-                                // Also remove from orderbook cache
-                                orderbook_cache.write().remove(ticker);
                             }
-                            info!("✅ [Kalshi] Unsubscribe completed for {} markets", tickers_to_unsub.len());
+                            for ticker in tickers_to_unsub {
+                                orderbook_cache.write().remove(&ticker);
+                            }
+                            info!("✅ [Kalshi] Unsubscribe completed for {} markets", ticker_count);
                         }
                     }
                 }
@@ -568,6 +610,36 @@ impl KalshiClient {
         *self.command_tx.write() = None;
 
         Ok(())
+    }
+
+    /// Associate Kalshi's server subscription ID with the market that initiated it.
+    fn record_subscription(
+        text: &str,
+        pending_subscription_ids: &mut HashMap<u64, String>,
+        subscription_ids: &mut HashMap<String, u64>,
+    ) {
+        let Ok(data) = serde_json::from_str::<Value>(text) else {
+            return;
+        };
+        if data["type"].as_str() != Some("subscribed") {
+            return;
+        }
+
+        let (Some(request_id), Some(subscription_id)) =
+            (data["id"].as_u64(), data["msg"]["sid"].as_u64())
+        else {
+            warn!("Kalshi returned an invalid subscription confirmation");
+            return;
+        };
+
+        if let Some(ticker) = pending_subscription_ids.remove(&request_id) {
+            subscription_ids.insert(ticker, subscription_id);
+        } else {
+            warn!(
+                "Kalshi returned an unexpected subscription confirmation: {}",
+                request_id
+            );
+        }
     }
 
     /// Parse WebSocket message
@@ -583,33 +655,17 @@ impl KalshiClient {
                 let msg = data.get("msg")?;
                 let ticker = msg.get("market_ticker")?.as_str()?;
 
-                let yes_data = msg.get("yes")?.as_array()?;
-                let no_data = msg.get("no")?.as_array()?;
-
                 let mut book = OrderBook::default();
-
-                for entry in yes_data {
-                    if let (Some(price), Some(qty)) = (entry.get(0), entry.get(1)) {
-                        book.yes.push((
-                            price.as_i64().unwrap_or(0) as i32,
-                            qty.as_i64().unwrap_or(0) as i32,
-                        ));
-                    }
-                }
-                for entry in no_data {
-                    if let (Some(price), Some(qty)) = (entry.get(0), entry.get(1)) {
-                        book.no.push((
-                            price.as_i64().unwrap_or(0) as i32,
-                            qty.as_i64().unwrap_or(0) as i32,
-                        ));
-                    }
-                }
+                book.yes = parse_price_levels(msg, "yes_dollars_fp", "yes");
+                book.no = parse_price_levels(msg, "no_dollars_fp", "no");
 
                 // Sort by price
                 book.yes.sort_by_key(|(p, _)| *p);
                 book.no.sort_by_key(|(p, _)| *p);
 
-                orderbook_cache.write().insert(ticker.to_string(), book.clone());
+                orderbook_cache
+                    .write()
+                    .insert(ticker.to_string(), book.clone());
 
                 // Calculate prices
                 let yes_bid = book.yes.last().map(|(p, _)| *p as f64 / 100.0);
@@ -632,8 +688,22 @@ impl KalshiClient {
             "orderbook_delta" => {
                 let msg = data.get("msg")?;
                 let ticker = msg.get("market_ticker")?.as_str()?;
-                let price = msg.get("price")?.as_i64()? as i32;
-                let delta = msg.get("delta")?.as_i64()? as i32;
+                let price = msg
+                    .get("price_dollars")
+                    .and_then(dollars_to_cents)
+                    .or_else(|| {
+                        msg.get("price")
+                            .and_then(Value::as_i64)
+                            .map(|price| price as i32)
+                    })?;
+                let delta = msg
+                    .get("delta_fp")
+                    .and_then(fixed_point_to_i32)
+                    .or_else(|| {
+                        msg.get("delta")
+                            .and_then(Value::as_i64)
+                            .map(|delta| delta as i32)
+                    })?;
                 let side = msg.get("side")?.as_str()?;
 
                 // Apply delta
@@ -684,6 +754,71 @@ impl KalshiClient {
     }
 }
 
+/// Parse current fixed-point levels and the legacy integer-cent representation.
+fn parse_price_levels(message: &Value, fixed_point_key: &str, legacy_key: &str) -> Vec<(i32, i32)> {
+    let Some(levels) = message
+        .get(fixed_point_key)
+        .or_else(|| message.get(legacy_key))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+
+    let fixed_point = message.get(fixed_point_key).is_some();
+    levels
+        .iter()
+        .filter_map(|entry| {
+            let price = entry.get(0)?;
+            let quantity = entry.get(1).and_then(quantity_to_i32)?;
+            let price = if fixed_point {
+                dollars_to_cents(price)?
+            } else {
+                price.as_i64()? as i32
+            };
+            Some((price, quantity))
+        })
+        .collect()
+}
+
+/// Convert Kalshi's fixed-point dollar price to an exact whole-cent price.
+fn dollars_to_cents(value: &Value) -> Option<i32> {
+    let price = value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .or_else(|| value.as_number().map(ToString::to_string))?;
+    let (dollars, fractional) = price.split_once('.').unwrap_or((&price, ""));
+    let dollars = dollars.parse::<i32>().ok()?;
+    let mut cents = fractional.chars().take(2).collect::<String>();
+    while cents.len() < 2 {
+        cents.push('0');
+    }
+    if fractional.chars().skip(2).any(|digit| digit != '0') {
+        return None;
+    }
+
+    let cents = dollars
+        .checked_mul(100)?
+        .checked_add(cents.parse::<i32>().ok()?)?;
+    (0..=100).contains(&cents).then_some(cents)
+}
+
+fn quantity_to_i32(value: &Value) -> Option<i32> {
+    fixed_point_to_i32(value).filter(|quantity| *quantity >= 0)
+}
+
+fn fixed_point_to_i32(value: &Value) -> Option<i32> {
+    let quantity = value
+        .as_f64()
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|quantity| quantity.parse::<f64>().ok())
+        })?
+        .round();
+    (quantity.is_finite() && quantity >= i32::MIN as f64 && quantity <= i32::MAX as f64)
+        .then_some(quantity as i32)
+}
+
 /// Parse team names from event title
 /// Extract team names from event_ticker
 /// Example: "KXNBAGAME-26JAN07CLELAL" -> ("CLE", "LAL")
@@ -703,10 +838,7 @@ fn extract_teams_from_ticker(event_ticker: &str) -> Option<(String, String)> {
 
     // Most common: 6 characters (3 + 3)
     if teams_str.len() == 6 {
-        return Some((
-            teams_str[..3].to_uppercase(),
-            teams_str[3..].to_uppercase(),
-        ));
+        return Some((teams_str[..3].to_uppercase(), teams_str[3..].to_uppercase()));
     }
 
     // Handle 7+ characters by splitting in the middle
@@ -734,7 +866,7 @@ fn extract_team_from_ticker(ticker: &str) -> Option<String> {
 }
 
 /// Extract game date from event ticker (e.g., "KXNBA-26JAN08-DAL-UTA" -> 2026-01-08)
-/// 
+///
 /// Format: The second part contains the date as "YYMMMDD" where:
 /// - YY: two-digit year (e.g., "26" for 2026)
 /// - MMM: three-letter month abbreviation (e.g., "JAN")
@@ -744,38 +876,47 @@ fn extract_game_date_from_ticker(event_ticker: &str) -> Option<DateTime<Utc>> {
     if parts.len() < 2 {
         return None;
     }
-    
+
     let date_part = parts[1];
     if date_part.len() < 7 {
         return None;
     }
-    
+
     // Parse year (first 2 characters)
     let year_str = &date_part[..2];
     let year: i32 = match year_str.parse::<i32>() {
         Ok(y) => 2000 + y,
         Err(_) => return None,
     };
-    
+
     // Parse month (characters 2-5, e.g., "JAN")
     let month_str = &date_part[2..5];
     let month: u32 = match month_str.to_uppercase().as_str() {
-        "JAN" => 1, "FEB" => 2, "MAR" => 3, "APR" => 4,
-        "MAY" => 5, "JUN" => 6, "JUL" => 7, "AUG" => 8,
-        "SEP" => 9, "OCT" => 10, "NOV" => 11, "DEC" => 12,
+        "JAN" => 1,
+        "FEB" => 2,
+        "MAR" => 3,
+        "APR" => 4,
+        "MAY" => 5,
+        "JUN" => 6,
+        "JUL" => 7,
+        "AUG" => 8,
+        "SEP" => 9,
+        "OCT" => 10,
+        "NOV" => 11,
+        "DEC" => 12,
         _ => return None,
     };
-    
+
     // Parse day (characters 5-7)
     let day_str = &date_part[5..7];
     let day: u32 = match day_str.parse() {
         Ok(d) => d,
         Err(_) => return None,
     };
-    
+
     use chrono::NaiveDate;
     let naive_date = NaiveDate::from_ymd_opt(year, month, day)?;
     let naive_datetime = naive_date.and_hms_opt(12, 0, 0)?;
-    
+
     Some(DateTime::from_naive_utc_and_offset(naive_datetime, Utc))
 }

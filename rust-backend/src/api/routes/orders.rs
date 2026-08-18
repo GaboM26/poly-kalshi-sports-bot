@@ -139,7 +139,9 @@ pub async fn execute_arbitrage(
     let poly_market_slug = mm.polymarket_market.market_id.as_str();
 
     // Check Polymarket depth
-    let poly_depth = mm.polymarket_market.get_token_for_team(&mm.team_name)
+    let poly_depth = mm
+        .polymarket_market
+        .get_token_for_team(&mm.team_name)
         .and_then(|token| service.polymarket_client.get_orderbook(token))
         .map(|book| book.ask_depth(poly_amount))
         .unwrap_or(0.0);
@@ -222,7 +224,11 @@ pub async fn get_kalshi_orders(
 ) -> impl IntoResponse {
     let service = state.service.read().await;
 
-    match service.kalshi_client.get_orders(query.status.as_deref()).await {
+    match service
+        .kalshi_client
+        .get_orders(query.status.as_deref())
+        .await
+    {
         Ok(orders) => Json(serde_json::json!({
             "orders": orders.get("orders").unwrap_or(&serde_json::json!([]))
         }))
@@ -317,13 +323,20 @@ pub async fn cancel_polymarket_order(
 }
 
 /// Get auto-trade queue status
-pub async fn get_auto_trade_queue(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn get_auto_trade_queue(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let service = state.service.read().await;
-    let queue: Vec<String> = service.ws_manager.auto_trade_queue.read().iter().cloned().collect();
-    let is_executing = service.ws_manager.is_auto_trading.load(std::sync::atomic::Ordering::Relaxed);
-    
+    let queue: Vec<String> = service
+        .ws_manager
+        .auto_trade_queue
+        .read()
+        .iter()
+        .cloned()
+        .collect();
+    let is_executing = service
+        .ws_manager
+        .is_auto_trading
+        .load(std::sync::atomic::Ordering::Relaxed);
+
     Json(serde_json::json!({
         "queue": queue,
         "queue_length": queue.len(),

@@ -17,7 +17,7 @@ pub struct KalshiConfig {
 }
 
 fn default_kalshi_base_url() -> String {
-    "https://api.elections.kalshi.com/trade-api/v2".to_string()
+    "https://external-api.kalshi.com/trade-api/v2".to_string()
 }
 
 /// Polymarket US API configuration.
@@ -70,11 +70,11 @@ fn default_min_profit_margin() -> f64 {
 }
 
 fn default_bet_amount() -> f64 {
-    10.0  // Testing phase: reduced from 100.0 to 10.0
+    10.0 // Testing phase: reduced from 100.0 to 10.0
 }
 
 fn default_tracking_threshold() -> f64 {
-    1.0  // Start tracking when profit >= 1%
+    1.0 // Start tracking when profit >= 1%
 }
 
 impl Default for SettingsConfig {

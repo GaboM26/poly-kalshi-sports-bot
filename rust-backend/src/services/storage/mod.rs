@@ -8,10 +8,10 @@
 //! - `settings_repo`: Application settings
 //! - `excluded_markets_repo`: Excluded markets for auto-trade
 
-mod tracking_repo;
 mod auto_trade_repo;
-mod settings_repo;
 mod excluded_markets_repo;
+mod settings_repo;
+mod tracking_repo;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -31,10 +31,7 @@ pub use auto_trade_repo::AutoTradeState;
 /// Storage command for async queue
 pub enum StorageCommand {
     TrackStart(ArbitrageTrackingRecord),
-    TrackUpdate {
-        id: String,
-        profit_margin: f64,
-    },
+    TrackUpdate { id: String, profit_margin: f64 },
     TrackEnd(String),
 }
 
@@ -285,10 +282,7 @@ impl ArbitrageStorage {
         )?;
 
         // Migrate existing table: add game_date column if it doesn't exist
-        let _ = conn.execute(
-            "ALTER TABLE excluded_markets ADD COLUMN game_date TEXT",
-            [],
-        );
+        let _ = conn.execute("ALTER TABLE excluded_markets ADD COLUMN game_date TEXT", []);
 
         Ok(())
     }

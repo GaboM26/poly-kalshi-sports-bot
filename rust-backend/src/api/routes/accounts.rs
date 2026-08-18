@@ -2,12 +2,7 @@
 
 use std::sync::Arc;
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
@@ -75,7 +70,7 @@ pub async fn get_account_balance(State(state): State<Arc<AppState>>) -> impl Int
                 "portfolio_value": 0.0,
                 "updated_ts": 0
             })
-        },
+        }
         Err(e) => serde_json::json!({
             "available": false,
             "error": e.to_string()
@@ -91,7 +86,7 @@ pub async fn get_account_balance(State(state): State<Arc<AppState>>) -> impl Int
                 "trades": 0,
                 "positions": 0
             })
-        },
+        }
         Err(e) => serde_json::json!({
             "available": false,
             "error": e.to_string()
@@ -183,7 +178,10 @@ pub async fn login(
     let auth_config = &state.config.auth;
 
     if req.username != auth_config.username || req.password != auth_config.password {
-        error!("Login failed: invalid username or password (username: {})", req.username);
+        error!(
+            "Login failed: invalid username or password (username: {})",
+            req.username
+        );
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({

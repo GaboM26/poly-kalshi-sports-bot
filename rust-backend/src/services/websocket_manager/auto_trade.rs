@@ -5,9 +5,9 @@
 use chrono::NaiveDate;
 use tracing::info;
 
+use super::WebSocketManager;
 use crate::models::generate_market_key;
 use crate::services::storage::AutoTradeState;
-use super::WebSocketManager;
 
 impl WebSocketManager {
     /// Get current auto-trade state
@@ -49,8 +49,8 @@ impl WebSocketManager {
         min_contracts: Option<i32>,
     ) -> anyhow::Result<()> {
         self.storage.update_auto_trade_settings(
-            max_amount, 
-            min_duration_ms, 
+            max_amount,
+            min_duration_ms,
             max_trade_count,
             flexible_mode,
             max_contracts,
@@ -73,7 +73,7 @@ impl WebSocketManager {
             default_bet_amount,
             tracking_threshold,
         )?;
-        
+
         info!("📝 Application settings updated in the database");
         Ok(())
     }
@@ -92,20 +92,42 @@ impl WebSocketManager {
         }
 
         if state.trade_count >= state.max_trade_count {
-            return (false, format!("Maximum trade count reached ({}/{})", state.trade_count, state.max_trade_count));
+            return (
+                false,
+                format!(
+                    "Maximum trade count reached ({}/{})",
+                    state.trade_count, state.max_trade_count
+                ),
+            );
         }
 
         if duration_ms < state.min_duration_ms {
-            return (false, format!("Duration too short ({}ms < {}ms)", duration_ms, state.min_duration_ms));
+            return (
+                false,
+                format!(
+                    "Duration too short ({}ms < {}ms)",
+                    duration_ms, state.min_duration_ms
+                ),
+            );
         }
 
         if self.auto_traded_opportunities.read().contains(key) {
-            return (false, "This opportunity has already been auto-traded".to_string());
+            return (
+                false,
+                "This opportunity has already been auto-traded".to_string(),
+            );
         }
 
-        (true, format!("Eligible for trade ({}/{})", state.trade_count + 1, state.max_trade_count))
+        (
+            true,
+            format!(
+                "Eligible for trade ({}/{})",
+                state.trade_count + 1,
+                state.max_trade_count
+            ),
+        )
     }
-    
+
     /// Load excluded markets from database on startup
     pub fn load_excluded_markets(&self) {
         match self.storage.get_excluded_markets() {
@@ -121,12 +143,20 @@ impl WebSocketManager {
             }
         }
     }
-    
+
     /// Exclude a market from auto-trade
-    pub fn exclude_market(&self, event_name: &str, team_name: &str, game_date: Option<NaiveDate>) -> bool {
+    pub fn exclude_market(
+        &self,
+        event_name: &str,
+        team_name: &str,
+        game_date: Option<NaiveDate>,
+    ) -> bool {
         let key = generate_market_key(event_name, game_date, team_name);
-        
-        match self.storage.exclude_market(event_name, team_name, game_date) {
+
+        match self
+            .storage
+            .exclude_market(event_name, team_name, game_date)
+        {
             Ok(inserted) => {
                 if inserted {
                     self.excluded_markets.write().insert(key);
@@ -139,12 +169,20 @@ impl WebSocketManager {
             }
         }
     }
-    
+
     /// Remove a market from exclusion list
-    pub fn unexclude_market(&self, event_name: &str, team_name: &str, game_date: Option<NaiveDate>) -> bool {
+    pub fn unexclude_market(
+        &self,
+        event_name: &str,
+        team_name: &str,
+        game_date: Option<NaiveDate>,
+    ) -> bool {
         let key = generate_market_key(event_name, game_date, team_name);
-        
-        match self.storage.unexclude_market(event_name, team_name, game_date) {
+
+        match self
+            .storage
+            .unexclude_market(event_name, team_name, game_date)
+        {
             Ok(removed) => {
                 if removed {
                     self.excluded_markets.write().remove(&key);
@@ -157,15 +195,17 @@ impl WebSocketManager {
             }
         }
     }
-    
+
     /// Get list of excluded markets
     pub fn get_excluded_markets(&self) -> Vec<String> {
         self.excluded_markets.read().iter().cloned().collect()
     }
-    
+
     /// Mark an opportunity as auto-traded
     pub fn mark_as_auto_traded(&self, key: &str) {
-        self.auto_traded_opportunities.write().insert(key.to_string());
+        self.auto_traded_opportunities
+            .write()
+            .insert(key.to_string());
         self.clear_skip_records_for_market(key);
     }
 
@@ -184,10 +224,10 @@ impl WebSocketManager {
         } else {
             "other"
         };
-        
+
         let record_key = format!("{}:{}", market_key, simplified_reason);
         let mut recorded = self.recorded_skip_reasons.write();
-        
+
         if recorded.contains(&record_key) {
             false
         } else {
@@ -219,28 +259,56 @@ impl WebSocketManager {
         let kalshi_book = match &self.kalshi_client {
             Some(client) => client.get_orderbook(kalshi_ticker),
             None => {
-                return (false, 0, 0.0, 0.0, 0.0, "Kalshi client not initialized".to_string());
+                return (
+                    false,
+                    0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    "Kalshi client not initialized".to_string(),
+                );
             }
         };
 
         let poly_book = match &self.polymarket_client {
             Some(client) => client.get_orderbook(poly_token),
             None => {
-                return (false, 0, 0.0, 0.0, 0.0, "Polymarket client not initialized".to_string());
+                return (
+                    false,
+                    0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    "Polymarket client not initialized".to_string(),
+                );
             }
         };
 
         let kalshi_book = match kalshi_book {
             Some(book) => book,
             None => {
-                return (false, 0, 0.0, 0.0, 0.0, format!("Kalshi order book does not exist: {}", kalshi_ticker));
+                return (
+                    false,
+                    0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    format!("Kalshi order book does not exist: {}", kalshi_ticker),
+                );
             }
         };
 
         let poly_book = match poly_book {
             Some(book) => book,
             None => {
-                return (false, 0, 0.0, 0.0, 0.0, format!("Polymarket order book does not exist: {}", poly_token));
+                return (
+                    false,
+                    0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    format!("Polymarket order book does not exist: {}", poly_token),
+                );
             }
         };
 
@@ -250,11 +318,21 @@ impl WebSocketManager {
             let prices = self.kalshi_prices.read();
             match prices.get(kalshi_ticker) {
                 Some((_, yes_ask, _, no_ask)) => {
-                    if kalshi_side == "yes" { *yes_ask } else { *no_ask }
+                    if kalshi_side == "yes" {
+                        *yes_ask
+                    } else {
+                        *no_ask
+                    }
                 }
                 None => {
-                    return (false, kalshi_depth, 0.0, 0.0, 0.0, 
-                        format!("Kalshi price cache does not exist: {}", kalshi_ticker));
+                    return (
+                        false,
+                        kalshi_depth,
+                        0.0,
+                        0.0,
+                        0.0,
+                        format!("Kalshi price cache does not exist: {}", kalshi_ticker),
+                    );
                 }
             }
         };
@@ -262,8 +340,14 @@ impl WebSocketManager {
         let (poly_price, poly_size) = match poly_book.best_ask() {
             Some((price, size)) => (price, size),
             None => {
-                return (false, kalshi_depth, 0.0, kalshi_price, 0.0, 
-                    "Polymarket has no available ask".to_string());
+                return (
+                    false,
+                    kalshi_depth,
+                    0.0,
+                    kalshi_price,
+                    0.0,
+                    "Polymarket has no available ask".to_string(),
+                );
             }
         };
 
@@ -271,26 +355,58 @@ impl WebSocketManager {
         let poly_depth = poly_price * poly_size;
 
         if kalshi_depth < required_contracts {
-            return (false, kalshi_depth, poly_depth, kalshi_price, poly_price,
-                format!("Kalshi depth insufficient: need {} contracts, available {} contracts",
-                    required_contracts, kalshi_depth));
+            return (
+                false,
+                kalshi_depth,
+                poly_depth,
+                kalshi_price,
+                poly_price,
+                format!(
+                    "Kalshi depth insufficient: need {} contracts, available {} contracts",
+                    required_contracts, kalshi_depth
+                ),
+            );
         }
 
         if poly_depth < required_poly_amount {
-            return (false, kalshi_depth, poly_depth, kalshi_price, poly_price,
-                format!("Polymarket depth insufficient: need ${:.2}, available ${:.2}",
-                    required_poly_amount, poly_depth));
+            return (
+                false,
+                kalshi_depth,
+                poly_depth,
+                kalshi_price,
+                poly_price,
+                format!(
+                    "Polymarket depth insufficient: need ${:.2}, available ${:.2}",
+                    required_poly_amount, poly_depth
+                ),
+            );
         }
 
         let price_sum = kalshi_price + poly_price;
         if price_sum >= 1.0 {
-            return (false, kalshi_depth, poly_depth, kalshi_price, poly_price,
-                format!("Arbitrage condition no longer holds: K={:.4} + P={:.4} = {:.4} >= 1",
-                    kalshi_price, poly_price, price_sum));
+            return (
+                false,
+                kalshi_depth,
+                poly_depth,
+                kalshi_price,
+                poly_price,
+                format!(
+                    "Arbitrage condition no longer holds: K={:.4} + P={:.4} = {:.4} >= 1",
+                    kalshi_price, poly_price, price_sum
+                ),
+            );
         }
 
-        (true, kalshi_depth, poly_depth, kalshi_price, poly_price, 
-            format!("Validation passed: K depth={}, P depth=${:.2}, combined price={:.4}",
-                kalshi_depth, poly_depth, price_sum))
+        (
+            true,
+            kalshi_depth,
+            poly_depth,
+            kalshi_price,
+            poly_price,
+            format!(
+                "Validation passed: K depth={}, P depth=${:.2}, combined price={:.4}",
+                kalshi_depth, poly_depth, price_sum
+            ),
+        )
     }
 }

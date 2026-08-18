@@ -60,13 +60,13 @@ pub async fn get_orderbook_depth(
     Query(query): Query<OrderbookDepthQuery>,
 ) -> impl IntoResponse {
     let service = state.service.read().await;
-    
+
     // Get Kalshi orderbook depth (Yes and No)
     let kalshi_depth = query.kalshi_ticker.as_ref().and_then(|ticker| {
         service.kalshi_client.get_orderbook(ticker).map(|book| {
             let yes_best_bid = book.yes.last();
             let no_best_bid = book.no.last();
-            
+
             let yes = if let Some((price_cents, qty)) = no_best_bid {
                 SideDepth {
                     price: Some(1.0 - (*price_cents as f64 / 100.0)),
@@ -75,7 +75,7 @@ pub async fn get_orderbook_depth(
             } else {
                 SideDepth::default()
             };
-            
+
             let no = if let Some((price_cents, qty)) = yes_best_bid {
                 SideDepth {
                     price: Some(1.0 - (*price_cents as f64 / 100.0)),
@@ -84,36 +84,53 @@ pub async fn get_orderbook_depth(
             } else {
                 SideDepth::default()
             };
-            
+
             PlatformDepthDual { yes, no }
         })
     });
-    
+
     // Get Polymarket orderbook depth
-    let poly_yes = query.poly_token_id.as_ref().and_then(|token_id| {
-        service.polymarket_client.get_orderbook(token_id).and_then(|book| {
-            book.best_ask().map(|(price, size)| SideDepth {
-                price: Some(price),
-                size: Some(size),
-            })
+    let poly_yes = query
+        .poly_token_id
+        .as_ref()
+        .and_then(|token_id| {
+            service
+                .polymarket_client
+                .get_orderbook(token_id)
+                .and_then(|book| {
+                    book.best_ask().map(|(price, size)| SideDepth {
+                        price: Some(price),
+                        size: Some(size),
+                    })
+                })
         })
-    }).unwrap_or_default();
-    
-    let poly_no = query.poly_opponent_token_id.as_ref().and_then(|token_id| {
-        service.polymarket_client.get_orderbook(token_id).and_then(|book| {
-            book.best_ask().map(|(price, size)| SideDepth {
-                price: Some(price),
-                size: Some(size),
-            })
+        .unwrap_or_default();
+
+    let poly_no = query
+        .poly_opponent_token_id
+        .as_ref()
+        .and_then(|token_id| {
+            service
+                .polymarket_client
+                .get_orderbook(token_id)
+                .and_then(|book| {
+                    book.best_ask().map(|(price, size)| SideDepth {
+                        price: Some(price),
+                        size: Some(size),
+                    })
+                })
         })
-    }).unwrap_or_default();
-    
+        .unwrap_or_default();
+
     let poly_depth = if query.poly_token_id.is_some() || query.poly_opponent_token_id.is_some() {
-        Some(PlatformDepthDual { yes: poly_yes, no: poly_no })
+        Some(PlatformDepthDual {
+            yes: poly_yes,
+            no: poly_no,
+        })
     } else {
         None
     };
-    
+
     Json(OrderbookDepthResponse {
         kalshi: kalshi_depth,
         polymarket: poly_depth,
