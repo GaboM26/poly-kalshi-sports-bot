@@ -77,20 +77,4 @@ impl ArbitrageStorage {
         Ok(keys)
     }
 
-    /// Check if a market is excluded
-    /// Uses generate_market_key to create consistent key format including date
-    pub fn is_market_excluded(&self, event_name: &str, team_name: &str, game_date: Option<NaiveDate>) -> Result<bool> {
-        let conn = self.conn().lock();
-        
-        // Use the unified key generator
-        let market_key = generate_market_key(event_name, game_date, team_name);
-        
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM excluded_markets WHERE market_key = ?1",
-            params![market_key],
-            |row| row.get(0),
-        )?;
-        
-        Ok(count > 0)
-    }
 }

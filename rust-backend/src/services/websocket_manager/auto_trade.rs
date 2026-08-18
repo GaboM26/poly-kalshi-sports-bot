@@ -18,14 +18,14 @@ impl WebSocketManager {
     /// Enable auto-trade
     pub fn enable_auto_trade(&self) -> anyhow::Result<()> {
         self.storage.set_auto_trade_enabled(true)?;
-        info!("🤖 自动下单已开启");
+        info!("🤖 Auto-trading enabled");
         Ok(())
     }
 
     /// Disable auto-trade
     pub fn disable_auto_trade(&self) -> anyhow::Result<()> {
         self.storage.set_auto_trade_enabled(false)?;
-        info!("🛑 自动下单已关闭");
+        info!("🛑 Auto-trading disabled");
         Ok(())
     }
 
@@ -33,7 +33,7 @@ impl WebSocketManager {
     pub fn reset_trade_count(&self) -> anyhow::Result<()> {
         self.storage.reset_trade_count()?;
         self.auto_traded_opportunities.write().clear();
-        info!("🔄 下单次数已重置");
+        info!("🔄 Trade count reset");
         Ok(())
     }
 
@@ -74,7 +74,7 @@ impl WebSocketManager {
             tracking_threshold,
         )?;
         
-        info!("📝 应用设置已更新到数据库");
+        info!("📝 Application settings updated in the database");
         Ok(())
     }
 
@@ -83,27 +83,27 @@ impl WebSocketManager {
         let state = self.get_auto_trade_state();
 
         if !state.enabled {
-            return (false, "自动下单未开启".to_string());
+            return (false, "Auto-trading is disabled".to_string());
         }
 
         let normalized_key = key.to_uppercase();
         if self.excluded_markets.read().contains(&normalized_key) {
-            return (false, "该市场已被排除".to_string());
+            return (false, "This market has been excluded".to_string());
         }
 
         if state.trade_count >= state.max_trade_count {
-            return (false, format!("已达到最大下单次数 ({}/{})", state.trade_count, state.max_trade_count));
+            return (false, format!("Maximum trade count reached ({}/{})", state.trade_count, state.max_trade_count));
         }
 
         if duration_ms < state.min_duration_ms {
-            return (false, format!("持续时间不足 ({}ms < {}ms)", duration_ms, state.min_duration_ms));
+            return (false, format!("Duration too short ({}ms < {}ms)", duration_ms, state.min_duration_ms));
         }
 
         if self.auto_traded_opportunities.read().contains(key) {
-            return (false, "该机会已自动下单".to_string());
+            return (false, "This opportunity has already been auto-traded".to_string());
         }
 
-        (true, format!("可以下单 ({}/{})", state.trade_count + 1, state.max_trade_count))
+        (true, format!("Eligible for trade ({}/{})", state.trade_count + 1, state.max_trade_count))
     }
     
     /// Load excluded markets from database on startup
@@ -113,11 +113,11 @@ impl WebSocketManager {
                 let count = markets.len();
                 *self.excluded_markets.write() = markets;
                 if count > 0 {
-                    info!("📋 从数据库加载了 {} 个排除的市场", count);
+                    info!("📋 Loaded {} excluded markets from the database", count);
                 }
             }
             Err(e) => {
-                tracing::error!("加载排除市场列表失败: {}", e);
+                tracing::error!("Failed to load excluded markets list: {}", e);
             }
         }
     }
@@ -134,7 +134,7 @@ impl WebSocketManager {
                 inserted
             }
             Err(e) => {
-                tracing::error!("保存排除市场到数据库失败: {}", e);
+                tracing::error!("Failed to save excluded market to the database: {}", e);
                 false
             }
         }
@@ -152,7 +152,7 @@ impl WebSocketManager {
                 removed
             }
             Err(e) => {
-                tracing::error!("从数据库移除排除市场失败: {}", e);
+                tracing::error!("Failed to remove excluded market from the database: {}", e);
                 false
             }
         }
@@ -163,12 +163,6 @@ impl WebSocketManager {
         self.excluded_markets.read().iter().cloned().collect()
     }
     
-    /// Check if a market is excluded
-    pub fn is_market_excluded(&self, event_name: &str, team_name: &str, game_date: Option<NaiveDate>) -> bool {
-        let key = generate_market_key(event_name, game_date, team_name);
-        self.excluded_markets.read().contains(&key)
-    }
-
     /// Mark an opportunity as auto-traded
     pub fn mark_as_auto_traded(&self, key: &str) {
         self.auto_traded_opportunities.write().insert(key.to_string());
@@ -177,15 +171,15 @@ impl WebSocketManager {
 
     /// Check if a skip reason should be recorded (deduplication)
     pub fn should_record_skip(&self, market_key: &str, skip_reason: &str) -> bool {
-        let simplified_reason = if skip_reason.contains("Polymarket 深度不足") {
+        let simplified_reason = if skip_reason.contains("Polymarket depth insufficient") {
             "poly_depth"
-        } else if skip_reason.contains("Kalshi 深度不足") {
+        } else if skip_reason.contains("Kalshi depth insufficient") {
             "kalshi_depth"
-        } else if skip_reason.contains("超过限额") {
+        } else if skip_reason.contains("exceeds limit") {
             "over_limit"
-        } else if skip_reason.contains("无法获取") {
+        } else if skip_reason.contains("unable to retrieve") {
             "token_not_found"
-        } else if skip_reason.contains("价格和超过") {
+        } else if skip_reason.contains("combined price exceeds") {
             "price_sum_invalid"
         } else {
             "other"
@@ -225,28 +219,28 @@ impl WebSocketManager {
         let kalshi_book = match &self.kalshi_client {
             Some(client) => client.get_orderbook(kalshi_ticker),
             None => {
-                return (false, 0, 0.0, 0.0, 0.0, "Kalshi client 未初始化".to_string());
+                return (false, 0, 0.0, 0.0, 0.0, "Kalshi client not initialized".to_string());
             }
         };
 
         let poly_book = match &self.polymarket_client {
             Some(client) => client.get_orderbook(poly_token),
             None => {
-                return (false, 0, 0.0, 0.0, 0.0, "Polymarket client 未初始化".to_string());
+                return (false, 0, 0.0, 0.0, 0.0, "Polymarket client not initialized".to_string());
             }
         };
 
         let kalshi_book = match kalshi_book {
             Some(book) => book,
             None => {
-                return (false, 0, 0.0, 0.0, 0.0, format!("Kalshi 订单簿不存在: {}", kalshi_ticker));
+                return (false, 0, 0.0, 0.0, 0.0, format!("Kalshi order book does not exist: {}", kalshi_ticker));
             }
         };
 
         let poly_book = match poly_book {
             Some(book) => book,
             None => {
-                return (false, 0, 0.0, 0.0, 0.0, format!("Polymarket 订单簿不存在: {}", poly_token));
+                return (false, 0, 0.0, 0.0, 0.0, format!("Polymarket order book does not exist: {}", poly_token));
             }
         };
 
@@ -260,7 +254,7 @@ impl WebSocketManager {
                 }
                 None => {
                     return (false, kalshi_depth, 0.0, 0.0, 0.0, 
-                        format!("Kalshi 价格缓存不存在: {}", kalshi_ticker));
+                        format!("Kalshi price cache does not exist: {}", kalshi_ticker));
                 }
             }
         };
@@ -269,7 +263,7 @@ impl WebSocketManager {
             Some((price, size)) => (price, size),
             None => {
                 return (false, kalshi_depth, 0.0, kalshi_price, 0.0, 
-                    "Polymarket 无可用 ask".to_string());
+                    "Polymarket has no available ask".to_string());
             }
         };
 
@@ -278,25 +272,25 @@ impl WebSocketManager {
 
         if kalshi_depth < required_contracts {
             return (false, kalshi_depth, poly_depth, kalshi_price, poly_price,
-                format!("Kalshi 深度不足: 需要 {} 合约, 可用 {} 合约", 
+                format!("Kalshi depth insufficient: need {} contracts, available {} contracts",
                     required_contracts, kalshi_depth));
         }
 
         if poly_depth < required_poly_amount {
             return (false, kalshi_depth, poly_depth, kalshi_price, poly_price,
-                format!("Polymarket 深度不足: 需要 ${:.2}, 可用 ${:.2}", 
+                format!("Polymarket depth insufficient: need ${:.2}, available ${:.2}",
                     required_poly_amount, poly_depth));
         }
 
         let price_sum = kalshi_price + poly_price;
         if price_sum >= 1.0 {
             return (false, kalshi_depth, poly_depth, kalshi_price, poly_price,
-                format!("套利条件已消失: K={:.4} + P={:.4} = {:.4} >= 1", 
+                format!("Arbitrage condition no longer holds: K={:.4} + P={:.4} = {:.4} >= 1",
                     kalshi_price, poly_price, price_sum));
         }
 
         (true, kalshi_depth, poly_depth, kalshi_price, poly_price, 
-            format!("验证通过: K深度={}, P深度=${:.2}, 价格和={:.4}", 
+            format!("Validation passed: K depth={}, P depth=${:.2}, combined price={:.4}",
                 kalshi_depth, poly_depth, price_sum))
     }
 }

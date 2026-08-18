@@ -182,16 +182,6 @@ fn default_category() -> String {
     "NBA".to_string()
 }
 
-impl KalshiEvent {
-    /// Get market by team name
-    pub fn get_market_by_team(&self, team: &str) -> Option<&KalshiMarket> {
-        let team_upper = team.to_uppercase();
-        self.markets
-            .iter()
-            .find(|m| m.team_name.to_uppercase() == team_upper)
-    }
-}
-
 /// Polymarket event
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolymarketEvent {
@@ -239,14 +229,6 @@ pub struct MatchedMarket {
 }
 
 impl MatchedMarket {
-    /// Update Poly prices based on team_name
-    pub fn update_poly_prices(&mut self) {
-        if let Ok((yes, no)) = self.polymarket_market.get_price_for_team(&self.team_name) {
-            self.poly_yes_price = yes;
-            self.poly_no_price = no;
-        }
-    }
-
     /// Generate unique market key including date
     pub fn market_key(&self) -> String {
         generate_market_key(&self.event_name, self.game_date, &self.team_name)
@@ -417,48 +399,6 @@ pub struct ArbitrageTrackingRecord {
     pub polymarket_ask_price: f64,
 }
 
-impl ArbitrageTrackingRecord {
-    /// Generate unique market key including date
-    pub fn market_key(&self) -> String {
-        generate_market_key(&self.event_name, self.game_date, &self.team_name)
-    }
-}
-
-/// Order side
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OrderSide {
-    Buy,
-    Sell,
-}
-
-/// Order request
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OrderRequest {
-    pub platform: Platform,
-    pub market_id: String,
-    pub side: OrderSide,
-    /// "yes" or "no"
-    pub outcome: String,
-    pub amount: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub price: Option<f64>,
-}
-
-/// Order response
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OrderResponse {
-    pub success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub order_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub filled_amount: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub average_price: Option<f64>,
-}
-
 /// Matched market data for frontend display
 /// Corresponds to frontend's MatchedMarketData type
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -498,14 +438,6 @@ pub struct MatchedMarketFrontend {
     pub kalshi_fee: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arbitrage_type: Option<String>,
-}
-
-/// Matched markets list message with metadata
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatchedMarketsListData {
-    pub markets: Vec<MatchedMarketFrontend>,
-    pub count: usize,
-    pub opportunities_count: usize,
 }
 
 /// Market scan statistics

@@ -1,7 +1,7 @@
 //! Polymarket platform client
 //!
 //! Handles Polymarket API interactions including:
-//! - Market data retrieval from Gamma API
+//! - Market data retrieval from the Polymarket US API
 //! - WebSocket price subscription
 //! - Order placement via Python order service
 //! - Local orderbook maintenance for depth queries
@@ -60,42 +60,64 @@ impl PolyOrderBook {
         depth
     }
 
-    /// 计算 bids 侧的可用深度（卖出时使用）
-    pub fn bid_depth(&self, max_amount: f64) -> f64 {
-        let mut depth = 0.0;
-        // 从 best_bid（最高价）开始累计
-        for (price, size) in self.bids.iter().rev() {
-            let level_value = price * size;
-            depth += level_value;
-            if depth >= max_amount {
-                return max_amount;
-            }
-        }
-        depth
-    }
 }
 
 const POLY_WS_URL: &str = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
+
+fn extract_balance_from_snapshot(snapshot: &Value) -> Option<f64> {
+    let balances = snapshot.get("balances")?;
+    let mut total = 0.0;
+
+    match balances {
+        Value::Array(entries) => {
+            for entry in entries {
+                if let Some(value) = extract_balance_value(entry) {
+                    total += value;
+                }
+            }
+        }
+        Value::Object(_) => {
+            if let Some(value) = extract_balance_value(balances) {
+                total += value;
+            }
+        }
+        _ => {}
+    }
+
+    if total > 0.0 {
+        Some(total)
+    } else {
+        None
+    }
+}
+
+fn extract_balance_value(entry: &Value) -> Option<f64> {
+    if let Some(obj) = entry.as_object() {
+        for key in ["available", "balance", "amount", "value", "usdc_balance"] {
+            if let Some(value) = obj.get(key) {
+                if let Some(number) = value.as_f64() {
+                    return Some(number);
+                }
+                if let Some(string) = value.as_str() {
+                    return string.parse::<f64>().ok();
+                }
+            }
+        }
+    }
+
+    None
+}
 
 // ==================== Python Order Service Types ====================
 
 /// Market order request to Python service
 #[derive(Debug, Serialize)]
 struct MarketOrderRequest {
-    token_id: String,
+    market_slug: String,
+    outcome: String,
     side: String,
     amount: f64,
     price: Option<f64>,  // Rust计算的价格（包含滑点），避免Python重复获取订单簿
-    order_type: Option<String>,
-}
-
-/// Limit order request to Python service
-#[derive(Debug, Serialize)]
-struct LimitOrderRequest {
-    token_id: String,
-    side: String,
-    price: f64,
-    size: f64,
     order_type: Option<String>,
 }
 
@@ -110,10 +132,8 @@ struct CancelOrderRequest {
 struct OrderResponse {
     success: bool,
     order_id: Option<String>,
-    status: Option<String>,
     error: Option<String>,
     data: Option<Value>,
-    latency_ms: Option<i64>,  // Python服务内部的API调用延迟
 }
 
 /// Position data for aggregation (internal use)
@@ -167,45 +187,48 @@ impl PolymarketClient {
         let health_url = format!("{}/health", self.config.order_service_url);
         match self.http.get(&health_url).send().await {
             Ok(resp) if resp.status().is_success() => {
-                info!("✅ Polymarket Python 下单服务已连接: {}", self.config.order_service_url);
+                info!("✅ Polymarket Python order service connected: {}", self.config.order_service_url);
             }
             Ok(resp) => {
-                warn!("⚠️ Polymarket Python 下单服务返回非成功状态: {}", resp.status());
+                warn!("⚠️ Polymarket Python order service returned a non-success status: {}", resp.status());
             }
             Err(e) => {
-                warn!("⚠️ Polymarket Python 下单服务未运行: {}. 下单功能将不可用.", e);
+                warn!("⚠️ Polymarket Python order service is not running: {}. Order placement will be unavailable.", e);
             }
         }
         Ok(())
     }
 
-    /// Get account balance via Python service
+    /// Get account balance via Python service using the newer account/portfolio/orders snapshot format.
     pub async fn get_balance(&self) -> Result<f64> {
-        let url = format!("{}/balance", self.config.order_service_url);
+        let base_url = self.config.order_service_url.trim_end_matches('/');
+        let url = format!("{}/account/snapshot", base_url);
         let resp = self.http.get(&url)
             .send()
             .await
-            .context("调用 Python 下单服务失败")?;
+            .context("Failed to reach the Python order service")?;
 
         if !resp.status().is_success() {
-            anyhow::bail!("获取余额失败: HTTP {}", resp.status());
+            anyhow::bail!("Failed to get balance: HTTP {}", resp.status());
         }
 
         let data: Value = resp.json().await?;
         if data.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
             let balance = data.get("balance")
-                .and_then(|b| b.get("balance"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok())
+                .and_then(|v| v.as_f64())
+                .or_else(|| {
+                    data.get("snapshot")
+                        .and_then(|snapshot| extract_balance_from_snapshot(snapshot))
+                })
                 .unwrap_or(0.0);
-            Ok(balance / 1_000_000.0) // USDC has 6 decimals
+            Ok(balance)
         } else {
             let error = data.get("error").and_then(|v| v.as_str()).unwrap_or("Unknown error");
-            anyhow::bail!("获取余额失败: {}", error)
+            anyhow::bail!("Failed to get balance: {}", error)
         }
     }
 
-    /// Get NBA events and markets from Gamma API
+    /// Get NBA events and markets from the Polymarket US API.
     pub async fn get_nba_events_and_markets(
         &self,
     ) -> Result<(Vec<PolymarketEvent>, Vec<PolymarketMarket>)> {
@@ -213,13 +236,19 @@ impl PolymarketClient {
         let mut markets = Vec::new();
 
         // Step 1: Get sports leagues
-        let sports_url = format!("{}/sports", self.config.base_url);
+        let sports_url = format!("{}/v1/sports", self.config.base_url);
 
         let sports_response = self.http.get(&sports_url).send().await?;
         if !sports_response.status().is_success() {
             anyhow::bail!("Failed to get sports leagues: {}", sports_response.status());
         }
-        let sports: Vec<Value> = sports_response.json().await?;
+        let sports: Vec<Value> = sports_response
+            .json::<Value>()
+            .await?
+            .get("sports")
+            .and_then(Value::as_array)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Polymarket US sports response is missing sports"))?;
 
         // Step 2: Find NBA league
         let nba_league = sports
@@ -237,7 +266,7 @@ impl PolymarketClient {
 
         // Step 3: Get NBA events
         let events_url = format!(
-            "{}/events?series_id={}&tag_id=100639&active=true&closed=false&limit=100",
+            "{}/v1/events?seriesId={}&active=true&closed=false&limit=100",
             self.config.base_url, series_id
         );
 
@@ -245,9 +274,15 @@ impl PolymarketClient {
         if !events_response.status().is_success() {
             anyhow::bail!("Failed to get NBA events: {}", events_response.status());
         }
-        let api_events: Vec<Value> = events_response.json().await?;
+        let api_events: Vec<Value> = events_response
+            .json::<Value>()
+            .await?
+            .get("events")
+            .and_then(Value::as_array)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Polymarket US events response is missing events"))?;
 
-        info!("📥 已获取 {} 个 Polymarket NBA 事件", api_events.len());
+        info!("📥 Retrieved {} Polymarket NBA events", api_events.len());
 
         // Step 4: Process each event
         for api_event in &api_events {
@@ -401,7 +436,7 @@ impl PolymarketClient {
         }
 
         info!(
-            "✅ Polymarket: {} 个事件, {} 个市场",
+            "✅ Polymarket: {} events, {} markets",
             events.len(),
             markets.len()
         );
@@ -427,10 +462,10 @@ impl PolymarketClient {
         let price = if let Some(book) = self.get_orderbook(token_id) {
             if let Some((best_ask, _)) = book.best_ask() {
                 let price_with_slippage = (best_ask + 0.02).min(0.99);
-                info!("   📊 使用本地订单簿: best_ask={:.4}, 下单价={:.4} (+0.02滑点)", best_ask, price_with_slippage);
+                info!("   📊 Using local order book: best_ask={:.4}, order price={:.4} (+0.02 slippage)", best_ask, price_with_slippage);
                 Some(price_with_slippage)
             } else {
-                warn!("   ⚠️ 本地订单簿无卖单，Python将从API获取");
+                warn!("   ⚠️ No asks available in the local order book; Python will fetch from the API");
                 None
             }
         } else {
@@ -442,7 +477,8 @@ impl PolymarketClient {
 
         let url = format!("{}/order/market", self.config.order_service_url);
         let request = MarketOrderRequest {
-            token_id: token_id.to_string(),
+            market_slug: token_id.to_string(),
+            outcome: "yes".to_string(),
             side: "buy".to_string(),
             amount: usdc_amount,
             price,  // 传递Rust计算的价格
@@ -458,14 +494,14 @@ impl PolymarketClient {
         let response: OrderResponse = resp.json().await?;
 
         if response.success {
-            info!("   ✅ 市价买入成功! order_id={:?}", response.order_id);
+            info!("   ✅ Market buy succeeded! order_id={:?}", response.order_id);
             info!("════════════════════════════════════════════════════════════");
             Ok(response.data.unwrap_or(json!({"success": true, "order_id": response.order_id})))
         } else {
             let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
-            error!("   ❌ 市价买入失败: {}", error);
+            error!("   ❌ Market buy failed: {}", error);
             info!("════════════════════════════════════════════════════════════");
-            anyhow::bail!("市价买入失败: {}", error)
+            anyhow::bail!("Market buy failed: {}", error)
         }
     }
 
@@ -483,10 +519,10 @@ impl PolymarketClient {
         let price = if let Some(book) = self.get_orderbook(token_id) {
             if let Some((best_bid, _)) = book.best_bid() {
                 let price_with_slippage = (best_bid - 0.02).max(0.01);
-                info!("   📊 使用本地订单簿: best_bid={:.4}, 下单价={:.4} (-0.02滑点)", best_bid, price_with_slippage);
+                info!("   📊 Using local order book: best_bid={:.4}, order price={:.4} (-0.02 slippage)", best_bid, price_with_slippage);
                 Some(price_with_slippage)
             } else {
-                warn!("   ⚠️ 本地订单簿无买单，Python将从API获取");
+                warn!("   ⚠️ No bids available in the local order book; Python will fetch from the API");
                 None
             }
         } else {
@@ -498,7 +534,8 @@ impl PolymarketClient {
 
         let url = format!("{}/order/market", self.config.order_service_url);
         let request = MarketOrderRequest {
-            token_id: token_id.to_string(),
+            market_slug: token_id.to_string(),
+            outcome: "yes".to_string(),
             side: "sell".to_string(),
             amount: tokens,
             price,  // 传递Rust计算的价格
@@ -514,96 +551,14 @@ impl PolymarketClient {
         let response: OrderResponse = resp.json().await?;
 
         if response.success {
-            info!("   ✅ 市价卖出成功! order_id={:?}", response.order_id);
+            info!("   ✅ Market sell succeeded! order_id={:?}", response.order_id);
             info!("════════════════════════════════════════════════════════════");
             Ok(response.data.unwrap_or(json!({"success": true, "order_id": response.order_id})))
         } else {
             let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
-            error!("   ❌ 市价卖出失败: {}", error);
+            error!("   ❌ Market sell failed: {}", error);
             info!("════════════════════════════════════════════════════════════");
-            anyhow::bail!("市价卖出失败: {}", error)
-        }
-    }
-
-    /// Limit buy - place a limit buy order at a specific price
-    ///
-    /// # Arguments
-    /// * `token_id` - The token/asset ID to buy
-    /// * `price` - Price per token (0.0 to 1.0)
-    /// * `size` - Number of tokens to buy
-    pub async fn limit_buy(&self, token_id: &str, price: f64, size: f64) -> Result<Value> {
-        let token_short = &token_id[..20.min(token_id.len())];
-        info!("════════════════════════════════════════════════════════════");
-        info!("🎯 [限价买入] token={}..., price={:.4}, size={:.4}", token_short, price, size);
-        info!("════════════════════════════════════════════════════════════");
-
-        let url = format!("{}/order/limit", self.config.order_service_url);
-        let request = LimitOrderRequest {
-            token_id: token_id.to_string(),
-            side: "buy".to_string(),
-            price,
-            size,
-            order_type: Some("GTC".to_string()),
-        };
-
-        let resp = self.http.post(&url)
-            .json(&request)
-            .send()
-            .await
-            .context("调用 Python 下单服务失败")?;
-
-        let response: OrderResponse = resp.json().await?;
-
-        if response.success {
-            info!("   ✅ 限价买入订单已提交! order_id={:?}", response.order_id);
-            info!("════════════════════════════════════════════════════════════");
-            Ok(response.data.unwrap_or(json!({"success": true, "order_id": response.order_id})))
-        } else {
-            let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
-            error!("   ❌ 限价买入失败: {}", error);
-            info!("════════════════════════════════════════════════════════════");
-            anyhow::bail!("限价买入失败: {}", error)
-        }
-    }
-
-    /// Limit sell - place a limit sell order at a specific price
-    ///
-    /// # Arguments
-    /// * `token_id` - The token/asset ID to sell
-    /// * `price` - Price per token (0.0 to 1.0)
-    /// * `size` - Number of tokens to sell
-    pub async fn limit_sell(&self, token_id: &str, price: f64, size: f64) -> Result<Value> {
-        let token_short = &token_id[..20.min(token_id.len())];
-        info!("════════════════════════════════════════════════════════════");
-        info!("🎯 [限价卖出] token={}..., price={:.4}, size={:.4}", token_short, price, size);
-        info!("════════════════════════════════════════════════════════════");
-
-        let url = format!("{}/order/limit", self.config.order_service_url);
-        let request = LimitOrderRequest {
-            token_id: token_id.to_string(),
-            side: "sell".to_string(),
-            price,
-            size,
-            order_type: Some("GTC".to_string()),
-        };
-
-        let resp = self.http.post(&url)
-            .json(&request)
-            .send()
-            .await
-            .context("调用 Python 下单服务失败")?;
-
-        let response: OrderResponse = resp.json().await?;
-
-        if response.success {
-            info!("   ✅ 限价卖出订单已提交! order_id={:?}", response.order_id);
-            info!("════════════════════════════════════════════════════════════");
-            Ok(response.data.unwrap_or(json!({"success": true, "order_id": response.order_id})))
-        } else {
-            let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
-            error!("   ❌ 限价卖出失败: {}", error);
-            info!("════════════════════════════════════════════════════════════");
-            anyhow::bail!("限价卖出失败: {}", error)
+            anyhow::bail!("Market sell failed: {}", error)
         }
     }
 
@@ -647,27 +602,56 @@ impl PolymarketClient {
             // 不要将滑点加到下单金额上！
             // 滑点应该只影响最高接受价格，由 market_buy 中的 price_with_slippage 处理
             // 下单金额保持为实际需要的 USDC 数量
-            info!("   💰 预计花费: {:.4} USDC 买入 {:.2} tokens", total_usdc, tokens);
+            info!("   💰 Estimated cost: {:.4} USDC to buy {:.2} tokens", total_usdc, tokens);
             self.market_buy(token_id, total_usdc).await
         } else {
             self.market_sell(token_id, tokens).await
         }
     }
 
-    /// Place a market order (legacy method - uses USDC amount for BUY, tokens for SELL)
+    /// Place a Polymarket US market order.
     ///
-    /// Note: Consider using `market_buy` or `market_sell` instead.
+    /// Polymarket US trades by market slug and explicit YES/NO outcome rather
+    /// than legacy CLOB asset IDs.
     pub async fn place_market_order(
         &self,
-        token_id: &str,
+        market_slug: &str,
+        outcome: &str,
         side: &str,
         amount: f64,
     ) -> Result<Value> {
-        // Route to the appropriate high-level method
-        if side.to_lowercase() == "buy" {
-            self.market_buy(token_id, amount).await
+        let outcome = outcome.to_ascii_lowercase();
+        let side = side.to_ascii_lowercase();
+        if !matches!(outcome.as_str(), "yes" | "no") {
+            anyhow::bail!("Polymarket US outcome must be yes or no");
+        }
+        if !matches!(side.as_str(), "buy" | "sell") {
+            anyhow::bail!("Polymarket US side must be buy or sell");
+        }
+
+        let url = format!("{}/order/market", self.config.order_service_url);
+        let request = MarketOrderRequest {
+            market_slug: market_slug.to_string(),
+            outcome,
+            side,
+            amount,
+            price: None,
+            order_type: Some("FAK".to_string()),
+        };
+        let resp = self.http.post(&url)
+            .json(&request)
+            .send()
+            .await
+            .context("Failed to call the Python order service")?;
+        let response: OrderResponse = resp.json().await?;
+
+        if response.success {
+            Ok(response.data.unwrap_or(json!({"success": true, "order_id": response.order_id})))
         } else {
-            self.market_sell(token_id, amount).await
+            anyhow::bail!(
+                "Polymarket US market order failed: {}",
+                response.error.unwrap_or_else(|| "Unknown error".to_string())
+            )
         }
     }
 
@@ -680,7 +664,7 @@ impl PolymarketClient {
             .context("调用 Python 下单服务失败")?;
 
         if !resp.status().is_success() {
-            anyhow::bail!("获取订单失败: HTTP {}", resp.status());
+            anyhow::bail!("Failed to get order: HTTP {}", resp.status());
         }
 
         let data: Value = resp.json().await?;
@@ -688,15 +672,29 @@ impl PolymarketClient {
             Ok(data.get("orders").cloned().unwrap_or(json!([])))
         } else {
             let error = data.get("error").and_then(|v| v.as_str()).unwrap_or("Unknown error");
-            anyhow::bail!("获取订单失败: {}", error)
+            anyhow::bail!("Failed to get order: {}", error)
         }
     }
 
     /// Get positions (placeholder - returns empty for now)
     pub async fn get_positions(&self) -> Result<Value> {
-        // TODO: Implement via Python service if needed
-        info!("⚠️ [Polymarket] get_positions 暂未实现，返回空持仓");
-        Ok(json!([]))
+        let url = format!("{}/positions", self.config.order_service_url);
+        let response = self.http.get(&url)
+            .send()
+            .await
+            .context("Failed to reach the Python order service")?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to get positions: HTTP {}", response.status());
+        }
+
+        let data: Value = response.json().await?;
+        if data.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+            Ok(data.get("positions").cloned().unwrap_or_else(|| json!([])))
+        } else {
+            let error = data.get("error").and_then(|v| v.as_str()).unwrap_or("Unknown error");
+            anyhow::bail!("Failed to get positions: {}", error)
+        }
     }
 
     /// Cancel an order via Python service
@@ -718,7 +716,7 @@ impl PolymarketClient {
             Ok(json!({"success": true, "order_id": order_id}))
         } else {
             let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
-            anyhow::bail!("取消订单失败: {}", error)
+            anyhow::bail!("Failed to cancel order: {}", error)
         }
     }
 
@@ -735,16 +733,16 @@ impl PolymarketClient {
         if let Some(tx) = tx {
             match tx.send(PolyWsCommand::Subscribe(token_ids.clone())).await {
                 Ok(_) => {
-                    info!("🔌 [Polymarket] 发送热订阅请求: {} 个 token", token_ids.len());
+                    info!("🔌 [Polymarket] Sending hot-subscription request for {} tokens", token_ids.len());
                     Ok(true)
                 }
                 Err(e) => {
-                    warn!("⚠️ [Polymarket] 热订阅请求发送失败: {}", e);
+                    warn!("⚠️ [Polymarket] Hot-subscription request failed: {}", e);
                     Ok(false)
                 }
             }
         } else {
-            warn!("⚠️ [Polymarket] WebSocket 未连接，无法热订阅");
+            warn!("⚠️ [Polymarket] WebSocket is not connected; cannot hot-subscribe");
             Ok(false)
         }
     }
@@ -763,16 +761,16 @@ impl PolymarketClient {
         if let Some(tx) = tx {
             match tx.send(PolyWsCommand::Unsubscribe(token_ids.clone())).await {
                 Ok(_) => {
-                    info!("🔌 [Polymarket] 发送取消订阅请求: {} 个 token", token_ids.len());
+                    info!("🔌 [Polymarket] Sending unsubscribe request for {} tokens", token_ids.len());
                     Ok(true)
                 }
                 Err(e) => {
-                    warn!("⚠️ [Polymarket] 取消订阅请求发送失败: {}", e);
+                    warn!("⚠️ [Polymarket] Unsubscribe request failed: {}", e);
                     Ok(false)
                 }
             }
         } else {
-            warn!("⚠️ [Polymarket] WebSocket 未连接，无法取消订阅");
+            warn!("⚠️ [Polymarket] WebSocket is not connected; cannot unsubscribe");
             Ok(false)
         }
     }
@@ -783,7 +781,7 @@ impl PolymarketClient {
         token_ids: Vec<String>,
         price_tx: mpsc::Sender<PriceUpdate>,
     ) -> Result<()> {
-        info!("正在连接 Polymarket WebSocket...");
+        info!("Connecting to the Polymarket WebSocket...");
 
         let (ws_stream, _) = connect_async(POLY_WS_URL)
             .await
@@ -805,7 +803,7 @@ impl PolymarketClient {
             .send(Message::Text(subscribe_msg.to_string()))
             .await?;
 
-        info!("已订阅 {} 个 Polymarket 代币", token_ids.len());
+        info!("Subscribed to {} Polymarket tokens", token_ids.len());
 
         let orderbook_cache = self.orderbook_cache.clone();
 
@@ -820,21 +818,21 @@ impl PolymarketClient {
                             let updates = Self::parse_ws_message(&text, &orderbook_cache);
                             for update in updates {
                                 if price_tx.send(update).await.is_err() {
-                                    warn!("价格更新通道已关闭");
+                                    warn!("Price update channel has closed");
                                     break;
                                 }
                             }
                         }
                         Some(Ok(Message::Close(_))) => {
-                            info!("Polymarket WebSocket 已关闭");
+                            info!("Polymarket WebSocket closed");
                             break;
                         }
                         Some(Err(e)) => {
-                            error!("Polymarket WebSocket 错误: {}", e);
+                            error!("Polymarket WebSocket error: {}", e);
                             break;
                         }
                         None => {
-                            info!("Polymarket WebSocket 流结束");
+                            info!("Polymarket WebSocket stream ended");
                             break;
                         }
                         _ => {}
@@ -844,7 +842,7 @@ impl PolymarketClient {
                 Some(command) = cmd_rx.recv() => {
                     match command {
                         PolyWsCommand::Subscribe(new_tokens) => {
-                            info!("🔌 [Polymarket] 处理热订阅: {} 个新 token", new_tokens.len());
+                            info!("🔌 [Polymarket] Processing hot subscription for {} new tokens", new_tokens.len());
                             let subscribe_msg = json!({
                                 "assets_ids": new_tokens,
                                 "type": "market",
@@ -852,13 +850,13 @@ impl PolymarketClient {
                             });
 
                             if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
-                                error!("❌ [Polymarket] 热订阅发送失败: {}", e);
+                                error!("❌ [Polymarket] Hot subscription send failed: {}", e);
                             } else {
-                                info!("✅ [Polymarket] 热订阅完成: {} 个 token", new_tokens.len());
+                                info!("✅ [Polymarket] Hot subscription completed for {} tokens", new_tokens.len());
                             }
                         }
                         PolyWsCommand::Unsubscribe(tokens_to_unsub) => {
-                            info!("🔌 [Polymarket] 处理取消订阅: {} 个 token", tokens_to_unsub.len());
+                            info!("🔌 [Polymarket] Processing unsubscribe for {} tokens", tokens_to_unsub.len());
                             // Use the operation: "unsubscribe" field as per Polymarket API
                             let unsubscribe_msg = json!({
                                 "assets_ids": tokens_to_unsub,
@@ -867,14 +865,14 @@ impl PolymarketClient {
                             });
 
                             if let Err(e) = write.send(Message::Text(unsubscribe_msg.to_string())).await {
-                                error!("❌ [Polymarket] 取消订阅发送失败: {}", e);
+                                error!("❌ [Polymarket] Unsubscribe send failed: {}", e);
                             } else {
                                 // Also remove from orderbook cache
                                 let mut cache = orderbook_cache.write();
                                 for token in &tokens_to_unsub {
                                     cache.remove(token);
                                 }
-                                info!("✅ [Polymarket] 取消订阅完成: {} 个 token", tokens_to_unsub.len());
+                                info!("✅ [Polymarket] Unsubscribe completed for {} tokens", tokens_to_unsub.len());
                             }
                         }
                     }
@@ -1150,4 +1148,3 @@ fn extract_date_from_slug(slug: &str) -> Option<DateTime<Utc>> {
     }
     None
 }
-

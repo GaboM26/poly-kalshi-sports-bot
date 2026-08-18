@@ -30,18 +30,26 @@ else
 fi
 
 # Start the Python service.
-python main.py &
+python main.py > ../logs/poly-order-service.log 2>&1 &
 PYTHON_PID=$!
 PIDS="$PYTHON_PID"
 echo "✅ Python order service started (PID: $PYTHON_PID)"
 
-# Wait for the Python service to start.
+# Wait for the Python service to start and retry health checks.
 echo "⏳ Waiting for the Python service to start..."
-sleep 3
+PYTHON_HEALTH_ATTEMPTS=10
+for i in $(seq 1 $PYTHON_HEALTH_ATTEMPTS); do
+    if curl -s http://localhost:8001/health > /dev/null 2>&1; then
+        echo "✅ Python order service is healthy"
+        break
+    fi
+    if [ $i -lt $PYTHON_HEALTH_ATTEMPTS ]; then
+        sleep 2
+    fi
+done
 
-# Check the Python service.
-if ! curl -s http://localhost:8001/health > /dev/null; then
-    echo "⚠️ Warning: the Python order service may not be fully started; continuing..."
+if ! curl -s http://localhost:8001/health > /dev/null 2>&1; then
+    echo "⚠️ Warning: the Python order service may still be starting or failed to initialize; check logs at logs/poly-order-service.log"
 fi
 
 cd ..
@@ -66,19 +74,40 @@ if [ ! -f "config.toml" ]; then
     fi
 fi
 
-# Start the Rust backend in the background.
-cargo run --release &
+# Compile before starting the backend. Running `cargo run --release` in the
+# background makes the health check race the release build after code changes.
+echo "🔨 Building Rust backend..."
+if ! cargo build --release; then
+    echo "❌ Error: failed to build the Rust backend"
+    kill $PIDS 2>/dev/null
+    exit 1
+fi
+
+# Start the already-built backend in the background.
+./target/release/polytaoli &
 RUST_PID=$!
 PIDS="$PIDS $RUST_PID"
 echo "✅ Rust backend started (PID: $RUST_PID)"
 
 # Wait for the backend to start.
 echo "⏳ Waiting for the backend to start..."
-sleep 5
+sleep 10
 
-# Check that the backend is healthy.
-if ! curl -s http://localhost:8000/api/health > /dev/null; then
-    echo "❌ Error: failed to start the Rust backend"
+# Check that the backend is healthy (with retries).
+HEALTH_CHECK_ATTEMPTS=5
+for i in $(seq 1 $HEALTH_CHECK_ATTEMPTS); do
+    if curl -s http://localhost:8000/api/health > /dev/null 2>&1; then
+        break
+    fi
+    if [ $i -lt $HEALTH_CHECK_ATTEMPTS ]; then
+        echo "⏳ Health check attempt $i failed, retrying..."
+        sleep 2
+    fi
+done
+
+if ! curl -s http://localhost:8000/api/health > /dev/null 2>&1; then
+    echo "❌ Error: failed to start the Rust backend - health check failed after $HEALTH_CHECK_ATTEMPTS attempts"
+    echo "📝 Check the logs with: tail -100 rust-backend/logs/polytaoli.log"
     kill $PIDS 2>/dev/null
     exit 1
 fi

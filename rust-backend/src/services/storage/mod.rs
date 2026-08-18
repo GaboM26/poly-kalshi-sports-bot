@@ -26,8 +26,7 @@ use tracing::{error, info};
 use crate::models::ArbitrageTrackingRecord;
 
 // Re-export types from sub-modules
-pub use auto_trade_repo::{AutoTradeState, AutoTradeRecord};
-pub use settings_repo::AppSettings;
+pub use auto_trade_repo::AutoTradeState;
 
 /// Storage command for async queue
 pub enum StorageCommand {
@@ -37,13 +36,6 @@ pub enum StorageCommand {
         profit_margin: f64,
     },
     TrackEnd(String),
-}
-
-/// Storage statistics
-#[derive(Debug, Clone)]
-pub struct StorageStats {
-    pub total_records: usize,
-    pub active_records: usize,
 }
 
 /// Arbitrage storage service
@@ -64,7 +56,7 @@ impl ArbitrageStorage {
         Self::init_settings_table(&conn)?;
         Self::init_excluded_markets_table(&conn)?;
 
-        info!("📦 数据库初始化完成，包含 auto_trade_state, auto_trade_history, app_settings 和 excluded_markets 表");
+        info!("📦 Database initialized with auto_trade_state, auto_trade_history, app_settings, and excluded_markets tables");
 
         let conn = Arc::new(Mutex::new(conn));
 
@@ -77,7 +69,7 @@ impl ArbitrageStorage {
             while let Some(cmd) = command_rx.recv().await {
                 let conn = conn_clone.lock();
                 if let Err(e) = Self::execute_command(&conn, cmd) {
-                    error!("存储错误: {}", e);
+                    error!("Storage error: {}", e);
                 }
             }
         });
@@ -166,7 +158,7 @@ impl ArbitrageStorage {
             "ALTER TABLE auto_trade_state ADD COLUMN min_duration_ms INTEGER DEFAULT 500",
             [],
         );
-        // 新增：灵活下单模式相关字段
+        // Added: flexible auto-trade mode fields
         let _ = conn.execute(
             "ALTER TABLE auto_trade_state ADD COLUMN flexible_mode INTEGER DEFAULT 0",
             [],
@@ -236,7 +228,7 @@ impl ArbitrageStorage {
             "ALTER TABLE auto_trade_history ADD COLUMN total_duration_ms INTEGER DEFAULT 0",
             [],
         );
-        // 新增：分别记录两个平台的API延迟
+        // Added: record API latency separately for each platform
         let _ = conn.execute(
             "ALTER TABLE auto_trade_history ADD COLUMN kalshi_latency_ms INTEGER DEFAULT 0",
             [],

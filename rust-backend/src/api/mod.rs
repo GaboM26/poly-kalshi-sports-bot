@@ -55,9 +55,9 @@ pub async fn create_app(config: Config) -> Result<Router> {
     // Initialize Telegram client
     let telegram_client = Arc::new(TelegramClient::new(config.telegram.clone()));
     if telegram_client.is_enabled() {
-        info!("✅ Telegram 通知已启用");
+        info!("✅ Telegram notifications enabled");
     } else {
-        info!("ℹ️ Telegram 通知未启用");
+        info!("ℹ️ Telegram notifications disabled");
     }
 
     // Create shared state
@@ -96,7 +96,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
     // Spawn periodic market scanner (every 5 minutes)
     let state_for_scanner = state.clone();
     tokio::spawn(async move {
-        info!("🔍 市场扫描任务启动，间隔 {} 秒 ({} 分钟)", 
+        info!("🔍 Market scan task started, interval {} seconds ({} minutes)", 
             MARKET_SCAN_INTERVAL_SECS, 
             MARKET_SCAN_INTERVAL_SECS / 60
         );
@@ -111,7 +111,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
             interval.tick().await;
             scan_count += 1;
             
-            info!("🔄 开始第 {} 次定期市场扫描...", scan_count);
+            info!("🔄 Starting periodic market scan #{}...", scan_count);
             
             // Scan for new markets
             let scan_result = {
@@ -122,9 +122,9 @@ pub async fn create_app(config: Config) -> Result<Router> {
             match scan_result {
                 Ok((new_markets, sub_info)) => {
                     if new_markets.is_empty() {
-                        info!("✅ 第 {} 次扫描完成，没有发现新市场", scan_count);
+                        info!("✅ Periodic scan #{} complete; no new markets found", scan_count);
                     } else {
-                        info!("🆕 发现 {} 个新匹配市场，开始热订阅...", new_markets.len());
+                        info!("🆕 Found {} new matching markets; starting hot subscription...", new_markets.len());
                         
                         // Update WebSocketManager with new markets
                         {
@@ -133,7 +133,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
                                 new_markets.clone(),
                                 sub_info.market_lookup.clone(),
                             );
-                            info!("📊 已添加 {} 个市场到 WebSocket 管理器", added);
+                            info!("📊 Added {} markets to the WebSocket manager", added);
                         }
                         
                         // Hot subscribe to new markets
@@ -143,7 +143,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
                                 match service.kalshi_client.subscribe_markets(sub_info.kalshi_tickers.clone()).await {
                                     Ok(success) => success,
                                     Err(e) => {
-                                        error!("❌ Kalshi 热订阅失败: {}", e);
+                                        error!("❌ Kalshi hot-subscription failed: {}", e);
                                         false
                                     }
                                 }
@@ -158,7 +158,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
                                 match service.polymarket_client.subscribe_tokens(sub_info.polymarket_token_ids.clone()).await {
                                     Ok(success) => success,
                                     Err(e) => {
-                                        error!("❌ Polymarket 热订阅失败: {}", e);
+                                        error!("❌ Polymarket hot-subscription failed: {}", e);
                                         false
                                     }
                                 }
@@ -170,7 +170,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
                         if kalshi_success && poly_success {
                             let service = state_for_scanner.service.read().await;
                             let total_markets = service.ws_manager.get_matched_markets_for_frontend().len();
-                            info!("✅ 热订阅成功，当前共 {} 个配对市场", total_markets);
+                            info!("✅ Hot subscription succeeded; {} matched markets currently active", total_markets);
                             
                             // Broadcast scan stats to frontend via WebSocket
                             let scan_stats = crate::models::ScanStats {
@@ -180,14 +180,14 @@ pub async fn create_app(config: Config) -> Result<Router> {
                                 timestamp: Utc::now(),
                             };
                             service.ws_manager.broadcast_scan_stats(scan_stats);
-                            info!("📡 已广播扫描统计到前端");
+                            info!("📡 Broadcast scan stats to the frontend");
                         } else {
-                            warn!("⚠️ 热订阅部分失败");
+                            warn!("⚠️ Part of the hot subscription failed");
                         }
                     }
                 }
                 Err(e) => {
-                    error!("❌ 市场扫描失败: {}", e);
+                    error!("❌ Market scan failed: {}", e);
                 }
             }
         }
@@ -197,7 +197,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
     let state_for_queue = state.clone();
     let metrics_for_queue = metrics.clone();
     tokio::spawn(async move {
-        info!("📋 自动下单队列检查任务启动，间隔 200ms");
+        info!("📋 Auto-trade queue check task started, interval 200ms");
         
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(200));
         
@@ -213,7 +213,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
     let state_for_executor = state.clone();
     let metrics_for_executor = metrics.clone();
     tokio::spawn(async move {
-        info!("🚀 自动下单执行器启动，机会间隔 1 秒");
+        info!("🚀 Auto-trade executor started, opportunity interval 1 second");
         
         loop {
             let service = state_for_executor.service.read().await;
@@ -235,7 +235,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
                 // Mark as executing
                 service.ws_manager.is_auto_trading.store(true, std::sync::atomic::Ordering::Relaxed);
                 
-                info!("🎯 [自动下单执行器] 开始处理: {}", key);
+                info!("🎯 [Auto-trade executor] Starting processing: {}", key);
                 
                 // Execute the opportunity
                 execute_single_auto_trade(&service, &state_for_executor, &metrics_for_executor, &key).await;
@@ -245,7 +245,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
                 
                 drop(service);
                 
-                info!("⏱️  [自动下单执行器] 等待 1 秒后处理下一个机会");
+                info!("⏱️  [Auto-trade executor] Waiting 1 second before processing the next opportunity");
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             } else {
                 // Queue empty, wait a bit
@@ -258,7 +258,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
     // Spawn ended market cleanup task (every 60 seconds)
     let state_for_cleanup = state.clone();
     tokio::spawn(async move {
-        info!("🧹 已结束比赛清理任务启动，间隔 60 秒");
+        info!("🧹 Ended-game cleanup task started, interval 60 seconds");
         
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
         
@@ -337,7 +337,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
         // Static files - must be last!
         .fallback(static_files::static_handler);
 
-    info!("✅ API 路由配置完成（包含前端静态文件）");
+    info!("✅ API routes configured (including frontend static files)");
 
     Ok(app)
 }
@@ -355,7 +355,7 @@ async fn ping_apis(state: &Arc<AppState>, metrics: &Arc<PerformanceMetrics>) {
             metrics.set_kalshi_balance(balance);
         }
         Err(e) => {
-            warn!("Kalshi API ping 失败: {}", e);
+            warn!("Kalshi API ping failed: {}", e);
         }
     }
     
@@ -368,7 +368,7 @@ async fn ping_apis(state: &Arc<AppState>, metrics: &Arc<PerformanceMetrics>) {
             metrics.set_polymarket_balance(balance);
         }
         Err(e) => {
-            warn!("Polymarket API ping 失败: {}", e);
+            warn!("Polymarket API ping failed: {}", e);
         }
     }
 }
@@ -440,7 +440,7 @@ async fn check_and_queue_auto_trade(state: &Arc<AppState>, _metrics: &Arc<Perfor
         let mut queue = service.ws_manager.auto_trade_queue.write();
         if !queue.contains(&key) {
             queue.push_back(key.clone());
-            info!("📋 [自动下单队列] 添加机会: {}", key);
+            info!("📋 [Auto-trade queue] Added opportunity: {}", key);
         }
     }
 }
@@ -456,7 +456,7 @@ async fn execute_single_auto_trade(
     let (record, duration_ms) = match service.ws_manager.get_tracking_record(key) {
         Some((r, d)) => (r, d),
         None => {
-            info!("⚠️  [自动下单] 机会已不存在: {}", key);
+            info!("⚠️  [Auto-trade] Opportunity no longer exists: {}", key);
             return;
         }
     };
@@ -466,7 +466,7 @@ async fn execute_single_auto_trade(
     let (eligible, reason) = service.ws_manager.check_auto_trade_eligibility(key, duration_ms);
     
     if !eligible {
-        info!("⚠️  [自动下单] 机会不再符合条件: {} - {}", key, reason);
+        info!("⚠️  [Auto-trade] Opportunity no longer meets conditions: {} - {}", key, reason);
         return;
     }
     
@@ -474,17 +474,17 @@ async fn execute_single_auto_trade(
     let opportunity = match service.ws_manager.get_opportunity_by_key(key) {
         Some(opp) => opp,
         None => {
-            info!("⚠️  [自动下单] 机会数据不存在: {}", key);
+            info!("⚠️  [Auto-trade] Opportunity data does not exist: {}", key);
             return;
         }
     };
         
-        info!("🤖 [自动下单] 检测到符合条件的套利机会:");
-        info!("   事件: {} - {}", record.event_name, record.team_name);
-        info!("   持续时间: {}ms, 利润率: {:.2}%", duration_ms, opportunity.profit_margin);
-        info!("   原因: {}", reason);
-        info!("   模式: {} (最小={}, 最大={})", 
-            if auto_state.flexible_mode { "灵活" } else { "固定" },
+    info!("🤖 [Auto-trade] Found a valid arbitrage opportunity:");
+    info!("   Event: {} - {}", record.event_name, record.team_name);
+    info!("   Duration: {}ms, profit margin: {:.2}%", duration_ms, opportunity.profit_margin);
+    info!("   Reason: {}", reason);
+    info!("   Mode: {} (min={}, max={})", 
+        if auto_state.flexible_mode { "flexible" } else { "fixed" },
             auto_state.min_contracts, auto_state.max_contracts);
         
         // Get poly token first for depth validation
@@ -495,7 +495,7 @@ async fn execute_single_auto_trade(
         ) {
             Some(token) => token,
             None => {
-                let skip_reason = format!("无法获取 Polymarket token ({}侧)", opportunity.polymarket_side);
+            let skip_reason = format!("Unable to fetch Polymarket token ({} side)", opportunity.polymarket_side);
                 error!("❌ {}: {} - {}", skip_reason, record.event_name, record.team_name);
                 if service.ws_manager.should_record_skip(&key, &skip_reason) {
                     let storage = service.ws_manager.get_storage();
@@ -525,7 +525,7 @@ async fn execute_single_auto_trade(
             0
         };
         
-        info!("   深度: Kalshi={} 合约, Poly={} 合约 (${:.2})", 
+    info!("   Depth: Kalshi={} contracts, Poly={} contracts (${:.2})", 
             kalshi_depth, poly_depth_contracts, poly_depth_usd);
         
         // Calculate contracts to trade using flexible/fixed logic
@@ -539,7 +539,7 @@ async fn execute_single_auto_trade(
             Some(c) => c,
             None => {
                 let skip_reason = format!(
-                    "深度不足: Kalshi={}, Poly={} (需要最少 {} 合约)",
+                "Depth too low: Kalshi={}, Poly={} (minimum required {} contracts)",
                     kalshi_depth, poly_depth_contracts, auto_state.min_contracts
                 );
                 info!("   ⚠️ {}", skip_reason);
@@ -557,7 +557,7 @@ async fn execute_single_auto_trade(
             }
         };
         
-        info!("   计算合约数: {} 份", contracts_to_trade);
+    info!("   Calculated contract count: {} contracts", contracts_to_trade);
         
         // Calculate amounts based on contracts
         let kalshi_contracts = contracts_to_trade;
@@ -575,7 +575,7 @@ async fn execute_single_auto_trade(
         
         // Verify total doesn't exceed max_amount
         if total_bet > auto_state.max_amount {
-            let skip_reason = format!("总投入 ${:.2} 超过限额 ${:.2}", total_bet, auto_state.max_amount);
+        let skip_reason = format!("Total stake ${:.2} exceeds limit ${:.2}", total_bet, auto_state.max_amount);
             info!("   ⚠️ {}", skip_reason);
             if service.ws_manager.should_record_skip(&key, &skip_reason) {
                 let storage = service.ws_manager.get_storage();
@@ -600,7 +600,7 @@ async fn execute_single_auto_trade(
             (Some(k_bal), Some(p_bal)) => {
                 if k_bal < kalshi_required {
                     let skip_reason = format!(
-                        "Kalshi 余额不足: 需要 ${:.2}, 可用 ${:.2}",
+                    "Kalshi balance insufficient: required ${:.2}, available ${:.2}",
                         kalshi_required, k_bal
                     );
                     info!("   ⚠️ {}", skip_reason);
@@ -618,7 +618,7 @@ async fn execute_single_auto_trade(
                 }
                 if p_bal < poly_required {
                     let skip_reason = format!(
-                        "Polymarket 余额不足: 需要 ${:.2}, 可用 ${:.2}",
+                    "Polymarket balance insufficient: required ${:.2}, available ${:.2}",
                         poly_required, p_bal
                     );
                     info!("   ⚠️ {}", skip_reason);
@@ -634,11 +634,11 @@ async fn execute_single_auto_trade(
                     }
                     return;
                 }
-                info!("   ✅ 余额检查通过: Kalshi ${:.2}/{:.2}, Poly ${:.2}/{:.2}",
+            info!("   ✅ Balance check passed: Kalshi ${:.2}/{:.2}, Poly ${:.2}/{:.2}",
                     kalshi_required, k_bal, poly_required, p_bal);
             }
             _ => {
-                info!("   ⚠️ 余额缓存未就绪，跳过余额检查（等待下次ping_apis更新）");
+            info!("   ⚠️ Balance cache not ready yet; skipping balance check (waiting for next ping_apis refresh)");
             }
         }
         
@@ -652,7 +652,7 @@ async fn execute_single_auto_trade(
             );
         
         if !depth_valid {
-            info!("   ⚠️ [深度/价格检查] 跳过下单: {}", validation_reason);
+        info!("   ⚠️ [Depth/price check] Skipping order: {}", validation_reason);
             if service.ws_manager.should_record_skip(&key, &validation_reason) {
                 let storage = service.ws_manager.get_storage();
                 let _ = storage.save_skipped_auto_trade_record(
@@ -666,9 +666,9 @@ async fn execute_single_auto_trade(
             return;
         }
         
-        info!("   ✅ [深度/价格检查] {}", validation_reason);
-        info!("      Kalshi 深度: {} 合约, Poly 深度: ${:.2}", validated_k_depth, validated_p_depth);
-        info!("      当前价格: K={:.4}, P={:.4}, 价格和={:.4}", 
+    info!("   ✅ [Depth/price check] {}", validation_reason);
+    info!("      Kalshi depth: {} contracts, Poly depth: ${:.2}", validated_k_depth, validated_p_depth);
+    info!("      Current prices: K={:.4}, P={:.4}, combined={:.4}", 
             current_k_price, current_p_price, current_k_price + current_p_price);
         
         // Recalculate amounts using current prices from local orderbook
@@ -682,7 +682,7 @@ async fn execute_single_auto_trade(
         // Check if either side price exceeds 0.90 (90 cents) - avoid late-stage markets
         if current_k_price > 0.90 || current_p_price > 0.90 {
             let skip_reason = format!(
-                "价格过高风险 - Kalshi: {:.4}, Polymarket: {:.4} (任一方超过0.90)",
+            "High-risk price spike - Kalshi: {:.4}, Polymarket: {:.4} (either side exceeds 0.90)",
                 current_k_price, current_p_price
             );
             info!("   ⚠️ {}", skip_reason);
@@ -702,7 +702,7 @@ async fn execute_single_auto_trade(
         // Check if either side price is below 0.10 (10 cents) - avoid low-probability markets
         if current_k_price < 0.10 || current_p_price < 0.10 {
             let skip_reason = format!(
-                "价格过低风险 - Kalshi: {:.4}, Polymarket: {:.4} (任一方低于0.10)",
+            "Low-risk price floor - Kalshi: {:.4}, Polymarket: {:.4} (either side below 0.10)",
                 current_k_price, current_p_price
             );
             info!("   ⚠️ {}", skip_reason);
@@ -721,7 +721,7 @@ async fn execute_single_auto_trade(
         
         // Re-verify total doesn't exceed max_amount with updated prices
         if total_bet > auto_state.max_amount {
-            let skip_reason = format!("更新价格后总投入 ${:.2} 超过限额 ${:.2}", total_bet, auto_state.max_amount);
+        let skip_reason = format!("Updated price total stake ${:.2} exceeds limit ${:.2}", total_bet, auto_state.max_amount);
             info!("   ⚠️ {}", skip_reason);
             if service.ws_manager.should_record_skip(&key, &skip_reason) {
                 let storage = service.ws_manager.get_storage();
@@ -736,34 +736,34 @@ async fn execute_single_auto_trade(
             return;
         }
         
-        info!("   📊 订单计算 ({} {} 合约, 使用最新价格):", 
-            if auto_state.flexible_mode { "灵活" } else { "固定" }, contracts_to_trade);
-        info!("      Kalshi: {} 合约 @ {:.2}¢ = ${:.2} + 手续费 ${:.2} ({}侧)", 
+    info!("   📊 Order calculation ({} {} contracts, using latest prices):", 
+        if auto_state.flexible_mode { "flexible" } else { "fixed" }, contracts_to_trade);
+    info!("      Kalshi: {} contracts @ {:.2}¢ = ${:.2} + fee ${:.2} ({} side)", 
             kalshi_contracts, kalshi_price_cents, kalshi_bet, kalshi_fee, opportunity.kalshi_side);
-        info!("      Polymarket: {} 合约等价 = ${:.4} ({}侧)", contracts_to_trade, poly_amount, opportunity.polymarket_side);
-        info!("      总投入: ${:.2} (含手续费) / ${:.2}", total_bet, auto_state.max_amount);
+    info!("      Polymarket: {} contracts equivalent = ${:.4} ({} side)", contracts_to_trade, poly_amount, opportunity.polymarket_side);
+    info!("      Total stake: ${:.2} (including fees) / ${:.2}", total_bet, auto_state.max_amount);
         
         // === DETAILED PRE-ORDER LOGGING ===
         info!("════════════════════════════════════════════════════════════");
-        info!("📝 [自动下单-详细上下文]");
-        info!("   市场信息:");
-        info!("      事件名: {}", record.event_name);
-        info!("      队伍名: {}", record.team_name);
-        info!("      市场Key: {}", key);
-        info!("      游戏日期: {:?}", record.game_date);
-        info!("   Kalshi 订单:");
+    info!("📝 [Auto-trade detailed context]");
+    info!("   Market information:");
+    info!("      Event name: {}", record.event_name);
+    info!("      Team name: {}", record.team_name);
+    info!("      Market key: {}", key);
+    info!("      Game date: {:?}", record.game_date);
+    info!("   Kalshi order:");
         info!("      market_id: {}", record.kalshi_market_id);
-        info!("      side: {} (买{}侧)", opportunity.kalshi_side, opportunity.kalshi_side);
+    info!("      side: {} (buy {} side)", opportunity.kalshi_side, opportunity.kalshi_side);
         info!("      contracts: {}", kalshi_contracts);
         info!("      price_cents: {}", kalshi_price_cents);
-        info!("      当前价格: {:.4}", current_k_price);
-        info!("   Polymarket 订单:");
+    info!("      Current price: {:.4}", current_k_price);
+    info!("   Polymarket order:");
         info!("      token_id: {}", poly_token);
-        info!("      token_id (前20字符): {}...", &poly_token[..20.min(poly_token.len())]);
-        info!("      side: buy (买{}侧)", opportunity.polymarket_side);
+    info!("      token_id (first 20 chars): {}...", &poly_token[..20.min(poly_token.len())]);
+    info!("      side: buy (buy {} side)", opportunity.polymarket_side);
         info!("      amount: {:.4}", poly_amount);
-        info!("      当前价格: {:.4}", current_p_price);
-        info!("   原始机会数据:");
+    info!("      Current price: {:.4}", current_p_price);
+    info!("   Raw opportunity data:");
         info!("      polymarket_market_id: {}", record.polymarket_market_id);
         info!("      profit_margin: {:.4}%", opportunity.profit_margin);
         info!("      duration_ms: {}", duration_ms);
@@ -774,7 +774,7 @@ async fn execute_single_auto_trade(
             let debug_log = serde_json::json!({
                 "timestamp": chrono::Utc::now().to_rfc3339(),
                 "location": "api/mod.rs:auto_trade_execution",
-                "message": "自动下单执行前上下文",
+            "message": "Auto-trade execution pre-context",
                 "data": {
                     "event_name": &record.event_name,
                     "team_name": &record.team_name,
@@ -825,9 +825,9 @@ async fn execute_single_auto_trade(
         
         // Execute orders SEQUENTIALLY: Polymarket first, then Kalshi
         // This ensures Poly order is confirmed before placing Kalshi order
-        info!("🚀 [串行执行订单] 先 Polymarket，成功后再 Kalshi...");
-        info!("   Poly: {} tokens, 预计USDC={:.4}", contracts_to_trade, poly_amount);
-        info!("   Kalshi: {} 合约 @ {}¢", kalshi_contracts, kalshi_price_cents);
+    info!("🚀 [Sequential order execution] Polymarket first, then Kalshi...");
+    info!("   Poly: {} tokens, expected USDC={:.4}", contracts_to_trade, poly_amount);
+    info!("   Kalshi: {} contracts @ {}¢", kalshi_contracts, kalshi_price_cents);
         
         // Step 1: Place Polymarket order first
         let poly_start = Instant::now();
@@ -847,22 +847,22 @@ async fn execute_single_auto_trade(
                 
                 // Check if order actually matched
                 if status.to_uppercase() == "MATCHED" {
-                    info!("✅ Poly订单成功成交: order_id={:?}, status={}", order_id, status);
+                info!("✅ Poly order filled successfully: order_id={:?}, status={}", order_id, status);
                     (order_id, None)
                 } else {
-                    warn!("⚠️ Poly订单未成交: status={}, 取消Kalshi下单", status);
-                    (order_id, Some(format!("订单状态为 {}, 未立即成交", status)))
+                warn!("⚠️ Poly order did not fill: status={}, canceling Kalshi order", status);
+                (order_id, Some(format!("Order status is {}, not immediately filled", status)))
                 }
             },
             Err(e) => {
-                warn!("❌ Poly订单失败: {}, 取消Kalshi下单", e);
+            warn!("❌ Poly order failed: {}, canceling Kalshi order", e);
                 (None, Some(e.to_string()))
             }
         };
         
         // Step 2: Only place Kalshi order if Poly succeeded AND matched
         let (kalshi_result, kalshi_latency_ms) = if poly_success && poly_error.is_none() {
-            info!("🎯 Poly订单已成交，继续下Kalshi订单...");
+        info!("🎯 Poly order has filled; continuing with Kalshi order...");
             let kalshi_start = Instant::now();
             let result = service.kalshi_client.place_order(
                 &record.kalshi_market_id,
@@ -874,8 +874,8 @@ async fn execute_single_auto_trade(
             let duration = kalshi_start.elapsed().as_millis() as i64;
             (result, duration)
         } else {
-            warn!("🚫 Poly订单未成功，跳过Kalshi下单");
-            (Err(anyhow::anyhow!("Poly订单未成功，已取消")), 0)
+        warn!("🚫 Poly order did not succeed; skipping Kalshi order");
+        (Err(anyhow::anyhow!("Poly order did not succeed; canceled")), 0)
         };
         
         // Calculate total execution time
@@ -932,7 +932,7 @@ async fn execute_single_auto_trade(
             kalshi_latency_ms,  // Kalshi API latency
             poly_latency_ms,    // Polymarket API latency
         ) {
-            error!("保存自动下单记录失败: {}", e);
+        error!("Failed to save auto-trade record: {}", e);
         }
         
         // Send Telegram notification (non-blocking, errors logged only)
@@ -964,9 +964,9 @@ async fn execute_single_auto_trade(
         if kalshi_success && poly_success {
             // Increment trade count on success
             if let Ok(new_count) = service.ws_manager.increment_trade_count() {
-                info!("✅ [自动下单] 成功! 已执行 {}/{} 次", new_count, auto_state.max_trade_count);
-                info!("   ⏱️ 总耗时: {}ms (从发现机会到下单完成)", total_duration_ms);
-                info!("   ⏱️ API延迟: Kalshi={}ms, Poly={}ms (并发执行总耗时: {}ms)", 
+            info!("✅ [Auto-trade] Success! Executed {}/{} times", new_count, auto_state.max_trade_count);
+            info!("   ⏱️ Total time: {}ms (from opportunity detection to order completion)", total_duration_ms);
+            info!("   ⏱️ API latency: Kalshi={}ms, Poly={}ms (concurrent execution total: {}ms)", 
                     kalshi_latency_ms, poly_latency_ms, exec_duration_ms);
             }
             info!("   Kalshi: {:?}", kalshi_result.unwrap());
@@ -974,15 +974,15 @@ async fn execute_single_auto_trade(
         } else {
             // Still increment count even on partial failure to track attempts
             if let Ok(new_count) = service.ws_manager.increment_trade_count() {
-                info!("⚠️ [自动下单] 部分成功，已记录 {}/{} 次", new_count, auto_state.max_trade_count);
-                info!("   ⏱️ API延迟: Kalshi={}ms, Poly={}ms", kalshi_latency_ms, poly_latency_ms);
+            info!("⚠️ [Auto-trade] Partial success recorded; {}/{} attempts logged", new_count, auto_state.max_trade_count);
+            info!("   ⏱️ API latency: Kalshi={}ms, Poly={}ms", kalshi_latency_ms, poly_latency_ms);
             }
-            error!("❌ [自动下单] 部分失败:");
+        error!("❌ [Auto-trade] Partial failure:");
             if let Some(err) = &kalshi_error {
-                error!("   Kalshi 失败 ({}ms): {}", kalshi_latency_ms, err);
+            error!("   Kalshi failed ({}ms): {}", kalshi_latency_ms, err);
             }
             if let Some(err) = &poly_error {
-                error!("   Polymarket 失败 ({}ms): {}", poly_latency_ms, err);
+            error!("   Polymarket failed ({}ms): {}", poly_latency_ms, err);
             }
         }
 }
@@ -1003,7 +1003,7 @@ async fn cleanup_ended_markets(state: &Arc<AppState>) {
     
     if detecting_count > 0 {
         info!(
-            "🔍 [清理] 正在监控 {} 个潜在已结束市场，已确认 {} 个",
+            "🔍 [Cleanup] Monitoring {} potentially ended markets, confirmed {}",
             detecting_count, ended_count
         );
     }
@@ -1020,13 +1020,13 @@ async fn cleanup_ended_markets(state: &Arc<AppState>) {
         match service.kalshi_client.unsubscribe_markets(kalshi_to_unsub.clone()).await {
             Ok(success) => {
                 if success {
-                    info!("✅ [清理] Kalshi 取消订阅成功: {} 个市场", kalshi_to_unsub.len());
+                    info!("✅ [Cleanup] Kalshi unsubscribe succeeded: {} markets", kalshi_to_unsub.len());
                 } else {
-                    warn!("⚠️ [清理] Kalshi 取消订阅部分失败");
+                    warn!("⚠️ [Cleanup] Kalshi unsubscribe partially failed");
                 }
             }
             Err(e) => {
-                error!("❌ [清理] Kalshi 取消订阅失败: {}", e);
+                error!("❌ [Cleanup] Kalshi unsubscribe failed: {}", e);
             }
         }
     }
@@ -1036,13 +1036,13 @@ async fn cleanup_ended_markets(state: &Arc<AppState>) {
         match service.polymarket_client.unsubscribe_tokens(poly_to_unsub.clone()).await {
             Ok(success) => {
                 if success {
-                    info!("✅ [清理] Polymarket 取消订阅成功: {} 个 token", poly_to_unsub.len());
+                    info!("✅ [Cleanup] Polymarket unsubscribe succeeded: {} tokens", poly_to_unsub.len());
                 } else {
-                    warn!("⚠️ [清理] Polymarket 取消订阅部分失败");
+                    warn!("⚠️ [Cleanup] Polymarket unsubscribe partially failed");
                 }
             }
             Err(e) => {
-                error!("❌ [清理] Polymarket 取消订阅失败: {}", e);
+                error!("❌ [Cleanup] Polymarket unsubscribe failed: {}", e);
             }
         }
     }
@@ -1050,7 +1050,7 @@ async fn cleanup_ended_markets(state: &Arc<AppState>) {
     // Log summary
     let remaining_markets = service.ws_manager.get_matched_markets_for_frontend().len();
     info!(
-        "✅ [清理] 完成，剩余 {} 个活跃市场",
+        "✅ [Cleanup] Complete; {} active markets remain",
         remaining_markets
     );
 }

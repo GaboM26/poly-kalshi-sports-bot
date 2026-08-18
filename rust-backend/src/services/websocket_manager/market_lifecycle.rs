@@ -94,11 +94,6 @@ impl WebSocketManager {
         pattern1 || pattern2
     }
 
-    /// Check if a market key is confirmed as ended
-    pub fn is_market_ended(&self, market_key: &str) -> bool {
-        self.confirmed_ended_markets.read().contains(market_key)
-    }
-
     /// Remove ended markets and return subscription IDs to unsubscribe
     pub fn remove_ended_markets(&self) -> (Vec<String>, Vec<String>) {
         let mut kalshi_to_unsub = Vec::new();

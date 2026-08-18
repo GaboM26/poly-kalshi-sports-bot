@@ -56,33 +56,25 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
 
   // Place a Polymarket order.
   const handlePolyOrder = async (side: 'buy' | 'sell', teamIndex: 0 | 1) => {
-    // Get the matching token ID from market data.
-    // market has polymarket_market_id as the condition ID.
-    // The specific token ID must be obtained from matched data.
-    // Temporarily use market_id as the token (it should be token_id_a or token_id_b).
-    
     const loadingKey = `poly_${side}_${teamIndex}`;
     setLoading(loadingKey);
     setResult(null);
 
     try {
-      // A concrete token ID is required here.
-      // The matched frontend data may not contain one.
-      // In production, fetch complete market data including the token ID from the backend.
-      const tokenId = market.polymarket_market_id; // This should be the concrete token ID.
-      
-      if (!tokenId) {
+      const marketSlug = market.polymarket_market_id;
+      if (!marketSlug) {
         setResult({
           success: false,
-          message: 'Token ID not found',
+          message: 'Polymarket US market slug not found',
         });
         return;
       }
 
       const response = await createPolymarketOrder(apiBaseUrl, {
-        token_id: tokenId,
-        side: side,
-        amount: amount,
+        market_slug: marketSlug,
+        outcome: teamIndex === 0 ? 'yes' : 'no',
+        side,
+        amount,
       });
 
       if (response.success) {

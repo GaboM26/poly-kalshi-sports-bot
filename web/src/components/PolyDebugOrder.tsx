@@ -15,7 +15,8 @@ interface OrderLog {
 }
 
 export function PolyDebugOrder({ apiBaseUrl, onClose }: PolyDebugOrderProps) {
-  const [tokenId, setTokenId] = useState('');
+  const [marketSlug, setMarketSlug] = useState('');
+  const [outcome, setOutcome] = useState<'yes' | 'no'>('yes');
   const [side, setSide] = useState<'buy' | 'sell'>('buy');
   const [amount, setAmount] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -30,8 +31,8 @@ export function PolyDebugOrder({ apiBaseUrl, onClose }: PolyDebugOrderProps) {
   const clearLogs = () => setLogs([]);
 
   const handleOrder = async () => {
-    if (!tokenId.trim()) {
-      addLog('error', 'Token ID cannot be empty');
+    if (!marketSlug.trim()) {
+      addLog('error', 'Market slug cannot be empty');
       return;
     }
 
@@ -39,7 +40,8 @@ export function PolyDebugOrder({ apiBaseUrl, onClose }: PolyDebugOrderProps) {
     clearLogs();
 
     const request = {
-      token_id: tokenId.trim(),
+      market_slug: marketSlug.trim(),
+      outcome,
       side,
       amount,
     };
@@ -65,20 +67,6 @@ export function PolyDebugOrder({ apiBaseUrl, onClose }: PolyDebugOrderProps) {
     }
   };
 
-  // Preset test tokens (CHI-MIA game)
-  const presetTokens = [
-    { 
-      name: 'CHI-MIA (CHI Yes)', 
-      token: '94515776290373751754638142228993059501097351216445649452643423016914071837398',
-      description: 'Chicago Bulls win'
-    },
-    { 
-      name: 'PHX-WAS (WAS Yes)', 
-      token: '113640777070257914779167991695197859988168871541269340805216299248113189823953',
-      description: 'Washington Wizards win'
-    },
-  ];
-
   return (
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
       <div className="bg-[--bg-secondary] rounded-lg border border-[--border-color] w-full max-w-2xl max-h-[90vh] flex flex-col">
@@ -98,40 +86,19 @@ export function PolyDebugOrder({ apiBaseUrl, onClose }: PolyDebugOrderProps) {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {/* Preset tokens */}
-          <div className="bg-[--bg-tertiary] rounded p-3">
-            <div className="text-xs text-[--text-muted] mb-2">Quick-select Token</div>
-            <div className="flex flex-wrap gap-2">
-              {presetTokens.map((preset) => (
-                <button
-                  key={preset.token}
-                  onClick={() => setTokenId(preset.token)}
-                  className={`px-2 py-1 text-xs rounded border ${
-                    tokenId === preset.token
-                      ? 'border-purple-500 bg-purple-500/20 text-purple-400'
-                      : 'border-[--border-color] bg-[--bg-secondary] text-[--text-secondary] hover:bg-[--bg-primary]'
-                  }`}
-                  title={preset.description}
-                >
-                  {preset.name}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Token ID input */}
+          {/* Market slug input */}
           <div className="space-y-2">
-            <label className="text-xs text-[--text-muted]">Token ID</label>
+            <label className="text-xs text-[--text-muted]">Market Slug</label>
             <input
               type="text"
-              value={tokenId}
-              onChange={(e) => setTokenId(e.target.value)}
-              placeholder="Enter Polymarket Token ID..."
+              value={marketSlug}
+              onChange={(e) => setMarketSlug(e.target.value)}
+              placeholder="Enter Polymarket US market slug..."
               className="w-full px-3 py-2 text-xs bg-[--bg-tertiary] border border-[--border-color] rounded text-[--text-primary] placeholder:text-[--text-muted] font-mono"
             />
-            {tokenId && (
+            {marketSlug && (
               <div className="text-[10px] text-[--text-muted] font-mono break-all">
-                {tokenId.slice(0, 30)}...{tokenId.slice(-10)}
+                {marketSlug}
               </div>
             )}
           </div>

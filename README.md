@@ -35,15 +35,15 @@ A high-performance, real-time prediction market arbitrage opportunity monitoring
 |  | Kalshi client    |          | Polymarket client     |  |
 |  | - REST API       |          | - REST API            |  |
 |  | - WebSocket      |          | - WebSocket           |  |
-|  | - RSA signing    |          | - Ethereum signing    |  |
+|  | - RSA signing    |          | - US API client       |  |
 |  +------------------+          +-----------------------+  |
 +--------------------+----------------------------------------+
                      | HTTP API
 +--------------------+----------------------------------------+
 |             Python Order Service (FastAPI)                  |
 |                  http://localhost:8001                      |
-|  - Uses the official py-clob-client SDK                     |
-|  - Handles Polymarket CLOB order signing and submission     |
+|  - Uses the official polymarket-us SDK                      |
+|  - Handles Polymarket US API order submission               |
 +-------------------------------------------------------------+
 ```
 
@@ -67,7 +67,7 @@ A high-performance, real-time prediction market arbitrage opportunity monitoring
 **Order Service (Python)**
 
 - FastAPI - web framework
-- py-clob-client - official Polymarket SDK
+- polymarket-us - official Polymarket US SDK
 
 ## Quick Start
 
@@ -75,7 +75,7 @@ A high-performance, real-time prediction market arbitrage opportunity monitoring
 
 - Rust 1.70+
 - Node.js 16+
-- Python 3.8+
+- Python 3.10+
 
 ### 2. Configuration
 
@@ -94,9 +94,10 @@ YOUR_PRIVATE_KEY_HERE
 -----END RSA PRIVATE KEY-----"""
 
 [polymarket]
-# Obtain from https://reveal.magic.link/polymarket
-private_key = "0xYOUR_PRIVATE_KEY"
-wallet_address = "0xYOUR_WALLET_ADDRESS"
+# Generate these at https://polymarket.us/developer.
+# This local config.toml file is ignored by Git.
+key_id = "your-polymarket-us-key-id"
+secret_key = "your-polymarket-us-secret-key"
 # Python order service URL
 order_service_url = "http://127.0.0.1:8001"
 

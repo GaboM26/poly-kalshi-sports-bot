@@ -42,11 +42,6 @@ impl SubscriptionInfo {
             market_lookup: HashMap::new(),
         }
     }
-    
-    /// Check if there are any subscriptions
-    pub fn is_empty(&self) -> bool {
-        self.kalshi_tickers.is_empty() && self.polymarket_token_ids.is_empty()
-    }
 }
 
 impl EventMatcher {

@@ -1,6 +1,5 @@
 //! Utility functions
 
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -48,48 +47,4 @@ pub fn get_debug_log_path() -> PathBuf {
             }
             path
         })
-}
-
-/// Write a JSON debug log entry
-pub fn write_debug_log(location: &str, message: &str, data: serde_json::Value) {
-    let debug_log = serde_json::json!({
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "location": location,
-        "message": message,
-        "data": data
-    });
-    
-    let path = get_debug_log_path();
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = writeln!(f, "{}", debug_log.to_string());
-    }
-}
-
-/// Write a JSON debug log entry with hypothesis ID
-pub fn write_debug_log_with_hypothesis(
-    location: &str,
-    hypothesis_id: &str,
-    message: &str,
-    data: serde_json::Value,
-) {
-    let debug_log = serde_json::json!({
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "location": location,
-        "hypothesisId": hypothesis_id,
-        "message": message,
-        "data": data
-    });
-    
-    let path = get_debug_log_path();
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = writeln!(f, "{}", debug_log.to_string());
-    }
 }

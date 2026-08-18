@@ -16,14 +16,16 @@ YOUR_KALSHI_PRIVATE_KEY_HERE
 base_url = "https://api.elections.kalshi.com/trade-api/v2"
 
 [polymarket]
-# Polymarket configuration
-# 
-# Gamma API base URL (used to retrieve market data)
-base_url = "https://gamma-api.polymarket.com"
+# Polymarket US API configuration. Generate keys at https://polymarket.us/developer.
+# This config file is ignored by Git once copied to config.toml.
+key_id = ""
+secret_key = ""
+
+# Polymarket US public API base URL (used to retrieve market data)
+base_url = "https://gateway.polymarket.us"
 
 # Python order service URL (orders are submitted through this service)
-# Polymarket orders are handled by a separate Python service using the official py-clob-client SDK.
-# Credentials such as the private key and wallet address are configured in the Python service.
+# Orders are handled by a separate Python service using the official polymarket-us SDK.
 order_service_url = "http://127.0.0.1:8001"
 
 # The [settings] and [auto_trade] configuration has moved to the database.

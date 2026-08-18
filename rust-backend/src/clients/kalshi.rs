@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::RwLock;
 use reqwest::Client;
@@ -22,11 +22,10 @@ use rsa::pss::{BlindedSigningKey, Signature};
 use rsa::sha2::Sha256;
 use rsa::signature::{RandomizedSigner, SignatureEncoding};
 use rsa::RsaPrivateKey;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::config::KalshiConfig;
 use crate::models::{KalshiEvent, KalshiMarket, Platform, PriceUpdate};
@@ -288,7 +287,7 @@ impl KalshiClient {
         }
 
         info!(
-            "已加载 {} 个 Kalshi 事件和 {} 个市场",
+            "Loaded {} Kalshi events and {} markets",
             events.len(),
             markets.len()
         );
@@ -387,16 +386,16 @@ impl KalshiClient {
         if let Some(tx) = tx {
             match tx.send(KalshiWsCommand::Subscribe(tickers.clone())).await {
                 Ok(_) => {
-                    info!("🔌 [Kalshi] 发送热订阅请求: {} 个市场", tickers.len());
+                    info!("🔌 [Kalshi] Sending hot-subscription request for {} markets", tickers.len());
                     Ok(true)
                 }
                 Err(e) => {
-                    warn!("⚠️ [Kalshi] 热订阅请求发送失败: {}", e);
+                    warn!("⚠️ [Kalshi] Hot-subscription request failed: {}", e);
                     Ok(false)
                 }
             }
         } else {
-            warn!("⚠️ [Kalshi] WebSocket 未连接，无法热订阅");
+            warn!("⚠️ [Kalshi] WebSocket is not connected; cannot hot-subscribe");
             Ok(false)
         }
     }
@@ -414,16 +413,16 @@ impl KalshiClient {
         if let Some(tx) = tx {
             match tx.send(KalshiWsCommand::Unsubscribe(tickers.clone())).await {
                 Ok(_) => {
-                    info!("🔌 [Kalshi] 发送取消订阅请求: {} 个市场", tickers.len());
+                    info!("🔌 [Kalshi] Sending unsubscribe request for {} markets", tickers.len());
                     Ok(true)
                 }
                 Err(e) => {
-                    warn!("⚠️ [Kalshi] 取消订阅请求发送失败: {}", e);
+                    warn!("⚠️ [Kalshi] Unsubscribe request failed: {}", e);
                     Ok(false)
                 }
             }
         } else {
-            warn!("⚠️ [Kalshi] WebSocket 未连接，无法取消订阅");
+            warn!("⚠️ [Kalshi] WebSocket is not connected; cannot unsubscribe");
             Ok(false)
         }
     }
@@ -453,7 +452,7 @@ impl KalshiClient {
             timestamp.to_string().parse().unwrap(),
         );
 
-        info!("正在连接 Kalshi WebSocket...");
+        info!("Connecting to the Kalshi WebSocket...");
 
         let (ws_stream, _) = connect_async(request)
             .await
@@ -483,7 +482,7 @@ impl KalshiClient {
                 .await?;
         }
 
-        info!("已订阅 {} 个 Kalshi 市场", tickers.len());
+        info!("Subscribed to {} Kalshi markets", tickers.len());
 
         let orderbook_cache = self.orderbook_cache.clone();
 
@@ -496,21 +495,21 @@ impl KalshiClient {
                         Some(Ok(Message::Text(text))) => {
                             if let Some(update) = Self::parse_ws_message(&text, &orderbook_cache) {
                                 if price_tx.send(update).await.is_err() {
-                                    warn!("价格更新通道已关闭");
+                                    warn!("Price update channel has closed");
                                     break;
                                 }
                             }
                         }
                         Some(Ok(Message::Close(_))) => {
-                            info!("Kalshi WebSocket 已关闭");
+                            info!("Kalshi WebSocket closed");
                             break;
                         }
                         Some(Err(e)) => {
-                            error!("Kalshi WebSocket 错误: {}", e);
+                            error!("Kalshi WebSocket error: {}", e);
                             break;
                         }
                         None => {
-                            info!("Kalshi WebSocket 流结束");
+                            info!("Kalshi WebSocket stream ended");
                             break;
                         }
                         _ => {}
@@ -520,7 +519,7 @@ impl KalshiClient {
                 Some(command) = cmd_rx.recv() => {
                     match command {
                         KalshiWsCommand::Subscribe(new_tickers) => {
-                            info!("🔌 [Kalshi] 处理热订阅: {} 个新市场", new_tickers.len());
+                            info!("🔌 [Kalshi] Processing hot subscription for {} new markets", new_tickers.len());
                             for ticker in new_tickers.iter() {
                                 let subscribe_msg = json!({
                                     "id": next_msg_id,
@@ -533,13 +532,13 @@ impl KalshiClient {
                                 next_msg_id += 1;
 
                                 if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
-                                    error!("❌ [Kalshi] 热订阅发送失败: {}", e);
+                                    error!("❌ [Kalshi] Hot subscription send failed: {}", e);
                                 }
                             }
-                            info!("✅ [Kalshi] 热订阅完成: {} 个市场", new_tickers.len());
+                            info!("✅ [Kalshi] Hot subscription completed for {} markets", new_tickers.len());
                         }
                         KalshiWsCommand::Unsubscribe(tickers_to_unsub) => {
-                            info!("🔌 [Kalshi] 处理取消订阅: {} 个市场", tickers_to_unsub.len());
+                            info!("🔌 [Kalshi] Processing unsubscribe for {} markets", tickers_to_unsub.len());
                             for ticker in tickers_to_unsub.iter() {
                                 let unsubscribe_msg = json!({
                                     "id": next_msg_id,
@@ -552,13 +551,13 @@ impl KalshiClient {
                                 next_msg_id += 1;
 
                                 if let Err(e) = write.send(Message::Text(unsubscribe_msg.to_string())).await {
-                                    error!("❌ [Kalshi] 取消订阅发送失败: {}", e);
+                                    error!("❌ [Kalshi] Unsubscribe send failed: {}", e);
                                 }
                                 
                                 // Also remove from orderbook cache
                                 orderbook_cache.write().remove(ticker);
                             }
-                            info!("✅ [Kalshi] 取消订阅完成: {} 个市场", tickers_to_unsub.len());
+                            info!("✅ [Kalshi] Unsubscribe completed for {} markets", tickers_to_unsub.len());
                         }
                     }
                 }

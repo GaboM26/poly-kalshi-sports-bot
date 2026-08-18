@@ -152,7 +152,7 @@ Deployment steps:
 1. Copy config.example.toml to config.toml.
 2. Edit config.toml and enter your Kalshi API credentials.
 3. Copy poly-order-service/config.toml.sample to poly-order-service/config.toml.
-4. Edit poly-order-service/config.toml and enter the Polymarket private key and wallet address.
+4. Edit config.toml and set polymarket.key_id and polymarket.secret_key, generated at https://polymarket.us/developer.
 5. Run: ./start.sh
 
 Configuration:

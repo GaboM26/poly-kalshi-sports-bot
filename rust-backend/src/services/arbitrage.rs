@@ -8,11 +8,11 @@ use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::clients::{KalshiClient, PolymarketClient};
 use crate::config::Config;
-use crate::core::{ArbitrageCalculator, EventMatcher, SubscriptionInfo};
+use crate::core::{EventMatcher, SubscriptionInfo};
 use crate::models::{ArbitrageOpportunity, MatchedEvent, MatchedMarket, PriceUpdate, SystemStats};
 use crate::services::{ArbitrageStorage, WebSocketManager, PerformanceMetrics, Operation};
 
@@ -21,7 +21,6 @@ pub struct ArbitrageService {
     pub kalshi_client: KalshiClient,
     pub polymarket_client: PolymarketClient,
     pub matcher: EventMatcher,
-    pub calculator: ArbitrageCalculator,
     pub ws_manager: Arc<WebSocketManager>,
     pub storage: Arc<ArbitrageStorage>,
     pub matched_events: Vec<MatchedEvent>,
@@ -45,15 +44,11 @@ impl ArbitrageService {
 
         // Initialize Polymarket CLOB for order placement
         if let Err(e) = polymarket_client.init_clob().await {
-            info!("Polymarket CLOB 初始化跳过: {}", e);
+            info!("Polymarket CLOB initialization skipped: {}", e);
         }
 
-        // Create matcher and calculator
+        // Create matcher
         let matcher = EventMatcher::new(24);
-        let calculator = ArbitrageCalculator::new(
-            config.settings.min_profit_margin,
-            config.settings.default_bet_amount,
-        );
 
         // Create WebSocket manager with metrics
         let mut ws_manager = WebSocketManager::new(
@@ -76,7 +71,6 @@ impl ArbitrageService {
             kalshi_client,
             polymarket_client,
             matcher,
-            calculator,
             ws_manager,
             storage,
             matched_events: Vec::new(),
@@ -87,7 +81,7 @@ impl ArbitrageService {
 
     /// Initialize the service by fetching and matching markets
     pub async fn initialize(&mut self) -> Result<()> {
-        info!("🔍 正在从两个平台获取市场数据...");
+        info!("🔍 Fetching market data from both platforms...");
 
         // Fetch data from both platforms
         let (kalshi_events, kalshi_markets) = self
@@ -101,7 +95,7 @@ impl ArbitrageService {
             .await?;
 
         info!(
-            "📊 已加载: Kalshi {} 个事件/{} 个市场, Polymarket {} 个事件/{} 个市场",
+            "📊 Loaded: Kalshi {} events/{} markets, Polymarket {} events/{} markets",
             kalshi_events.len(),
             kalshi_markets.len(),
             polymarket_events.len(),
@@ -125,7 +119,7 @@ impl ArbitrageService {
         self.ws_manager.set_matched_markets(matched_markets);
 
         info!(
-            "✅ 初始化完成: {} 个匹配的市场",
+            "✅ Initialization complete: {} matched markets",
             self.matched_markets.len()
         );
 
@@ -137,7 +131,7 @@ impl ArbitrageService {
         let (kalshi_tickers, poly_tokens) = self.ws_manager.get_subscription_ids();
 
         info!(
-            "📡 启动 WebSocket 连接: {} 个 Kalshi 市场, {} 个 Polymarket 代币",
+            "📡 Starting WebSocket connections: {} Kalshi markets, {} Polymarket tokens",
             kalshi_tickers.len(),
             poly_tokens.len()
         );
@@ -156,7 +150,7 @@ impl ArbitrageService {
                     .connect_websocket(kalshi_tickers_clone.clone(), price_tx_kalshi.clone())
                     .await
                 {
-                    error!("Kalshi WebSocket 错误: {}. 5秒后重连...", e);
+                    error!("Kalshi WebSocket error: {}. Reconnecting in 5 seconds...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             }
@@ -170,7 +164,7 @@ impl ArbitrageService {
                     .connect_websocket(poly_tokens_clone.clone(), price_tx_poly.clone())
                     .await
                 {
-                    error!("Polymarket WebSocket 错误: {}. 5秒后重连...", e);
+                    error!("Polymarket WebSocket error: {}. Reconnecting in 5 seconds...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             }
@@ -192,7 +186,7 @@ impl ArbitrageService {
 
                 if !opportunities.is_empty() {
                     info!(
-                        "📊 定期扫描: 发现 {} 个套利机会, 最佳: {:.2}%",
+                        "📊 Periodic scan: found {} arbitrage opportunities, best: {:.2}%",
                         opportunities.len(),
                         opportunities.first().map(|o| o.profit_margin).unwrap_or(0.0)
                     );
@@ -233,28 +227,16 @@ impl ArbitrageService {
             .await
     }
 
-    /// Place an order on Polymarket (legacy - uses USDC amount)
+    /// Place a Polymarket US market order.
     pub async fn place_polymarket_order(
         &self,
-        token_id: &str,
+        market_slug: &str,
+        outcome: &str,
         side: &str,
         amount: f64,
     ) -> Result<serde_json::Value> {
         self.polymarket_client
-            .place_market_order(token_id, side, amount)
-            .await
-    }
-
-    /// Place an order on Polymarket by tokens quantity (RECOMMENDED)
-    /// Uses 5% slippage and traverses order book from best price
-    pub async fn place_polymarket_order_by_tokens(
-        &self,
-        token_id: &str,
-        side: &str,
-        tokens: f64,
-    ) -> Result<serde_json::Value> {
-        self.polymarket_client
-            .place_market_order_by_tokens(token_id, side, tokens)
+            .place_market_order(market_slug, outcome, side, amount)
             .await
     }
 
@@ -271,7 +253,7 @@ impl ArbitrageService {
     /// Returns: (new_matched_markets, new_subscription_info)
     pub async fn scan_for_new_markets(&mut self) -> Result<(Vec<MatchedMarket>, SubscriptionInfo)> {
         info!("============================================================");
-        info!("🔄 开始扫描新市场...");
+        info!("🔄 Starting scan for new markets...");
         info!("============================================================");
 
         // 1. Save old matched market IDs
@@ -282,7 +264,7 @@ impl ArbitrageService {
             .collect();
 
         let old_count = self.matched_markets.len();
-        info!("   扫描前状态: {} 个已匹配市场", old_count);
+        info!("   Scan state before scan: {} matched markets", old_count);
 
         // 2. Fetch fresh market data
         let (kalshi_events, kalshi_markets) = match self
@@ -292,7 +274,7 @@ impl ArbitrageService {
         {
             Ok(data) => data,
             Err(e) => {
-                error!("❌ 获取 Kalshi 市场数据失败: {}", e);
+                error!("❌ Failed to fetch Kalshi market data: {}", e);
                 return Ok((Vec::new(), SubscriptionInfo::empty()));
             }
         };
@@ -304,13 +286,13 @@ impl ArbitrageService {
         {
             Ok(data) => data,
             Err(e) => {
-                error!("❌ 获取 Polymarket 市场数据失败: {}", e);
+                error!("❌ Failed to fetch Polymarket market data: {}", e);
                 return Ok((Vec::new(), SubscriptionInfo::empty()));
             }
         };
 
         info!(
-            "   扫描后状态: Kalshi {} 事件/{} 市场, Polymarket {} 事件/{} 市场",
+            "   Scan state after scan: Kalshi {} events/{} markets, Polymarket {} events/{} markets",
             kalshi_events.len(),
             kalshi_markets.len(),
             polymarket_events.len(),
@@ -341,7 +323,7 @@ impl ArbitrageService {
         self.matched_markets = matched_markets;
 
         if new_matched_markets.is_empty() {
-            info!("   ✅ 没有发现新的匹配市场");
+            info!("   ✅ No new matched markets discovered");
             info!("============================================================");
             return Ok((Vec::new(), SubscriptionInfo::empty()));
         }
@@ -351,14 +333,14 @@ impl ArbitrageService {
             info!("      {}. {} ({})", i + 1, mm.event_name, mm.team_name);
         }
         if new_matched_markets.len() > 5 {
-            info!("      ... 还有 {} 个新市场", new_matched_markets.len() - 5);
+            info!("      ... {} more new markets", new_matched_markets.len() - 5);
         }
 
         // 6. Generate subscription info for new markets only
         let new_sub_info = self.matcher.get_subscription_info(&new_matched_markets);
 
         info!(
-            "   📡 新订阅需求: Kalshi {} 个市场, Polymarket {} 个 token",
+            "   📡 New subscription requirements: Kalshi {} markets, Polymarket {} tokens",
             new_sub_info.kalshi_tickers.len(),
             new_sub_info.polymarket_token_ids.len()
         );
@@ -402,4 +384,3 @@ impl ArbitrageService {
         self.storage.get_statistics()
     }
 }
-

@@ -219,9 +219,10 @@ export type OrderRequest = KalshiOrderRequest;
 
 // Polymarket order request
 export interface PolymarketOrderRequest {
-  token_id: string;
+  market_slug: string;
+  outcome: 'yes' | 'no';
   side: 'buy' | 'sell';
-  amount: number;  // USDC amount
+  amount: number;
 }
 
 // Order response

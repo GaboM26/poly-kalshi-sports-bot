@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::params;
 
 use crate::models::ArbitrageTrackingRecord;
-use super::{ArbitrageStorage, StorageCommand, StorageStats};
+use super::{ArbitrageStorage, StorageCommand};
 
 impl ArbitrageStorage {
     /// Start tracking an arbitrage opportunity
@@ -76,30 +76,6 @@ impl ArbitrageStorage {
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(records)
-    }
-
-    /// Get storage statistics
-    pub fn get_stats(&self) -> StorageStats {
-        let conn = self.conn().lock();
-
-        let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM arbitrage_tracking", [], |row| {
-                row.get(0)
-            })
-            .unwrap_or(0);
-
-        let active: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM arbitrage_tracking WHERE end_time IS NULL",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-
-        StorageStats {
-            total_records: total as usize,
-            active_records: active as usize,
-        }
     }
 
     /// Search records with filters

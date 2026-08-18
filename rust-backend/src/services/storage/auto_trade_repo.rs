@@ -15,17 +15,17 @@ use super::ArbitrageStorage;
 pub struct AutoTradeState {
     pub enabled: bool,
     pub trade_count: i32,
-    /// 自动下单最大执行次数
+/// Maximum number of auto-trade executions
     pub max_trade_count: i32,
-    /// 自动下单单次最大金额（美元）
+/// Maximum trade amount per execution (USD)
     pub max_amount: f64,
-    /// 套利机会持续时间阈值（毫秒）
+/// Minimum arbitrage opportunity duration threshold (milliseconds)
     pub min_duration_ms: i64,
-    /// 是否启用灵活下单模式
+/// Whether flexible auto-trade mode is enabled
     pub flexible_mode: bool,
-    /// 单次最大合同数
+/// Maximum contracts per trade
     pub max_contracts: i32,
-    /// 最低合同数（深度低于此值不下单）
+/// Minimum required contracts; do not trade below this depth
     pub min_contracts: i32,
     pub last_trade_time: Option<String>,
     pub updated_at: Option<String>,
@@ -65,9 +65,9 @@ pub struct AutoTradeRecord {
     pub polymarket_price: f64,
     pub total_amount: f64,
     pub profit_margin: f64,
-    /// 机会持续时间（下单前，毫秒）
+    /// Opportunity duration before order placement (milliseconds)
     pub duration_ms: i64,
-    /// 从发现机会到下单完成的总耗时（毫秒）
+    /// Total time from opportunity detection to order completion (milliseconds)
     pub total_duration_ms: i64,
     pub kalshi_success: bool,
     pub polymarket_success: bool,
@@ -125,7 +125,7 @@ impl ArbitrageStorage {
             "UPDATE auto_trade_state SET enabled = ?, updated_at = ? WHERE id = 1",
             params![enabled as i32, Utc::now().to_rfc3339()],
         )?;
-        info!("🔄 自动下单状态已更新: enabled = {}", enabled);
+        info!("🔄 Auto-trade status updated: enabled = {}", enabled);
         Ok(())
     }
 
@@ -143,7 +143,7 @@ impl ArbitrageStorage {
             |row| row.get(0),
         )?;
         
-        info!("📈 自动下单次数已递增: {}", new_count);
+        info!("📈 Auto-trade count incremented: {}", new_count);
         Ok(new_count)
     }
 
@@ -154,7 +154,7 @@ impl ArbitrageStorage {
             "UPDATE auto_trade_state SET trade_count = 0, updated_at = ? WHERE id = 1",
             params![Utc::now().to_rfc3339()],
         )?;
-        info!("🔄 自动下单次数已重置为 0");
+        info!("🔄 Auto-trade count reset to 0");
         Ok(())
     }
 
@@ -176,7 +176,7 @@ impl ArbitrageStorage {
                 "UPDATE auto_trade_state SET max_amount = ?, updated_at = ? WHERE id = 1",
                 params![amount, Utc::now().to_rfc3339()],
             )?;
-            info!("🔄 max_amount 已更新: {}", amount);
+            info!("🔄 max_amount updated: {}", amount);
         }
         
         if let Some(duration) = min_duration_ms {
@@ -184,7 +184,7 @@ impl ArbitrageStorage {
                 "UPDATE auto_trade_state SET min_duration_ms = ?, updated_at = ? WHERE id = 1",
                 params![duration, Utc::now().to_rfc3339()],
             )?;
-            info!("🔄 min_duration_ms 已更新: {}", duration);
+            info!("🔄 min_duration_ms updated: {}", duration);
         }
         
         if let Some(max_count) = max_trade_count {
@@ -192,7 +192,7 @@ impl ArbitrageStorage {
                 "UPDATE auto_trade_state SET max_trade_count = ?, updated_at = ? WHERE id = 1",
                 params![max_count, Utc::now().to_rfc3339()],
             )?;
-            info!("🔄 max_trade_count 已更新: {}", max_count);
+            info!("🔄 max_trade_count updated: {}", max_count);
         }
         
         if let Some(flexible) = flexible_mode {
@@ -200,7 +200,7 @@ impl ArbitrageStorage {
                 "UPDATE auto_trade_state SET flexible_mode = ?, updated_at = ? WHERE id = 1",
                 params![flexible as i32, Utc::now().to_rfc3339()],
             )?;
-            info!("🔄 flexible_mode 已更新: {}", flexible);
+            info!("🔄 flexible_mode updated: {}", flexible);
         }
         
         if let Some(max_c) = max_contracts {
@@ -208,7 +208,7 @@ impl ArbitrageStorage {
                 "UPDATE auto_trade_state SET max_contracts = ?, updated_at = ? WHERE id = 1",
                 params![max_c, Utc::now().to_rfc3339()],
             )?;
-            info!("🔄 max_contracts 已更新: {}", max_c);
+            info!("🔄 max_contracts updated: {}", max_c);
         }
         
         if let Some(min_c) = min_contracts {
@@ -216,31 +216,10 @@ impl ArbitrageStorage {
                 "UPDATE auto_trade_state SET min_contracts = ?, updated_at = ? WHERE id = 1",
                 params![min_c, Utc::now().to_rfc3339()],
             )?;
-            info!("🔄 min_contracts 已更新: {}", min_c);
+            info!("🔄 min_contracts updated: {}", min_c);
         }
         
         Ok(())
-    }
-
-    /// Check if auto-trade can execute (enabled and within limits)
-    pub fn can_auto_trade(&self) -> Result<(bool, String)> {
-        let state = self.get_auto_trade_state()?;
-        
-        if !state.enabled {
-            return Ok((false, "自动下单未开启".to_string()));
-        }
-        
-        if state.trade_count >= state.max_trade_count {
-            return Ok((false, format!(
-                "已达到最大下单次数限制 ({}/{})", 
-                state.trade_count, state.max_trade_count
-            )));
-        }
-        
-        Ok((true, format!(
-            "可以下单 ({}/{})",
-            state.trade_count, state.max_trade_count
-        )))
     }
 
     /// Save an auto-trade execution record
@@ -320,10 +299,10 @@ impl ArbitrageStorage {
         )?;
         
         let id = conn.last_insert_rowid();
-        info!("📝 自动下单记录已保存: ID={}, 事件={}, 状态={}, K:{}/P:{}, 延迟: K={}ms/P={}ms", 
+        info!("📝 Auto-trade record saved: ID={}, event={}, status={}, K:{}/P:{}, latency: K={}ms/P={}ms", 
             id, event_name, status,
-            if kalshi_success { "成功" } else { "失败" },
-            if polymarket_success { "成功" } else { "失败" },
+            if kalshi_success { "success" } else { "failed" },
+            if polymarket_success { "success" } else { "failed" },
             kalshi_latency_ms, poly_latency_ms
         );
         Ok(id)
@@ -390,7 +369,7 @@ impl ArbitrageStorage {
         )?;
         
         let id = conn.last_insert_rowid();
-        info!("📝 自动下单跳过记录: ID={}, 事件={}, 原因={}", id, event_name, skip_reason);
+        info!("📝 Auto-trade skip record: ID={}, event={}, reason={}", id, event_name, skip_reason);
         Ok(id)
     }
 

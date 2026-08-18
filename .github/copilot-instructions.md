@@ -4,7 +4,7 @@
 
 - `rust-backend/` is the Axum/Tokio API, arbitrage engine, exchange clients, SQLite storage, and WebSocket server.
 - `web/` is the Vite, React, and TypeScript user interface.
-- `poly-order-service/` is the FastAPI service that signs and submits Polymarket CLOB orders through `py-clob-client`.
+- `poly-order-service/` is the FastAPI service that submits Polymarket US orders through `polymarket-us`.
 - Root scripts start the development stack and build deployment packages. Keep the service ports aligned with the configuration: frontend `5173`, Rust API `8000`, and Python order service `8001`.
 
 ## Change Guidelines

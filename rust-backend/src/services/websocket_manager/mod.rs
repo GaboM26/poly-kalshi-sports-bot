@@ -15,7 +15,7 @@ mod market_lifecycle;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
@@ -26,10 +26,10 @@ use tracing::{debug, info};
 use crate::clients::{KalshiClient, PolymarketClient};
 use crate::core::{ArbitrageCalculator, EventMatcher};
 use crate::models::{
-    generate_market_key, ArbitrageOpportunity, ArbitrageTrackingRecord, MatchedMarket,
+    ArbitrageOpportunity, ArbitrageTrackingRecord, MatchedMarket,
     MatchedMarketFrontend, Platform, PriceUpdate, ScanStats, SystemStats,
 };
-use crate::services::storage::{ArbitrageStorage, AutoTradeState};
+use crate::services::storage::ArbitrageStorage;
 use crate::services::metrics::{PerformanceMetrics, Operation};
 
 /// Extreme price threshold for Kalshi (99¢ = 0.99)
@@ -176,11 +176,6 @@ impl WebSocketManager {
         0
     }
     
-    /// Get a reference to the performance metrics
-    pub fn get_metrics(&self) -> Arc<PerformanceMetrics> {
-        self.metrics.clone()
-    }
-
     /// Subscribe to opportunity updates
     pub fn subscribe(&self) -> broadcast::Receiver<ArbitrageOpportunity> {
         self.opportunity_tx.subscribe()
@@ -694,8 +689,6 @@ impl WebSocketManager {
 
     /// Get system statistics
     pub fn get_stats(&self) -> SystemStats {
-        let _storage_stats = self.storage.get_stats();
-
         SystemStats {
             total_kalshi_events: 0,
             total_kalshi_markets: 0,
@@ -765,16 +758,6 @@ impl WebSocketManager {
             kalshi_latency_ms,
             polymarket_latency_ms,
         }
-    }
-
-    /// Get connection status
-    pub fn is_kalshi_connected(&self) -> bool {
-        *self.kalshi_connected.read()
-    }
-
-    /// Get connection status
-    pub fn is_polymarket_connected(&self) -> bool {
-        *self.polymarket_connected.read()
     }
 
     /// Get a reference to storage

@@ -56,7 +56,8 @@ pub async fn place_kalshi_order(
 /// Polymarket order request
 #[derive(Deserialize)]
 pub struct PolymarketOrderRequest {
-    token_id: String,
+    market_slug: String,
+    outcome: String,
     side: String,
     amount: f64,
 }
@@ -69,7 +70,7 @@ pub async fn place_polymarket_order(
     let service = state.service.read().await;
 
     match service
-        .place_polymarket_order(&req.token_id, &req.side, req.amount)
+        .place_polymarket_order(&req.market_slug, &req.outcome, &req.side, req.amount)
         .await
     {
         Ok(response) => Json(serde_json::json!({
@@ -133,16 +134,12 @@ pub async fn execute_arbitrage(
     let kalshi_amount = (total_bet / 2.0 * 100.0) as i32;
     let poly_amount = total_bet / 2.0;
 
-    // Get Polymarket token
-    let poly_token = if req.polymarket_side == "yes" {
-        mm.polymarket_market.get_token_for_team(&mm.team_name)
-    } else {
-        let opponent = mm.polymarket_market.get_opponent(&mm.team_name);
-        opponent.and_then(|o| mm.polymarket_market.get_token_for_team(o))
-    };
+    // Polymarket US trades are addressed by market slug and outcome, not CLOB
+    // token IDs. The matched market ID is the slug supplied by the US feed.
+    let poly_market_slug = mm.polymarket_market.market_id.as_str();
 
     // Check Polymarket depth
-    let poly_depth = poly_token
+    let poly_depth = mm.polymarket_market.get_token_for_team(&mm.team_name)
         .and_then(|token| service.polymarket_client.get_orderbook(token))
         .map(|book| book.ask_depth(poly_amount))
         .unwrap_or(0.0);
@@ -194,12 +191,9 @@ pub async fn execute_arbitrage(
         )
         .await;
 
-    let poly_result = match poly_token {
-        Some(token) => service
-            .place_polymarket_order(token, "buy", poly_amount)
-            .await,
-        None => Err(anyhow::anyhow!("Polymarket token not found")),
-    };
+    let poly_result = service
+        .place_polymarket_order(poly_market_slug, &req.polymarket_side, "buy", poly_amount)
+        .await;
 
     Json(serde_json::json!({
         "success": kalshi_result.is_ok() && poly_result.is_ok(),

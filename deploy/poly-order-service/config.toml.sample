@@ -1,17 +1,7 @@
-# Polymarket order service configuration
-# 
-# This configuration file is used by the Python order service.
-# Contains Polymarket account credentials.
-
+# Polymarket US order service configuration
+#
+# Prefer setting POLYMARKET_KEY_ID and POLYMARKET_SECRET_KEY in the environment.
+# Generate the API key pair at https://polymarket.us/developer.
 [polymarket]
-# Private key - obtain it from https://reveal.magic.link/polymarket
-private_key = "0x8d3d049e3714bc5fe4bcf6d0e990326445be3381615e6e25648b2e81ef2edf21"
-
-# Smart Wallet address - view it at polymarket.com/settings
-wallet_address = "0x85B634AA874fd6a5E1a80ec9a64fDAbb395201D4"
-
-# CLOB API URL
-clob_url = "https://clob.polymarket.com"
-
-# Signature type (1 = Magic Link user)
-signature_type = 1
+key_id = ""
+secret_key = ""

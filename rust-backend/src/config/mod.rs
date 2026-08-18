@@ -20,10 +20,11 @@ fn default_kalshi_base_url() -> String {
     "https://api.elections.kalshi.com/trade-api/v2".to_string()
 }
 
-/// Polymarket API configuration
+/// Polymarket US API configuration.
 ///
-/// Order placement is handled by a separate Python service using the official SDK.
-/// Configure `order_service_url` to point to the Python order service.
+/// Order placement is handled by a separate Python service using the official
+/// `polymarket-us` SDK. API credentials belong in `POLYMARKET_KEY_ID` and
+/// `POLYMARKET_SECRET_KEY`, which that service reads at startup.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PolymarketConfig {
     /// Gamma API base URL
@@ -36,7 +37,7 @@ pub struct PolymarketConfig {
 }
 
 fn default_poly_base_url() -> String {
-    "https://gamma-api.polymarket.com".to_string()
+    "https://gateway.polymarket.us".to_string()
 }
 
 fn default_order_service_url() -> String {
@@ -127,50 +128,6 @@ impl Default for AuthConfig {
     }
 }
 
-/// Auto-trade configuration (initial defaults, actual state stored in database)
-#[derive(Debug, Clone, Deserialize)]
-pub struct AutoTradeConfig {
-    /// Whether auto-trade is enabled by default
-    #[serde(default = "default_auto_trade_enabled")]
-    pub enabled: bool,
-    /// Maximum amount per automated trade in USD
-    #[serde(default = "default_auto_trade_max_amount")]
-    pub max_amount: f64,
-    /// Maximum automated trade count
-    #[serde(default = "default_auto_trade_max_count")]
-    pub max_trade_count: i32,
-    /// Minimum opportunity duration in milliseconds
-    #[serde(default = "default_auto_trade_min_duration")]
-    pub min_duration_ms: i64,
-}
-
-fn default_auto_trade_enabled() -> bool {
-    false
-}
-
-fn default_auto_trade_max_amount() -> f64 {
-    10.0
-}
-
-fn default_auto_trade_max_count() -> i32 {
-    2  // Testing phase: max 2 trades
-}
-
-fn default_auto_trade_min_duration() -> i64 {
-    500  // 500ms minimum duration
-}
-
-impl Default for AutoTradeConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_auto_trade_enabled(),
-            max_amount: default_auto_trade_max_amount(),
-            max_trade_count: default_auto_trade_max_count(),
-            min_duration_ms: default_auto_trade_min_duration(),
-        }
-    }
-}
-
 /// Telegram notification configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct TelegramConfig {
@@ -208,8 +165,6 @@ pub struct Config {
     pub settings: SettingsConfig,
     #[serde(default)]
     pub auth: AuthConfig,
-    #[serde(default)]
-    pub auto_trade: AutoTradeConfig,
     #[serde(default)]
     pub telegram: TelegramConfig,
 }
@@ -253,16 +208,5 @@ impl Config {
             toml::from_str(&contents).with_context(|| "Failed to parse config file")?;
 
         Ok(config)
-    }
-
-    /// Validate configuration
-    pub fn validate(&self) -> Result<()> {
-        if self.kalshi.api_key.is_empty() {
-            anyhow::bail!("Kalshi API key is not configured");
-        }
-        if self.kalshi.api_secret.is_empty() {
-            anyhow::bail!("Kalshi API secret is not configured");
-        }
-        Ok(())
     }
 }

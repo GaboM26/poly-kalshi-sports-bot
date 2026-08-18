@@ -4,10 +4,11 @@
 //! Tracks operation timings and API latencies with millisecond precision.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use serde::{Serialize, Deserialize};
-use tracing::info;
 
 /// Operation types for performance tracking
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,41 +279,8 @@ impl PerformanceMetrics {
         self.market_match.reset();
     }
 
-    /// Print a formatted report to the console
-    pub fn print_report(&self) {
-        let report = self.report();
-        
-        info!("📊 [性能报告] 10s 统计");
-        info!("┌────────────────────────────────────────────────────────────────┐");
-        info!("│ 操作                 │ 调用次数 │ 平均(ms) │ 最大(ms) │ 总计(ms) │");
-        info!("├────────────────────────────────────────────────────────────────┤");
-        
-        for op in &report.operations {
-            if op.count > 0 {
-                info!(
-                    "│ {:<20} │ {:>8} │ {:>8.2} │ {:>8.2} │ {:>8.1} │",
-                    op.name, op.count, op.avg_ms, op.max_ms, op.total_ms
-                );
-            }
-        }
-        
-        info!("├────────────────────────────────────────────────────────────────┤");
-        
-        let kalshi_str = report.api_latency.kalshi_ms
-            .map(|ms| format!("{}ms", ms))
-            .unwrap_or_else(|| "N/A".to_string());
-        let poly_str = report.api_latency.polymarket_ms
-            .map(|ms| format!("{}ms", ms))
-            .unwrap_or_else(|| "N/A".to_string());
-        
-        info!(
-            "│ API 延迟             │ Kalshi: {:>10} │ Polymarket: {:>10} │",
-            kalshi_str, poly_str
-        );
-        info!("└────────────────────────────────────────────────────────────────┘");
-    }
-
     /// Start timing an operation, returns a guard that records when dropped
+    #[cfg(test)]
     pub fn start_timing(&self, op: Operation) -> TimingGuard<'_> {
         TimingGuard {
             metrics: self,
@@ -323,12 +291,14 @@ impl PerformanceMetrics {
 }
 
 /// RAII guard for automatic timing
+#[cfg(test)]
 pub struct TimingGuard<'a> {
     metrics: &'a PerformanceMetrics,
     operation: Operation,
     start: Instant,
 }
 
+#[cfg(test)]
 impl<'a> Drop for TimingGuard<'a> {
     fn drop(&mut self) {
         let duration = self.start.elapsed();

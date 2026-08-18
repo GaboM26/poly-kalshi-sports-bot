@@ -160,7 +160,8 @@ export function OrderPanel({ apiBaseUrl }: OrderPanelProps) {
       const amount = position.value || Math.abs(position.size);
       
       const result = await createPolymarketOrder(apiBaseUrl, {
-        token_id: position.ticker,
+        market_slug: position.ticker,
+        outcome: 'yes',
         side: 'sell',
         amount: amount,
       });
