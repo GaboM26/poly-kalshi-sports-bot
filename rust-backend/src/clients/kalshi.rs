@@ -153,6 +153,11 @@ impl KalshiClient {
         BASE64.encode(signature.to_bytes())
     }
 
+    /// Kalshi signatures cover the API path but never query parameters.
+    fn signing_path(path: &str) -> String {
+        format!("/trade-api/v2{}", path.split('?').next().unwrap_or(path))
+    }
+
     /// Get current timestamp in milliseconds
     fn get_timestamp_ms() -> i64 {
         SystemTime::now()
@@ -164,8 +169,7 @@ impl KalshiClient {
     /// Make an authenticated GET request
     async fn get(&self, path: &str) -> Result<Value> {
         let timestamp = Self::get_timestamp_ms();
-        // 签名需要完整 API 路径 (与 Python 版本一致)
-        let sign_path = format!("/trade-api/v2{}", path);
+        let sign_path = Self::signing_path(path);
         let signature = self.sign_request(timestamp, "GET", &sign_path);
 
         let url = format!("{}{}", self.config.base_url, path);
@@ -192,8 +196,7 @@ impl KalshiClient {
     /// Make an authenticated POST request
     async fn post(&self, path: &str, body: &Value) -> Result<Value> {
         let timestamp = Self::get_timestamp_ms();
-        // 签名需要完整 API 路径 (与 Python 版本一致)
-        let sign_path = format!("/trade-api/v2{}", path);
+        let sign_path = Self::signing_path(path);
         let signature = self.sign_request(timestamp, "POST", &sign_path);
 
         let url = format!("{}{}", self.config.base_url, path);
@@ -377,7 +380,9 @@ impl KalshiClient {
     /// Get orders with optional status filter
     pub async fn get_orders(&self, status: Option<&str>) -> Result<Value> {
         let path = if let Some(s) = status {
-            format!("/portfolio/orders?status={}", s)
+            let mut query = url::form_urlencoded::Serializer::new(String::new());
+            query.append_pair("status", s);
+            format!("/portfolio/orders?{}", query.finish())
         } else {
             "/portfolio/orders".to_string()
         };
@@ -394,8 +399,7 @@ impl KalshiClient {
     pub async fn cancel_order(&self, order_id: &str) -> Result<Value> {
         let timestamp = Self::get_timestamp_ms();
         let path = format!("/portfolio/events/orders/{}", order_id);
-        // 签名需要完整 API 路径 (与 Python 版本一致)
-        let sign_path = format!("/trade-api/v2{}", path);
+        let sign_path = Self::signing_path(&path);
         let signature = self.sign_request(timestamp, "DELETE", &sign_path);
 
         let url = format!("{}{}", self.config.base_url, path);
@@ -1367,5 +1371,13 @@ mod tests {
         assert_eq!(payload["self_trade_prevention_type"], "taker_at_cross");
         assert!(payload.get("exchange_index").is_none());
         assert!(payload["client_order_id"].as_str().is_some());
+    }
+
+    #[test]
+    fn signing_path_excludes_query_parameters() {
+        assert_eq!(
+            KalshiClient::signing_path("/portfolio/orders?status=open&limit=10"),
+            "/trade-api/v2/portfolio/orders"
+        );
     }
 }

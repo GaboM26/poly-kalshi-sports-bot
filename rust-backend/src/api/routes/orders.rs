@@ -70,7 +70,7 @@ pub async fn place_kalshi_order(
     {
         Ok(response) => Json(serde_json::json!({
             "success": true,
-            "order": response.get("order"),
+            "order": response,
             "data": response
         }))
         .into_response(),
