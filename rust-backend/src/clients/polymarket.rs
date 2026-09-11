@@ -361,7 +361,7 @@ impl PolymarketClient {
     // ORDER PLACEMENT API (via Python service)
     // ========================================================================
 
-    /// Place a Polymarket US limit order for a whole number of contracts.
+    /// Place an immediate-or-cancel Polymarket US limit order for whole contracts.
     pub async fn place_limit_order(
         &self,
         market_slug: &str,
@@ -389,7 +389,7 @@ impl PolymarketClient {
             side,
             price,
             size,
-            order_type: Some("GTC".to_string()),
+            order_type: Some("FAK".to_string()),
         };
         let resp = self
             .http

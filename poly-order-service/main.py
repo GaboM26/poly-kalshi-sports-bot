@@ -80,12 +80,12 @@ class MarketOrderRequest(BaseModel):
 
 
 class LimitOrderRequest(MarketOrderRequest):
-    """A Polymarket US limit order."""
+    """An immediate-or-cancel Polymarket US limit order."""
 
     price: float = Field(gt=0, lt=1)
     size: float = Field(gt=0)
     amount: Optional[float] = None
-    order_type: str = "GTC"
+    order_type: str = "FAK"
 
 
 class CancelOrderRequest(BaseModel):

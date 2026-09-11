@@ -275,7 +275,7 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
             disabled={loading !== null || !hasLivePolymarketQuote}
             title={hasLivePolymarketQuote ? undefined : 'Waiting for a current Polymarket quote'}
           >
-            {loading === 'poly_buy_team' ? '...' : `Buy YES Limit ${(market.poly_yes_price * 100).toFixed(0)}¢`}
+            {loading === 'poly_buy_team' ? '...' : `Buy YES @ ${(market.poly_yes_price * 100).toFixed(0)}¢ (IOC)`}
           </button>
           <button
             className="py-1.5 text-[10px] rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 disabled:opacity-50"
@@ -283,7 +283,7 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
             disabled={loading !== null || !hasLivePolymarketQuote}
             title={hasLivePolymarketQuote ? undefined : 'Waiting for a current Polymarket quote'}
           >
-            {loading === 'poly_buy_opponent' ? '...' : `Buy NO Limit ${(market.poly_no_price * 100).toFixed(0)}¢`}
+            {loading === 'poly_buy_opponent' ? '...' : `Buy NO @ ${(market.poly_no_price * 100).toFixed(0)}¢ (IOC)`}
           </button>
         </div>
         <div className="grid grid-cols-2 gap-1.5">
@@ -293,7 +293,7 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
             disabled={loading !== null || !hasLivePolymarketQuote}
             title={hasLivePolymarketQuote ? undefined : 'Waiting for a current Polymarket quote'}
           >
-            {loading === 'poly_sell_team' ? '...' : 'Sell YES Limit'}
+            {loading === 'poly_sell_team' ? '...' : 'Sell YES (IOC)'}
           </button>
           <button
             className="py-1 text-[9px] rounded bg-red-500/10 text-red-400/70 hover:bg-red-500/20 disabled:opacity-50"
@@ -301,7 +301,7 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
             disabled={loading !== null || !hasLivePolymarketQuote}
             title={hasLivePolymarketQuote ? undefined : 'Waiting for a current Polymarket quote'}
           >
-            {loading === 'poly_sell_opponent' ? '...' : 'Sell NO Limit'}
+            {loading === 'poly_sell_opponent' ? '...' : 'Sell NO (IOC)'}
           </button>
         </div>
       </div>
