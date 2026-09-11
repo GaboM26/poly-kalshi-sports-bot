@@ -202,12 +202,19 @@ export interface KalshiOrder {
 export interface KalshiPosition {
   ticker: string;
   event_ticker?: string;
-  market_exposure: number;
-  position: number;
-  resting_orders_count: number;
-  fees_paid?: number;
-  total_traded?: number;
-  realized_pnl?: number;
+  /** Legacy normalized fields. */
+  market_exposure?: number | string;
+  position?: number | string;
+  resting_orders_count?: number;
+  fees_paid?: number | string;
+  total_traded?: number | string;
+  realized_pnl?: number | string;
+  /** Native Kalshi v2 portfolio position fields. Values are denominated in USD. */
+  market_exposure_dollars?: number | string;
+  position_fp?: number | string;
+  fees_paid_dollars?: number | string;
+  total_traded_dollars?: number | string;
+  realized_pnl_dollars?: number | string;
 }
 
 // Kalshi order request
@@ -243,6 +250,7 @@ export interface PolymarketOrderResponse {
   success: boolean;
   order_id?: string;
   status?: string;
+  filled_contracts?: number;
   taking_amount?: string;
   making_amount?: string;
   elapsed_ms?: number;

@@ -16,31 +16,56 @@ export function OrderPanel({ apiBaseUrl }: OrderPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  // Convert a Kalshi position to the unified format.
-  const convertKalshiPosition = (pos: KalshiPosition): UnifiedPosition => ({
-    id: pos.ticker,
-    platform: 'kalshi',
-    ticker: pos.ticker,
-    title: pos.event_ticker || pos.ticker,
-    size: pos.position,
-    side: pos.position > 0 ? 'yes' : 'no',
-    value: Math.abs(pos.market_exposure) / 100,
-    pnl: pos.realized_pnl ? pos.realized_pnl / 100 : undefined,
-  });
+  const toFiniteNumber = (value: unknown): number | undefined => {
+    const number = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(number) ? number : undefined;
+  };
+
+  // Kalshi v2 returns *_fp and *_dollars fields, while older responses use
+  // the legacy normalized names. Support both without changing dollar units.
+  const convertKalshiPosition = (pos: KalshiPosition): UnifiedPosition | null => {
+    const size = toFiniteNumber(pos.position_fp ?? pos.position);
+    if (size === undefined) {
+      return null;
+    }
+
+    const exposure = toFiniteNumber(
+      pos.market_exposure_dollars ?? pos.market_exposure,
+    );
+    const pnl = toFiniteNumber(pos.realized_pnl_dollars ?? pos.realized_pnl);
+
+    return {
+      id: pos.ticker,
+      platform: 'kalshi',
+      ticker: pos.ticker,
+      title: pos.event_ticker || pos.ticker,
+      size,
+      side: size > 0 ? 'yes' : 'no',
+      value: exposure === undefined ? undefined : Math.abs(exposure),
+      pnl,
+    };
+  };
 
   // Convert a Polymarket position to the unified format.
-  const convertPolyPosition = (pos: PolymarketPosition): UnifiedPosition => ({
-    id: pos.conditionId || pos.asset || String(pos.id) || Math.random().toString(),
-    platform: 'polymarket',
-    ticker: pos.conditionId || pos.asset || '',
-    title: pos.title || pos.asset || 'Unknown Market',
-    size: pos.size ? parseFloat(pos.size) : 0,
-    avgPrice: pos.avgPrice ? parseFloat(pos.avgPrice) : undefined,
-    curPrice: pos.curPrice ? parseFloat(pos.curPrice) : undefined,
-    value: pos.value ? parseFloat(pos.value) : undefined,
-    pnl: pos.pnl ? parseFloat(pos.pnl) : undefined,
-    pnlPercent: pos.pnlPercent ? parseFloat(pos.pnlPercent) : undefined,
-  });
+  const convertPolyPosition = (pos: PolymarketPosition): UnifiedPosition | null => {
+    const size = toFiniteNumber(pos.size);
+    if (size === undefined) {
+      return null;
+    }
+
+    return {
+      id: pos.conditionId || pos.asset || String(pos.id) || Math.random().toString(),
+      platform: 'polymarket',
+      ticker: pos.conditionId || pos.asset || '',
+      title: pos.title || pos.asset || 'Unknown Market',
+      size,
+      avgPrice: toFiniteNumber(pos.avgPrice),
+      curPrice: toFiniteNumber(pos.curPrice),
+      value: toFiniteNumber(pos.value),
+      pnl: toFiniteNumber(pos.pnl),
+      pnlPercent: toFiniteNumber(pos.pnlPercent),
+    };
+  };
 
   // Load each source separately so one failure does not affect the other.
   const loadData = useCallback(async () => {
@@ -54,8 +79,10 @@ export function OrderPanel({ apiBaseUrl }: OrderPanelProps) {
     // Fetch Kalshi positions.
     try {
       const kalshiRes = await getKalshiPositions(apiBaseUrl);
-      if (kalshiRes.positions) {
+      if (Array.isArray(kalshiRes.positions)) {
         kalshiPositions = kalshiRes.positions;
+      } else if (kalshiRes.positions) {
+        errors.push('Kalshi: received an invalid positions response');
       }
       if (kalshiRes.error) {
         errors.push(`Kalshi: ${kalshiRes.error}`);
@@ -67,8 +94,10 @@ export function OrderPanel({ apiBaseUrl }: OrderPanelProps) {
     // Fetch Polymarket positions.
     try {
       const polyRes = await getPolymarketPositions(apiBaseUrl);
-      if (polyRes.positions) {
+      if (Array.isArray(polyRes.positions)) {
         polyPositions = polyRes.positions;
+      } else if (polyRes.positions) {
+        errors.push('Poly: received an invalid positions response');
       }
       if (polyRes.error) {
         errors.push(`Poly: ${polyRes.error}`);
@@ -81,16 +110,17 @@ export function OrderPanel({ apiBaseUrl }: OrderPanelProps) {
     
     // Add nonzero Kalshi positions.
     for (const pos of kalshiPositions) {
-      if (pos.position !== 0) {
-        unified.push(convertKalshiPosition(pos));
+      const unifiedPosition = convertKalshiPosition(pos);
+      if (unifiedPosition && unifiedPosition.size !== 0) {
+        unified.push(unifiedPosition);
       }
     }
     
     // Add nonzero Polymarket positions.
     for (const pos of polyPositions) {
-      const size = pos.size ? parseFloat(pos.size) : 0;
-      if (size !== 0) {
-        unified.push(convertPolyPosition(pos));
+      const unifiedPosition = convertPolyPosition(pos);
+      if (unifiedPosition && unifiedPosition.size !== 0) {
+        unified.push(unifiedPosition);
       }
     }
     
@@ -113,7 +143,7 @@ export function OrderPanel({ apiBaseUrl }: OrderPanelProps) {
   // Initial load and scheduled refresh.
   useEffect(() => {
     loadData();
-    const interval = setInterval(loadData, 15000); // Refresh every 15 seconds
+    const interval = setInterval(loadData, 60000); // Account endpoints are rate-limited.
     return () => clearInterval(interval);
   }, [loadData]);
 

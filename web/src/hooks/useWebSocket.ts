@@ -33,6 +33,9 @@ export function useWebSocket(url: string) {
   const prevPricesRef = useRef<Map<string, { k_yes: number; k_no: number; p_yes: number; p_no: number }>>(new Map());
 
   useEffect(() => {
+    let disposed = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+
     // Keep addLog inside the effect to avoid stale closures.
     const addLog = (level: LogEntry['level'], message: string) => {
       const entry: LogEntry = {
@@ -176,13 +179,18 @@ export function useWebSocket(url: string) {
       };
 
       ws.onclose = () => {
+        if (disposed) {
+          return;
+        }
         console.log('WebSocket connection closed');
         setIsConnected(false);
         addLog('warning', 'WebSocket disconnected; reconnecting in 5 seconds...');
         
         // Reconnect after five seconds.
-        setTimeout(() => {
-          connect();
+        reconnectTimer = setTimeout(() => {
+          if (!disposed) {
+            connect();
+          }
         }, 5000);
       };
     };
@@ -190,8 +198,13 @@ export function useWebSocket(url: string) {
     connect();
 
     return () => {
+      disposed = true;
+      if (reconnectTimer !== undefined) {
+        clearTimeout(reconnectTimer);
+      }
       if (wsRef.current) {
         wsRef.current.close();
+        wsRef.current = null;
       }
     };
   }, [url]);

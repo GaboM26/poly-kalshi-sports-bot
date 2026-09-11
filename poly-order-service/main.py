@@ -3,7 +3,9 @@
 
 import asyncio
 import logging
+import math
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
@@ -19,6 +21,12 @@ logging.basicConfig(
 logger = logging.getLogger("poly-order-service")
 
 polymarket_client: Optional[PolymarketUS] = None
+balance_cache: Optional[tuple[float, float, list[dict[str, Any]]]] = None
+positions_cache: Optional[tuple[float, list[dict[str, Any]]]] = None
+balance_lock = asyncio.Lock()
+positions_lock = asyncio.Lock()
+
+CACHE_TTL_SECONDS = 30
 
 TIF_MAP = {
     "GTC": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
@@ -99,6 +107,7 @@ class OrderResponse(BaseModel):
     success: bool
     order_id: Optional[str] = None
     status: Optional[str] = None
+    filled_contracts: Optional[float] = None
     error: Optional[str] = None
     data: Optional[dict[str, Any]] = None
     latency_ms: Optional[int] = None
@@ -154,6 +163,145 @@ def order_status(order: dict[str, Any]) -> Optional[str]:
     return order.get("state") or order.get("status")
 
 
+def amount_value(value: Any) -> Optional[float]:
+    """Read the numeric value from the SDK's Amount object."""
+    if isinstance(value, dict):
+        value = value.get("value")
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    return amount if math.isfinite(amount) else None
+
+
+def order_result(
+    response: dict[str, Any],
+    started: float,
+) -> OrderResponse:
+    """Convert the SDK execution envelope into an explicit order result."""
+    latency_ms = int((asyncio.get_running_loop().time() - started) * 1000)
+    executions = response.get("executions")
+    if not isinstance(executions, list) or not executions:
+        return OrderResponse(
+            success=False,
+            error="Polymarket US did not return an order execution",
+            data=response,
+            latency_ms=latency_ms,
+        )
+
+    execution = executions[-1]
+    order = execution.get("order") if isinstance(execution, dict) else None
+    if not isinstance(order, dict):
+        return OrderResponse(
+            success=False,
+            error="Polymarket US execution did not include order details",
+            data=response,
+            latency_ms=latency_ms,
+        )
+
+    filled_contracts = amount_value(order.get("cumQuantity")) or 0.0
+    status = order_status(order)
+    if filled_contracts > 0:
+        return OrderResponse(
+            success=True,
+            order_id=order.get("id"),
+            status=status,
+            filled_contracts=filled_contracts,
+            data=response,
+            latency_ms=latency_ms,
+        )
+
+    rejection_reason = execution.get("orderRejectReason") or execution.get("text")
+    return OrderResponse(
+        success=False,
+        order_id=order.get("id"),
+        status=status,
+        filled_contracts=0.0,
+        error=rejection_reason or f"Order received no fill (state: {status or 'unknown'})",
+        data=response,
+        latency_ms=latency_ms,
+    )
+
+
+def normalize_positions(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Convert the SDK's market-keyed position map into a frontend-safe list."""
+    positions = response.get("positions")
+    if isinstance(positions, list):
+        return positions
+    if not isinstance(positions, dict):
+        raise ValueError("Polymarket US positions response did not contain a position list or map")
+
+    normalized = []
+    for market_slug, position in positions.items():
+        if not isinstance(position, dict):
+            continue
+        metadata = position.get("marketMetadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        normalized.append(
+            {
+                "id": market_slug,
+                "asset": market_slug,
+                "conditionId": market_slug,
+                "title": metadata.get("title") or market_slug,
+                "size": position.get("netPosition", "0"),
+                "value": amount_value(position.get("cashValue")),
+                "pnl": amount_value(position.get("realized")),
+                "outcome": metadata.get("outcome"),
+            }
+        )
+    return normalized
+
+
+def concise_api_error(exc: Exception) -> str:
+    """Keep upstream HTML error pages out of application logs and responses."""
+    message = str(exc)
+    if "1015" in message or "rate limited" in message.lower():
+        return "Polymarket US is rate limiting this IP. Retry after the temporary restriction expires."
+    return message[:500]
+
+
+async def cached_balances() -> tuple[float, list[dict[str, Any]]]:
+    """Fetch account balances at most once per cache period."""
+    global balance_cache
+    async with balance_lock:
+        now = time.monotonic()
+        if balance_cache is not None and now - balance_cache[0] < CACHE_TTL_SECONDS:
+            return balance_cache[1], balance_cache[2]
+
+        response = await asyncio.to_thread(get_client().account.balances)
+        balances = response.get("balances")
+        if not isinstance(balances, list):
+            raise ValueError("Polymarket US balances response did not contain a balance list")
+        buying_power = sum(
+            amount_value(balance.get("buyingPower")) or 0.0
+            for balance in balances
+            if isinstance(balance, dict)
+        )
+        balance_cache = (now, buying_power, balances)
+        return buying_power, balances
+
+
+async def cached_buying_power() -> float:
+    """Return cached account buying power."""
+    buying_power, _ = await cached_balances()
+    return buying_power
+
+
+async def cached_positions() -> list[dict[str, Any]]:
+    """Fetch positions at most once per cache period."""
+    global positions_cache
+    async with positions_lock:
+        now = time.monotonic()
+        if positions_cache is not None and now - positions_cache[0] < CACHE_TTL_SECONDS:
+            return positions_cache[1]
+
+        response = await asyncio.to_thread(get_client().portfolio.positions)
+        positions = normalize_positions(response)
+        positions_cache = (now, positions)
+        return positions
+
+
 def market_order_params(request: MarketOrderRequest) -> dict[str, Any]:
     """Build an SDK payload without applying client-side price fallbacks."""
     params: dict[str, Any] = {
@@ -161,7 +309,7 @@ def market_order_params(request: MarketOrderRequest) -> dict[str, Any]:
         "intent": order_intent(request.position_side, request.side),
         "type": "ORDER_TYPE_MARKET",
         "tif": TIF_MAP.get(request.order_type.upper(), TIF_MAP["FAK"]),
-        "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
+        "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_MANUAL",
         "synchronousExecution": True,
         "maxBlockTime": "5",
     }
@@ -185,7 +333,7 @@ def limit_order_params(request: LimitOrderRequest) -> dict[str, Any]:
         "price": {"value": str(request.price), "currency": "USD"},
         "quantity": request.size,
         "tif": TIF_MAP.get(request.order_type.upper(), TIF_MAP["GTC"]),
-        "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
+        "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_MANUAL",
     }
 
 
@@ -229,16 +377,11 @@ async def place_market_order(request: MarketOrderRequest) -> OrderResponse:
     try:
         response = await asyncio.to_thread(client.orders.create, market_order_params(request))
     except Exception as exc:
-        logger.error("Polymarket US market order failed: %s", exc)
-        return OrderResponse(success=False, error=str(exc))
+        error = concise_api_error(exc)
+        logger.error("Polymarket US market order failed: %s", error)
+        return OrderResponse(success=False, error=error)
 
-    return OrderResponse(
-        success=True,
-        order_id=response.get("id"),
-        status=order_status(response),
-        data=response,
-        latency_ms=int((asyncio.get_running_loop().time() - started) * 1000),
-    )
+    return order_result(response, started)
 
 
 @app.post("/order/limit", response_model=OrderResponse)
@@ -248,16 +391,11 @@ async def place_limit_order(request: LimitOrderRequest) -> OrderResponse:
     try:
         response = await asyncio.to_thread(client.orders.create, limit_order_params(request))
     except Exception as exc:
-        logger.error("Polymarket US limit order failed: %s", exc)
-        return OrderResponse(success=False, error=str(exc))
+        error = concise_api_error(exc)
+        logger.error("Polymarket US limit order failed: %s", error)
+        return OrderResponse(success=False, error=error)
 
-    return OrderResponse(
-        success=True,
-        order_id=response.get("id"),
-        status=order_status(response),
-        data=response,
-        latency_ms=int((asyncio.get_running_loop().time() - started) * 1000),
-    )
+    return order_result(response, started)
 
 
 @app.post("/order/cancel", response_model=OrderResponse)
@@ -277,8 +415,9 @@ async def cancel_order(request: CancelOrderRequest) -> OrderResponse:
             {"marketSlug": market_slug},
         )
     except Exception as exc:
-        logger.error("Polymarket US cancellation failed: %s", exc)
-        return OrderResponse(success=False, error=str(exc))
+        error = concise_api_error(exc)
+        logger.error("Polymarket US cancellation failed: %s", error)
+        return OrderResponse(success=False, error=error)
 
     return OrderResponse(
         success=True,
@@ -295,53 +434,52 @@ async def get_orders() -> dict[str, Any]:
         response = await asyncio.to_thread(get_client().orders.list)
         return {"success": True, "orders": response.get("orders", [])}
     except Exception as exc:
-        logger.error("Polymarket US orders lookup failed: %s", exc)
-        return {"success": False, "error": str(exc), "orders": []}
+        error = concise_api_error(exc)
+        logger.error("Polymarket US orders lookup failed: %s", error)
+        return {"success": False, "error": error, "orders": []}
 
 
 @app.get("/positions")
 async def get_positions() -> dict[str, Any]:
     try:
-        response = await asyncio.to_thread(get_client().portfolio.positions)
-        return {"success": True, "positions": response.get("positions", [])}
+        return {"success": True, "positions": await cached_positions()}
     except Exception as exc:
-        logger.error("Polymarket US positions lookup failed: %s", exc)
-        return {"success": False, "error": str(exc), "positions": []}
+        error = concise_api_error(exc)
+        logger.error("Polymarket US positions lookup failed: %s", error)
+        return {"success": False, "error": error, "positions": []}
 
 
 @app.get("/account/snapshot")
 async def account_snapshot() -> dict[str, Any]:
     try:
-        client = get_client()
-        balances, positions, orders = await asyncio.gather(
-            asyncio.to_thread(client.account.balances),
-            asyncio.to_thread(client.portfolio.positions),
-            asyncio.to_thread(client.orders.list),
-        )
-        balance_list = balances.get("balances", [])
-        buying_power = sum(
-            float(balance.get("buyingPower", 0)) for balance in balance_list
+        (buying_power, balances), positions, orders = await asyncio.gather(
+            cached_balances(),
+            cached_positions(),
+            asyncio.to_thread(get_client().orders.list),
         )
         return {
             "success": True,
             "balance": buying_power,
             "snapshot": {
-                "balances": balance_list,
-                "positions": positions.get("positions", []),
+                "balances": balances,
+                "positions": positions,
                 "orders": orders.get("orders", []),
             },
         }
     except Exception as exc:
-        logger.error("Polymarket US account snapshot failed: %s", exc)
-        return {"success": False, "error": str(exc)}
+        error = concise_api_error(exc)
+        logger.error("Polymarket US account snapshot failed: %s", error)
+        return {"success": False, "error": error}
 
 
 @app.get("/balance")
 async def get_balance() -> dict[str, Any]:
-    snapshot = await account_snapshot()
-    if snapshot["success"]:
-        return {"success": True, "balance": snapshot["snapshot"]["balances"]}
-    return snapshot
+    try:
+        return {"success": True, "balance": await cached_buying_power()}
+    except Exception as exc:
+        error = concise_api_error(exc)
+        logger.error("Polymarket US balance lookup failed: %s", error)
+        return {"success": False, "error": error}
 
 
 if __name__ == "__main__":

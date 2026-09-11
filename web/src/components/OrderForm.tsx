@@ -91,7 +91,7 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
       if (response.success) {
         setResult({
           success: true,
-          message: `Polymarket ${side.toUpperCase()} succeeded! Order ID: ${response.order_id?.slice(0, 8) || 'N/A'}`,
+          message: `Polymarket ${side.toUpperCase()} filled ${response.filled_contracts ?? 0} contract${response.filled_contracts === 1 ? '' : 's'}! Order ID: ${response.order_id?.slice(0, 8) || 'N/A'}`,
           elapsed_ms: response.elapsed_ms,
         });
         onOrderPlaced?.();

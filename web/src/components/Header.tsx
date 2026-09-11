@@ -310,8 +310,8 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
 
     // Fetch initially.
     fetchBalance();
-    // Refresh every 10 seconds.
-    const interval = setInterval(fetchBalance, 10000);
+    // Account endpoints are rate-limited; refresh at a sustainable cadence.
+    const interval = setInterval(fetchBalance, 60000);
     return () => clearInterval(interval);
   }, [apiBaseUrl]);
 

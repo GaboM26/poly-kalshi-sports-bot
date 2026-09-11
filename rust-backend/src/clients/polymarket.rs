@@ -85,12 +85,15 @@ struct CancelOrderRequest {
 }
 
 /// Order response from Python service
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OrderResponse {
     success: bool,
     order_id: Option<String>,
+    status: Option<String>,
+    filled_contracts: Option<f64>,
     error: Option<String>,
     data: Option<Value>,
+    latency_ms: Option<i64>,
 }
 
 /// Position data for aggregation (internal use)
@@ -144,10 +147,10 @@ impl PolymarketClient {
         Ok(())
     }
 
-    /// Get account balance via Python service using the newer account/portfolio/orders snapshot format.
+    /// Get account balance via the lightweight Python balance endpoint.
     pub async fn get_balance(&self) -> Result<f64> {
         let base_url = self.config.order_service_url.trim_end_matches('/');
-        let url = format!("{}/account/snapshot", base_url);
+        let url = format!("{}/balance", base_url);
         let resp = self
             .http
             .get(&url)
@@ -401,9 +404,8 @@ impl PolymarketClient {
         let response: OrderResponse = resp.json().await?;
 
         if response.success {
-            Ok(response
-                .data
-                .unwrap_or(json!({"success": true, "order_id": response.order_id})))
+            serde_json::to_value(response)
+                .context("Failed to serialize Polymarket US order response")
         } else {
             anyhow::bail!(
                 "Polymarket US market order failed: {}",

@@ -133,7 +133,11 @@ pub async fn place_polymarket_order(
     {
         Ok(response) => Json(serde_json::json!({
             "success": true,
-            "data": response
+            "order_id": response.get("order_id"),
+            "status": response.get("status"),
+            "filled_contracts": response.get("filled_contracts"),
+            "elapsed_ms": response.get("latency_ms"),
+            "data": response.get("data")
         }))
         .into_response(),
         Err(e) => {
