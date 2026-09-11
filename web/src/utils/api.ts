@@ -191,6 +191,10 @@ export async function executeArbitrage(
     headers: getAuthHeaders(),
     body: JSON.stringify(request),
   });
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(await response.text());
+  }
   return response.json();
 }
 

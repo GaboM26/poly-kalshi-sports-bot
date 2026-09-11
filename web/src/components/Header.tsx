@@ -114,8 +114,8 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     const defaultBet = parseFloat(editDefaultBet);
     const trackingThreshold = parseFloat(editTrackingThreshold);
 
-    if (isNaN(refreshInterval) || refreshInterval < 1) {
-      showSettingsMsg('Refresh interval must be at least 1 second', 'error');
+    if (isNaN(refreshInterval) || refreshInterval < 5) {
+      showSettingsMsg('Refresh interval must be at least 5 seconds', 'error');
       return;
     }
     if (isNaN(minProfit) || minProfit < 0) {
@@ -377,12 +377,12 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
           )}
 
           {/* Data coverage */}
-          <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-[--bg-tertiary]" title="Data coverage: market pairs with real-time data on both platforms">
+          <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-[--bg-tertiary]" title="Data coverage: authoritative Kalshi and Polymarket REST quote availability">
             <span className={`font-mono text-[10px] ${dataCoverage.kalshi_connected ? 'text-blue-400' : 'text-gray-500'}`}>
-              K:{dataCoverage.kalshi_coverage}/{dataCoverage.polymarket_coverage}
+              K:REST {dataCoverage.kalshi_coverage}
             </span>
             <span className={`font-mono text-[10px] ${dataCoverage.polymarket_connected ? 'text-purple-400' : 'text-gray-500'}`}>
-              P:{dataCoverage.polymarket_coverage}/{dataCoverage.total_markets}
+              P:REST {dataCoverage.polymarket_coverage}
             </span>
             <span className={`font-mono text-[10px] font-semibold ${coveragePercent >= 80 ? 'text-green-400' : coveragePercent >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
               ✓{dataCoverage.both_ready}/{dataCoverage.total_markets}
@@ -390,13 +390,13 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
           </div>
 
           {/* Platform latency */}
-          <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-[--bg-tertiary]" title="Platform data latency">
-            <span className="text-[10px] text-[--text-muted]">WS:</span>
+          <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-[--bg-tertiary]" title="Platform data freshness">
+            <span className="text-[10px] text-[--text-muted]">Feed:</span>
             <span className={`font-mono text-[10px] ${getLatencyColor(dataCoverage.kalshi_latency_ms)}`}>
-              K:{formatLatency(dataCoverage.kalshi_latency_ms)}
+              K:REST {formatLatency(dataCoverage.kalshi_latency_ms)}
             </span>
             <span className={`font-mono text-[10px] ${getLatencyColor(dataCoverage.polymarket_latency_ms)}`}>
-              P:{formatLatency(dataCoverage.polymarket_latency_ms)}
+              P:REST {formatLatency(dataCoverage.polymarket_latency_ms)}
             </span>
           </div>
 

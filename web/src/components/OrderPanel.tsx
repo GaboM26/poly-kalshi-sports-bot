@@ -3,8 +3,7 @@ import { KalshiPosition, PolymarketPosition, UnifiedPosition } from '../types';
 import { 
   getKalshiPositions, 
   createKalshiOrder,
-  getPolymarketPositions,
-  createPolymarketOrder
+  getPolymarketPositions
 } from '../utils/api';
 
 interface OrderPanelProps {
@@ -150,32 +149,10 @@ export function OrderPanel({ apiBaseUrl }: OrderPanelProps) {
   };
 
   // Sell a Polymarket position.
-  const handleSellPoly = async (position: UnifiedPosition) => {
-    if (position.size === 0) return;
-    
-    setActionLoading(position.id);
-    try {
-      // For Polymarket sells, amount is in USDC.
-      // Use current value as the sell amount.
-      const amount = position.value || Math.abs(position.size);
-      
-      const result = await createPolymarketOrder(apiBaseUrl, {
-        market_slug: position.ticker,
-        outcome: 'yes',
-        side: 'sell',
-        amount: amount,
-      });
-      
-      if (result.success) {
-        loadData(); // Refresh data
-      } else {
-        alert(`Sell failed: ${result.error}`);
-      }
-    } catch (e) {
-      alert(`Sell failed: ${e instanceof Error ? e.message : 'Unknown error'}`);
-    } finally {
-      setActionLoading(null);
-    }
+  const handleSellPoly = (position: UnifiedPosition) => {
+    // Portfolio records do not contain the native US market slug and explicit
+    // LONG/SHORT mapping required for a safe close. Refuse rather than infer.
+    alert(`Cannot sell ${position.title || position.ticker}: native Polymarket US position mapping is unavailable.`);
   };
 
   // Unified sell handler.

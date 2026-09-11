@@ -29,8 +29,6 @@ pub async fn get_matched_markets(State(state): State<Arc<AppState>>) -> impl Int
 #[derive(Deserialize)]
 pub struct OrderbookDepthQuery {
     pub kalshi_ticker: Option<String>,
-    pub poly_token_id: Option<String>,
-    pub poly_opponent_token_id: Option<String>,
 }
 
 /// Depth for a single side (Yes or No)
@@ -89,50 +87,9 @@ pub async fn get_orderbook_depth(
         })
     });
 
-    // Get Polymarket orderbook depth
-    let poly_yes = query
-        .poly_token_id
-        .as_ref()
-        .and_then(|token_id| {
-            service
-                .polymarket_client
-                .get_orderbook(token_id)
-                .and_then(|book| {
-                    book.best_ask().map(|(price, size)| SideDepth {
-                        price: Some(price),
-                        size: Some(size),
-                    })
-                })
-        })
-        .unwrap_or_default();
-
-    let poly_no = query
-        .poly_opponent_token_id
-        .as_ref()
-        .and_then(|token_id| {
-            service
-                .polymarket_client
-                .get_orderbook(token_id)
-                .and_then(|book| {
-                    book.best_ask().map(|(price, size)| SideDepth {
-                        price: Some(price),
-                        size: Some(size),
-                    })
-                })
-        })
-        .unwrap_or_default();
-
-    let poly_depth = if query.poly_token_id.is_some() || query.poly_opponent_token_id.is_some() {
-        Some(PlatformDepthDual {
-            yes: poly_yes,
-            no: poly_no,
-        })
-    } else {
-        None
-    };
-
     Json(OrderbookDepthResponse {
         kalshi: kalshi_depth,
-        polymarket: poly_depth,
+        // The US gateway publishes quotes, not executable CLOB depth.
+        polymarket: None,
     })
 }

@@ -70,8 +70,10 @@ export interface MatchedMarketData {
   game_date?: string;               // Game date in YYYY-MM-DD format
   kalshi_market_id: string;
   polymarket_market_id: string;
-  poly_token_id?: string;           // Polymarket token_id for Yes orderbook
-  poly_opponent_token_id?: string;  // Polymarket opponent token_id for No orderbook
+  polymarket_market_slug: string;
+  polymarket_team_position_side: 'long' | 'short';
+  polymarket_opponent_position_side: 'long' | 'short';
+  polymarket_opponent_name: string;
   kalshi_yes_price: number;
   kalshi_no_price: number;
   poly_yes_price: number;
@@ -148,6 +150,8 @@ export interface DataCoverage {
   full_coverage: string;
   kalshi_connected: boolean;
   polymarket_connected: boolean;
+  kalshi_source: 'rest_polling';
+  polymarket_source: 'rest_polling';
   kalshi_latency_ms?: number;
   polymarket_latency_ms?: number;
 }
@@ -220,9 +224,10 @@ export type OrderRequest = KalshiOrderRequest;
 // Polymarket order request
 export interface PolymarketOrderRequest {
   market_slug: string;
-  outcome: 'yes' | 'no';
+  position_side: 'long' | 'short';
   side: 'buy' | 'sell';
-  amount: number;
+  contracts: number;
+  price: number;
 }
 
 // Order response
@@ -313,27 +318,25 @@ export interface PositionsResponse {
 
 // Arbitrage execution request
 export interface ArbitrageExecuteRequest {
-  kalshi_ticker: string;
+  event_name: string;
+  team_name: string;
   kalshi_side: 'yes' | 'no';
-  kalshi_bet: number;
-  kalshi_price: number;
-  poly_token_id: string;
-  poly_side: 'buy' | 'sell';
-  poly_amount: number;
+  polymarket_competitor: string;
+  contracts: number;
 }
 
 // Arbitrage execution response
 export interface ArbitrageExecuteResponse {
   success: boolean;
   error?: string;
-  kalshi: {
+  kalshi?: {
     success: boolean;
     order?: Record<string, unknown>;
     elapsed_ms?: number;
     count?: number;
     error?: string;
   };
-  polymarket: {
+  polymarket?: {
     success: boolean;
     order_id?: string;
     status?: string;

@@ -1,12 +1,12 @@
 //! Data models
 //!
 //! Core concepts:
-//! - Kalshi: One event has 2 independent markets, each for one team's Yes/No
-//! - Polymarket: One event has 1 market with 2 outcomes (two teams)
+//! - Kalshi: One event has 2 independent markets, each for one competitor's Yes/No
+//! - Polymarket: One event has 1 market with 2 competitor outcomes
 //!
 //! Matching relationship:
 //! - Both Kalshi markets point to the same Poly market
-//! - Team name determines which Poly price perspective to use
+//! - Competitor name determines which Poly price perspective to use
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -57,11 +57,11 @@ pub struct KalshiMarket {
     pub market_id: String,
     /// Event ID this market belongs to
     pub event_id: String,
-    /// Standardized event name (e.g., MEM-LAL)
+    /// Standardized event name (e.g., MEM-LAL or PLAYER A VS PLAYER B)
     pub event_name: String,
-    /// Team this market predicts (e.g., MEM)
+    /// Competitor this market predicts (e.g., MEM or a canonical tennis player name)
     pub team_name: String,
-    /// Opponent team (e.g., LAL)
+    /// Opposing competitor (e.g., LAL or a canonical tennis player name)
     pub opponent_name: String,
     /// Yes price (this team wins)
     pub yes_price: f64,
@@ -78,24 +78,57 @@ pub struct KalshiMarket {
     pub liquidity: Option<f64>,
 }
 
-/// Polymarket market model
+/// The direction of a Polymarket US position for a competitor.
 ///
-/// A Polymarket market contains two outcomes (two teams)
-/// Not split, maintains original structure
+/// This is supplied by the Polymarket US gateway's `marketSides[].long`
+/// field. It is deliberately independent of an outcome's array index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PolymarketPositionSide {
+    Long,
+    Short,
+}
+
+impl PolymarketPositionSide {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Long => "long",
+            Self::Short => "short",
+        }
+    }
+}
+
+/// Native Polymarket US execution details for one named competitor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolymarketUsExecution {
+    pub market_slug: String,
+    pub position_side: PolymarketPositionSide,
+}
+
+/// Polymarket US market model.
+///
+/// A market contains two competitors. Execution uses the native market slug
+/// and the gateway-provided long/short position for the selected competitor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolymarketMarket {
-    /// Condition ID
+    /// Gateway market ID, retained only as a stable data-refresh key.
     pub market_id: String,
+    /// Native Polymarket US `marketSlug` required to submit an order.
+    pub market_slug: String,
     /// Standardized event name (e.g., MEM-LAL)
     pub event_name: String,
-    /// Team A (alphabetically first)
+    /// Competitor A (alphabetically first)
     pub team_a: String,
-    /// Team B (alphabetically second)
+    /// Competitor B (alphabetically second)
     pub team_b: String,
-    /// Team A win price
+    /// Competitor A win price
     pub price_a: f64,
-    /// Team B win price
+    /// Competitor B win price
     pub price_b: f64,
+    /// Native US order direction for competitor A.
+    pub team_a_position: PolymarketPositionSide,
+    /// Native US order direction for competitor B.
+    pub team_b_position: PolymarketPositionSide,
     /// Game start time
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_time: Option<DateTime<Utc>>,
@@ -103,17 +136,10 @@ pub struct PolymarketMarket {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<f64>,
 
-    /// WebSocket subscription info
-    /// Team A's token ID
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token_id_a: Option<String>,
-    /// Team B's token ID
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token_id_b: Option<String>,
 }
 
 impl PolymarketMarket {
-    /// Get Yes/No prices for a given team
+    /// Get Yes/No prices for a given competitor
     ///
     /// Returns: (yes_price, no_price) for that team
     pub fn get_price_for_team(&self, team: &str) -> Result<(f64, f64), String> {
@@ -129,19 +155,28 @@ impl PolymarketMarket {
         }
     }
 
-    /// Get token ID for a given team
-    pub fn get_token_for_team(&self, team: &str) -> Option<&str> {
+    /// Return the native Polymarket US execution details for a competitor.
+    ///
+    /// The caller must use this mapping rather than infer a position from the
+    /// outcome order, displayed yes/no price, condition ID, or CLOB token.
+    pub fn us_execution_for_competitor(&self, team: &str) -> Option<PolymarketUsExecution> {
         let team_upper = team.to_uppercase();
         if team_upper == self.team_a.to_uppercase() {
-            self.token_id_a.as_deref()
+            Some(PolymarketUsExecution {
+                market_slug: self.market_slug.clone(),
+                position_side: self.team_a_position,
+            })
         } else if team_upper == self.team_b.to_uppercase() {
-            self.token_id_b.as_deref()
+            Some(PolymarketUsExecution {
+                market_slug: self.market_slug.clone(),
+                position_side: self.team_b_position,
+            })
         } else {
             None
         }
     }
 
-    /// Get opponent team name
+    /// Get opponent competitor name
     pub fn get_opponent(&self, team: &str) -> Option<&str> {
         let team_upper = team.to_uppercase();
         if team_upper == self.team_a.to_uppercase() {
@@ -198,7 +233,7 @@ pub struct PolymarketEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchedMarket {
     pub event_name: String,
-    /// Team that Kalshi market predicts
+    /// Competitor that the Kalshi market predicts
     pub team_name: String,
     /// Game date (for distinguishing same-team games on different dates)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -402,13 +437,16 @@ pub struct MatchedMarketFrontend {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub game_date: Option<String>,
     pub kalshi_market_id: String,
+    /// Stable gateway market identifier used for quote refreshes.
     pub polymarket_market_id: String,
-    /// Polymarket token_id (asset_id) for Yes orderbook lookup
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub poly_token_id: Option<String>,
-    /// Polymarket opponent token_id for No orderbook lookup
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub poly_opponent_token_id: Option<String>,
+    /// Native Polymarket US slug required for an order.
+    pub polymarket_market_slug: String,
+    /// Native position for `team_name`.
+    pub polymarket_team_position_side: PolymarketPositionSide,
+    /// The other competitor in the native binary market.
+    pub polymarket_opponent_name: String,
+    /// Native position for the opposing competitor.
+    pub polymarket_opponent_position_side: PolymarketPositionSide,
     pub kalshi_yes_price: f64,
     pub kalshi_no_price: f64,
     pub poly_yes_price: f64,

@@ -47,7 +47,7 @@ fn default_order_service_url() -> String {
 /// Application settings
 #[derive(Debug, Clone, Deserialize)]
 pub struct SettingsConfig {
-    /// Refresh interval in seconds
+    /// Refresh interval in seconds (REST quote polling clamps to at least 5 seconds)
     #[serde(default = "default_refresh_interval")]
     pub refresh_interval: u64,
     /// Minimum profit margin percentage

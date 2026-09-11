@@ -16,9 +16,10 @@ interface OrderLog {
 
 export function PolyDebugOrder({ apiBaseUrl, onClose }: PolyDebugOrderProps) {
   const [marketSlug, setMarketSlug] = useState('');
-  const [outcome, setOutcome] = useState<'yes' | 'no'>('yes');
+  const [positionSide, setPositionSide] = useState<'long' | 'short'>('long');
   const [side, setSide] = useState<'buy' | 'sell'>('buy');
-  const [amount, setAmount] = useState(1);
+  const [contracts, setContracts] = useState(1);
+  const [price, setPrice] = useState(0);
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<OrderLog[]>([]);
 
@@ -31,8 +32,15 @@ export function PolyDebugOrder({ apiBaseUrl, onClose }: PolyDebugOrderProps) {
   const clearLogs = () => setLogs([]);
 
   const handleOrder = async () => {
-    if (!marketSlug.trim()) {
-      addLog('error', 'Market slug cannot be empty');
+    if (
+      !marketSlug.trim()
+      || !Number.isInteger(contracts)
+      || contracts <= 0
+      || !Number.isFinite(price)
+      || price <= 0
+      || price >= 1
+    ) {
+      addLog('error', 'A market slug, positive whole contract count, and reference price between $0.00 and $1.00 are required');
       return;
     }
 
@@ -41,9 +49,10 @@ export function PolyDebugOrder({ apiBaseUrl, onClose }: PolyDebugOrderProps) {
 
     const request = {
       market_slug: marketSlug.trim(),
-      outcome,
+      position_side: positionSide,
       side,
-      amount,
+      contracts,
+      price,
     };
 
     addLog('request', 'Sending order request', request);
@@ -105,6 +114,42 @@ export function PolyDebugOrder({ apiBaseUrl, onClose }: PolyDebugOrderProps) {
 
           {/* Order parameters */}
           <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-xs text-[--text-muted]">Position</label>
+              <div className="flex gap-2">
+                {(['long', 'short'] as const).map((value) => (
+                  <button
+                    key={value}
+                    onClick={() => setPositionSide(value)}
+                    className={`flex-1 py-2 text-xs rounded ${
+                      positionSide === value
+                        ? 'bg-purple-500/20 text-purple-400 border border-purple-500'
+                        : 'bg-[--bg-tertiary] text-[--text-secondary] border border-[--border-color]'
+                    }`}
+                  >
+                    {value.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs text-[--text-muted]">Limit Price (USD)</label>
+                <input
+                  type="number"
+                  min={0.01}
+                  max={0.99}
+                  step={0.01}
+                  value={price || ''}
+                  onChange={(e) => setPrice(parseFloat(e.target.value) || 0)}
+                  placeholder="0.19"
+                  className="w-full h-8 px-2 text-center text-xs bg-[--bg-tertiary] border border-[--border-color] rounded text-[--text-primary]"
+                />
+                <div className="text-[10px] text-[--text-muted]">
+                  The order will rest at this limit price until filled or canceled.
+                </div>
+              </div>
+            </div>
+
             {/* Side */}
             <div className="space-y-2">
               <label className="text-xs text-[--text-muted]">Side</label>
@@ -132,43 +177,43 @@ export function PolyDebugOrder({ apiBaseUrl, onClose }: PolyDebugOrderProps) {
               </div>
             </div>
 
-            {/* Amount */}
+            {/* Contract count */}
             <div className="space-y-2">
-              <label className="text-xs text-[--text-muted]">Amount (USDC)</label>
+              <label className="text-xs text-[--text-muted]">Contracts</label>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setAmount(Math.max(0.1, amount - 1))}
+                  onClick={() => setContracts(Math.max(1, contracts - 1))}
                   className="w-8 h-8 rounded bg-[--bg-tertiary] text-[--text-secondary] hover:bg-[--bg-primary] border border-[--border-color]"
                 >
                   -
                 </button>
                 <input
                   type="number"
-                  min={0.1}
-                  step={0.1}
-                  value={amount}
-                  onChange={(e) => setAmount(Math.max(0.1, parseFloat(e.target.value) || 0.1))}
+                  min={1}
+                  step={1}
+                  value={contracts}
+                  onChange={(e) => setContracts(Math.max(1, parseInt(e.target.value) || 1))}
                   className="flex-1 h-8 px-2 text-center text-xs bg-[--bg-tertiary] border border-[--border-color] rounded text-[--text-primary]"
                 />
                 <button
-                  onClick={() => setAmount(amount + 1)}
+                  onClick={() => setContracts(contracts + 1)}
                   className="w-8 h-8 rounded bg-[--bg-tertiary] text-[--text-secondary] hover:bg-[--bg-primary] border border-[--border-color]"
                 >
                   +
                 </button>
               </div>
               <div className="flex gap-1">
-                {[0.5, 1, 2, 5, 10].map((v) => (
+                {[1, 2, 5, 10, 25].map((v) => (
                   <button
                     key={v}
-                    onClick={() => setAmount(v)}
+                    onClick={() => setContracts(v)}
                     className={`flex-1 py-1 text-[10px] rounded ${
-                      amount === v
+                      contracts === v
                         ? 'bg-purple-500/20 text-purple-400'
                         : 'bg-[--bg-tertiary] text-[--text-muted] hover:text-[--text-secondary]'
                     }`}
                   >
-                    ${v}
+                    {v}
                   </button>
                 ))}
               </div>
@@ -178,10 +223,10 @@ export function PolyDebugOrder({ apiBaseUrl, onClose }: PolyDebugOrderProps) {
           {/* Order button */}
           <button
             onClick={handleOrder}
-            disabled={loading || !tokenId.trim()}
+            disabled={loading || !marketSlug.trim() || !Number.isInteger(contracts) || contracts <= 0 || price <= 0 || price >= 1}
             className="w-full py-3 text-sm font-medium rounded bg-gradient-to-r from-purple-500 to-violet-500 text-white hover:from-purple-600 hover:to-violet-600 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? 'Executing...' : `🚀 Execute ${side.toUpperCase()} $${amount}`}
+            {loading ? 'Executing...' : `🚀 Execute ${side.toUpperCase()} ${contracts} Contract${contracts === 1 ? '' : 's'}`}
           </button>
 
           {/* Log area */}
@@ -232,9 +277,9 @@ export function PolyDebugOrder({ apiBaseUrl, onClose }: PolyDebugOrderProps) {
             <div className="font-medium mb-1">💡 Debug Tips</div>
             <ul className="list-disc list-inside space-y-0.5 text-[10px] text-yellow-400/80">
               <li>After placing an order, check the backend logs for detailed signing and request information.</li>
-              <li>If you receive "Invalid order payload", the neg_risk setting may be incorrect.</li>
-              <li>CHI-MIA tokens may require a special neg_risk setting.</li>
-              <li>Test with a small amount ($0.5–$1) first.</li>
+              <li>Use the native market slug and the gateway-provided LONG or SHORT position.</li>
+              <li>Do not use CLOB token IDs or infer the position from an outcome index.</li>
+              <li>Test with one contract first.</li>
             </ul>
           </div>
         </div>

@@ -6,7 +6,7 @@
 //! - WebSocket order book subscription
 //! - Order placement
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -28,9 +28,23 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
 use crate::config::KalshiConfig;
+use crate::core::{competitor_event_name, normalize_competitor_name};
 use crate::models::{KalshiEvent, KalshiMarket, Platform, PriceUpdate};
 
 const KALSHI_WS_URL: &str = "wss://external-api-ws.kalshi.com/trade-api/ws/v2";
+const KALSHI_MARKET_QUOTE_BATCH_SIZE: usize = 100;
+
+// Kalshi's explicitly supported head-to-head match-winner series. Keep this
+// allowlist narrow: it intentionally excludes sets, games, totals, props,
+// futures, and every table-tennis series.
+const SUPPORTED_KALSHI_SERIES: &[(&str, &str)] = &[
+    ("KXNBAGAME", "NBA"),
+    ("KXATPMATCH", "TENNIS"),
+    ("KXWTAMATCH", "TENNIS"),
+    ("KXITFMATCH", "TENNIS"),
+    ("KXITFWMATCH", "TENNIS"),
+    ("KXATPCHALLENGERMATCH", "TENNIS"),
+];
 
 /// Subscription command for Kalshi WebSocket
 #[derive(Debug, Clone)]
@@ -58,6 +72,17 @@ pub struct OrderBook {
     pub no: Vec<(i32, i32)>,
 }
 
+/// Authoritative price-only quote from Kalshi's REST market endpoint.
+///
+/// This intentionally excludes quoted sizes: REST prices must not be used to
+/// fabricate order-book depth for trading safeguards.
+#[derive(Debug, Clone)]
+pub struct KalshiMarketQuote {
+    pub market_id: String,
+    pub yes_ask: f64,
+    pub no_ask: f64,
+}
+
 impl OrderBook {
     /// 计算 yes 侧的 ask 深度（买入 yes 时使用）
     /// Kalshi: yes_ask = 1 - no_bid，所以买 yes 的深度看 no 侧的 bid
@@ -82,6 +107,20 @@ impl OrderBook {
             "yes" => self.yes_ask_depth(max_contracts),
             "no" => self.no_ask_depth(max_contracts),
             _ => 0,
+        }
+    }
+
+    /// Return the executable limit price for an order using the current best quote.
+    pub fn limit_price_for_order(&self, side: &str, action: &str) -> Option<i32> {
+        let yes_bid = self.yes.last().map(|(price, _)| *price);
+        let no_bid = self.no.last().map(|(price, _)| *price);
+
+        match (action, side) {
+            ("buy", "yes") => no_bid.and_then(|price| 100_i32.checked_sub(price)),
+            ("buy", "no") => yes_bid.and_then(|price| 100_i32.checked_sub(price)),
+            ("sell", "yes") => yes_bid,
+            ("sell", "no") => no_bid,
+            _ => None,
         }
     }
 }
@@ -195,19 +234,87 @@ impl KalshiClient {
         self.orderbook_cache.read().get(ticker).cloned()
     }
 
-    /// Get NBA events and markets
-    pub async fn get_nba_events_and_markets(
+    /// Fetch authoritative current ask quotes for the requested market tickers.
+    ///
+    /// Kalshi supports a comma-separated `tickers` filter. Requests are
+    /// bounded so a large matched-market set cannot create an oversized URL.
+    /// Sizes are deliberately not returned because only the WebSocket
+    /// order-book cache is allowed to satisfy depth checks.
+    pub async fn get_market_quotes(&self, tickers: &[String]) -> Result<Vec<KalshiMarketQuote>> {
+        let mut seen = HashSet::new();
+        let unique_tickers: Vec<String> = tickers
+            .iter()
+            .filter(|ticker| seen.insert((*ticker).clone()))
+            .cloned()
+            .collect();
+        let mut quotes = Vec::with_capacity(unique_tickers.len());
+
+        for ticker_batch in unique_tickers.chunks(KALSHI_MARKET_QUOTE_BATCH_SIZE) {
+            let path = {
+                let mut query = url::form_urlencoded::Serializer::new(String::new());
+                query.append_pair("tickers", &ticker_batch.join(","));
+                query.append_pair("limit", &ticker_batch.len().to_string());
+                format!("/markets?{}", query.finish())
+            };
+            let response = self.get(&path).await?;
+            let markets = response["markets"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("Invalid Kalshi markets quote response"))?;
+
+            for market in markets {
+                quotes.push(parse_market_rest_quote(market)?);
+            }
+        }
+
+        Ok(quotes)
+    }
+
+    /// Get all supported NBA and tennis match-winner events and markets.
+    pub async fn get_supported_events_and_markets(
         &self,
     ) -> Result<(Vec<KalshiEvent>, Vec<KalshiMarket>)> {
         let mut events = Vec::new();
         let mut markets = Vec::new();
 
-        // Kalshi paginates event results. Fetch every open NBA event before matching.
+        for &(series_ticker, category) in SUPPORTED_KALSHI_SERIES {
+            let (mut series_events, mut series_markets) = self
+                .get_series_events_and_markets(series_ticker, category)
+                .await?;
+            events.append(&mut series_events);
+            markets.append(&mut series_markets);
+        }
+
+        info!(
+            "Loaded {} supported Kalshi events and {} markets",
+            events.len(),
+            markets.len()
+        );
+
+        Ok((events, markets))
+    }
+
+    /// Fetch only the legacy NBA feed for callers that do not use the
+    /// supported-sports scan.
+    #[allow(dead_code)]
+    pub async fn get_nba_events_and_markets(
+        &self,
+    ) -> Result<(Vec<KalshiEvent>, Vec<KalshiMarket>)> {
+        self.get_series_events_and_markets("KXNBAGAME", "NBA").await
+    }
+
+    async fn get_series_events_and_markets(
+        &self,
+        series_ticker: &str,
+        category: &str,
+    ) -> Result<(Vec<KalshiEvent>, Vec<KalshiMarket>)> {
+        let mut events = Vec::new();
+        let mut markets = Vec::new();
         let mut cursor = None;
+
         loop {
             let path = {
                 let mut query = url::form_urlencoded::Serializer::new(String::new());
-                query.append_pair("series_ticker", "KXNBAGAME");
+                query.append_pair("series_ticker", series_ticker);
                 query.append_pair("status", "open");
                 query.append_pair("with_nested_markets", "true");
                 query.append_pair("limit", "200");
@@ -222,81 +329,16 @@ impl KalshiClient {
                 .ok_or_else(|| anyhow::anyhow!("Invalid events response"))?;
 
             for event_data in event_array {
-                let event_ticker = event_data["event_ticker"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
-
-                // Extract team names from event_ticker (e.g., "KXNBAGAME-26JAN07CLELAL" -> "CLE", "LAL")
-                let team_names = extract_teams_from_ticker(&event_ticker);
-                if team_names.is_none() {
-                    continue;
-                }
-                let (mut team_a, mut team_b) = team_names.unwrap();
-
-                // Standardize event name (alphabetical order)
-                if team_a > team_b {
-                    std::mem::swap(&mut team_a, &mut team_b);
-                }
-                let event_name = format!("{}-{}", team_a, team_b);
-
-                // Parse start time from event ticker (Python-compatible approach)
-                // Format: KXNBA-26JAN08-DAL-UTA -> 2026-01-08
-                let start_time = extract_game_date_from_ticker(&event_ticker);
-
-                let mut event = KalshiEvent {
-                    event_id: event_ticker.clone(),
-                    name: event_name.clone(),
-                    team_a: team_a.clone(),
-                    team_b: team_b.clone(),
-                    start_time,
-                    category: "NBA".to_string(),
-                    markets: Vec::new(),
+                let event = match category {
+                    "NBA" => parse_nba_event(event_data),
+                    "TENNIS" => parse_tennis_event(event_data),
+                    _ => None,
                 };
 
-                // Parse markets
-                if let Some(market_array) = event_data["markets"].as_array() {
-                    for market_data in market_array {
-                        let ticker = market_data["ticker"].as_str().unwrap_or("").to_string();
-
-                        // Extract team from ticker (e.g., "KXNBAGAME-26JAN07CLELAL-CLE" -> "CLE")
-                        let team_name = match extract_team_from_ticker(&ticker) {
-                            Some(t) => t,
-                            None => continue,
-                        };
-
-                        let opponent_name = if team_name.to_uppercase() == team_a.to_uppercase() {
-                            team_b.clone()
-                        } else {
-                            team_a.clone()
-                        };
-
-                        let yes_price = market_data["yes_ask"]
-                            .as_f64()
-                            .or_else(|| market_data["last_price"].as_f64())
-                            .unwrap_or(0.5)
-                            / 100.0;
-                        let no_price = 1.0 - yes_price;
-
-                        let market = KalshiMarket {
-                            market_id: ticker.clone(),
-                            event_id: event_ticker.clone(),
-                            event_name: event_name.clone(),
-                            team_name: team_name.clone(),
-                            opponent_name,
-                            yes_price,
-                            no_price,
-                            start_time,
-                            volume: market_data["volume"].as_f64(),
-                            liquidity: market_data["open_interest"].as_f64(),
-                        };
-
-                        event.markets.push(market.clone());
-                        markets.push(market);
-                    }
+                if let Some(event) = event {
+                    markets.extend(event.markets.iter().cloned());
+                    events.push(event);
                 }
-
-                events.push(event);
             }
 
             let next_cursor = response["cursor"].as_str().unwrap_or_default();
@@ -307,7 +349,8 @@ impl KalshiClient {
         }
 
         info!(
-            "Loaded {} Kalshi events and {} markets",
+            "Loaded {} Kalshi {} events and {} markets",
+            category,
             events.len(),
             markets.len()
         );
@@ -319,33 +362,16 @@ impl KalshiClient {
     pub async fn place_order(
         &self,
         ticker: &str,
-        side: &str,
+        action: &str,
         outcome: &str,
         count: i32,
-        price: i32, // 当前市场价格（美分），会在此基础上+1美分以保证成交
+        price: i32,
     ) -> Result<Value> {
-        let action = if side == "buy" { "buy" } else { "sell" };
+        let (book_side, yes_price_cents) =
+            v2_order_book_side_and_price(action, outcome, price)?;
+        let body = v2_order_payload(ticker, book_side, count, yes_price_cents)?;
 
-        // 在当前价格基础上加1美分以保证成交，但不超过99美分
-        let adjusted_price = (price + 1).min(99);
-
-        // 根据 outcome 决定使用 yes_price 还是 no_price
-        // Kalshi API 要求市价单必须提供价格参数
-        let mut body = json!({
-            "ticker": ticker,
-            "action": action,
-            "side": outcome,
-            "count": count,
-            "type": "market",
-        });
-
-        if outcome == "yes" {
-            body["yes_price"] = json!(adjusted_price);
-        } else {
-            body["no_price"] = json!(adjusted_price);
-        }
-
-        self.post("/portfolio/orders", &body).await
+        self.post("/portfolio/events/orders", &body).await
     }
 
     /// Get orders with optional status filter
@@ -367,7 +393,7 @@ impl KalshiClient {
     /// Cancel an order
     pub async fn cancel_order(&self, order_id: &str) -> Result<Value> {
         let timestamp = Self::get_timestamp_ms();
-        let path = format!("/portfolio/orders/{}", order_id);
+        let path = format!("/portfolio/events/orders/{}", order_id);
         // 签名需要完整 API 路径 (与 Python 版本一致)
         let sign_path = format!("/trade-api/v2{}", path);
         let signature = self.sign_request(timestamp, "DELETE", &sign_path);
@@ -754,6 +780,46 @@ impl KalshiClient {
     }
 }
 
+fn v2_order_book_side_and_price(action: &str, outcome: &str, price: i32) -> Result<(&'static str, i32)> {
+    if !(1..=99).contains(&price) {
+        bail!("Kalshi order price must be between 1 and 99 cents");
+    }
+
+    match (action, outcome) {
+        ("buy", "yes") => Ok(("bid", price)),
+        ("sell", "yes") => Ok(("ask", price)),
+        ("buy", "no") => Ok(("ask", 100 - price)),
+        ("sell", "no") => Ok(("bid", 100 - price)),
+        _ => bail!("Kalshi order action must be buy or sell and outcome must be yes or no"),
+    }
+}
+
+fn v2_order_payload(
+    ticker: &str,
+    book_side: &str,
+    count: i32,
+    yes_price_cents: i32,
+) -> Result<Value> {
+    if ticker.trim().is_empty()
+        || count <= 0
+        || !matches!(book_side, "bid" | "ask")
+        || !(1..=99).contains(&yes_price_cents)
+    {
+        bail!("Invalid Kalshi V2 order parameters");
+    }
+
+    Ok(json!({
+        "ticker": ticker,
+        "client_order_id": uuid::Uuid::new_v4().to_string(),
+        "side": book_side,
+        "count": format!("{count}.00"),
+        "price": format!("{:.4}", yes_price_cents as f64 / 100.0),
+        "time_in_force": "immediate_or_cancel",
+        "self_trade_prevention_type": "taker_at_cross",
+        "cancel_order_on_pause": true,
+    }))
+}
+
 /// Parse current fixed-point levels and the legacy integer-cent representation.
 fn parse_price_levels(message: &Value, fixed_point_key: &str, legacy_key: &str) -> Vec<(i32, i32)> {
     let Some(levels) = message
@@ -802,6 +868,50 @@ fn dollars_to_cents(value: &Value) -> Option<i32> {
     (0..=100).contains(&cents).then_some(cents)
 }
 
+/// Parse a Kalshi fixed-point dollar quote without accepting lossy or
+/// out-of-range external values.
+fn parse_quote_dollars(value: &Value, field: &str) -> Result<f64> {
+    let raw = value
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Kalshi {field} must be a fixed-point string"))?;
+    let (whole, fractional) = raw.split_once('.').unwrap_or((raw, ""));
+
+    if whole.is_empty()
+        || fractional.len() > 6
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fractional.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        bail!("Invalid Kalshi {field} fixed-point quote: {raw}");
+    }
+
+    let price = raw
+        .parse::<f64>()
+        .with_context(|| format!("Invalid Kalshi {field} quote: {raw}"))?;
+    if !price.is_finite() || !(0.0..=1.0).contains(&price) {
+        bail!("Kalshi {field} quote is outside [0, 1]: {raw}");
+    }
+
+    Ok(price)
+}
+
+fn parse_market_rest_quote(market: &Value) -> Result<KalshiMarketQuote> {
+    let market_id = market["ticker"]
+        .as_str()
+        .filter(|ticker| !ticker.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Kalshi market quote is missing ticker"))?
+        .to_string();
+    let yes_ask = parse_quote_dollars(&market["yes_ask_dollars"], "yes_ask_dollars")
+        .with_context(|| format!("Invalid Kalshi REST quote for {market_id}"))?;
+    let no_ask = parse_quote_dollars(&market["no_ask_dollars"], "no_ask_dollars")
+        .with_context(|| format!("Invalid Kalshi REST quote for {market_id}"))?;
+
+    Ok(KalshiMarketQuote {
+        market_id,
+        yes_ask,
+        no_ask,
+    })
+}
+
 fn quantity_to_i32(value: &Value) -> Option<i32> {
     fixed_point_to_i32(value).filter(|quantity| *quantity >= 0)
 }
@@ -817,6 +927,194 @@ fn fixed_point_to_i32(value: &Value) -> Option<i32> {
         .round();
     (quantity.is_finite() && quantity >= i32::MIN as f64 && quantity <= i32::MAX as f64)
         .then_some(quantity as i32)
+}
+
+fn parse_nba_event(event_data: &Value) -> Option<KalshiEvent> {
+    let event_ticker = event_data["event_ticker"].as_str()?.to_string();
+    let (mut team_a, mut team_b) = extract_teams_from_ticker(&event_ticker)?;
+    if team_a > team_b {
+        std::mem::swap(&mut team_a, &mut team_b);
+    }
+
+    let event_name = format!("{team_a}-{team_b}");
+    let start_time = extract_event_start_time(event_data, &event_ticker);
+    let mut event = KalshiEvent {
+        event_id: event_ticker.clone(),
+        name: event_name.clone(),
+        team_a: team_a.clone(),
+        team_b: team_b.clone(),
+        start_time,
+        category: "NBA".to_string(),
+        markets: Vec::new(),
+    };
+
+    let Some(markets) = event_data["markets"].as_array() else {
+        return Some(event);
+    };
+    for market_data in markets {
+        let Some(ticker) = market_data["ticker"].as_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        let Some(team_name) = extract_team_from_ticker(&ticker) else {
+            continue;
+        };
+        let opponent_name = if team_name == team_a {
+            &team_b
+        } else {
+            &team_a
+        };
+        if let Some(market) = build_kalshi_market(
+            market_data,
+            ticker,
+            event_ticker.clone(),
+            event_name.clone(),
+            team_name,
+            opponent_name.clone(),
+            start_time,
+        ) {
+            event.markets.push(market);
+        }
+    }
+
+    Some(event)
+}
+
+fn parse_tennis_event(event_data: &Value) -> Option<KalshiEvent> {
+    let event_ticker = event_data["event_ticker"].as_str()?.to_string();
+    let market_data = event_data["markets"].as_array()?;
+
+    // A match winner event must expose exactly two independent binary markets,
+    // one for each competitor. Anything else is deliberately excluded.
+    if market_data.len() != 2 {
+        return None;
+    }
+
+    let mut parsed_markets = Vec::with_capacity(2);
+    for market in market_data {
+        let ticker = market["ticker"].as_str()?.to_string();
+        let competitor = extract_tennis_competitor(market)?;
+        parsed_markets.push((competitor, ticker, market));
+    }
+
+    if parsed_markets[0].0 == parsed_markets[1].0 {
+        return None;
+    }
+
+    let mut competitors = [parsed_markets[0].0.clone(), parsed_markets[1].0.clone()];
+    competitors.sort();
+    let event_name = competitor_event_name(&competitors[0], &competitors[1])?;
+    let start_time = extract_event_start_time(event_data, &event_ticker);
+    let mut event = KalshiEvent {
+        event_id: event_ticker.clone(),
+        name: event_name.clone(),
+        team_a: competitors[0].clone(),
+        team_b: competitors[1].clone(),
+        start_time,
+        category: "TENNIS".to_string(),
+        markets: Vec::with_capacity(2),
+    };
+
+    for (competitor, ticker, market) in parsed_markets {
+        let opponent = if competitor == competitors[0] {
+            competitors[1].clone()
+        } else {
+            competitors[0].clone()
+        };
+        event.markets.push(build_kalshi_market(
+            market,
+            ticker,
+            event_ticker.clone(),
+            event_name.clone(),
+            competitor,
+            opponent,
+            start_time,
+        )?);
+    }
+
+    Some(event)
+}
+
+fn build_kalshi_market(
+    market_data: &Value,
+    ticker: String,
+    event_id: String,
+    event_name: String,
+    team_name: String,
+    opponent_name: String,
+    start_time: Option<DateTime<Utc>>,
+) -> Option<KalshiMarket> {
+    let yes_price = initial_yes_price(market_data)?;
+
+    Some(KalshiMarket {
+        market_id: ticker,
+        event_id,
+        event_name,
+        team_name,
+        opponent_name,
+        yes_price,
+        no_price: 1.0 - yes_price,
+        start_time,
+        volume: market_data["volume"]
+            .as_f64()
+            .or_else(|| market_data["volume_fp"].as_str().and_then(|value| value.parse().ok())),
+        liquidity: market_data["open_interest"]
+            .as_f64()
+            .or_else(|| market_data["open_interest_fp"].as_str().and_then(|value| value.parse().ok())),
+    })
+}
+
+fn initial_yes_price(market_data: &Value) -> Option<f64> {
+    if !market_data["yes_ask_dollars"].is_null() {
+        return parse_quote_dollars(&market_data["yes_ask_dollars"], "yes_ask_dollars").ok();
+    }
+    if !market_data["last_price_dollars"].is_null() {
+        return parse_quote_dollars(&market_data["last_price_dollars"], "last_price_dollars").ok();
+    }
+
+    market_data["yes_ask"]
+        .as_f64()
+        .or_else(|| market_data["last_price"].as_f64())
+        .filter(|price| price.is_finite() && (0.0..=100.0).contains(price))
+        .map(|price| price / 100.0)
+}
+
+fn extract_tennis_competitor(market_data: &Value) -> Option<String> {
+    market_data["yes_sub_title"]
+        .as_str()
+        .and_then(normalize_competitor_name)
+        .or_else(|| {
+            market_data["title"]
+                .as_str()
+                .and_then(extract_tennis_competitor_from_market_title)
+        })
+}
+
+fn extract_tennis_competitor_from_market_title(title: &str) -> Option<String> {
+    let title = title.trim();
+    let title_lower = title.to_ascii_lowercase();
+    let prefix = "will ";
+    let separator = " win the ";
+
+    if title_lower.starts_with(prefix) {
+        let name_end = title_lower[prefix.len()..].find(separator)? + prefix.len();
+        return normalize_competitor_name(&title[prefix.len()..name_end]);
+    }
+
+    let suffix = " wins";
+    let competitor = title_lower.strip_suffix(suffix)?;
+    normalize_competitor_name(&title[..competitor.len()])
+}
+
+fn extract_event_start_time(event_data: &Value, event_ticker: &str) -> Option<DateTime<Utc>> {
+    ["expected_expiration_time", "close_time", "open_time"]
+        .iter()
+        .find_map(|field| {
+            event_data[*field]
+                .as_str()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc))
+        })
+        .or_else(|| extract_game_date_from_ticker(event_ticker))
 }
 
 /// Parse team names from event title
@@ -919,4 +1217,155 @@ fn extract_game_date_from_ticker(event_ticker: &str) -> Option<DateTime<Utc>> {
     let naive_datetime = naive_date.and_hms_opt(12, 0, 0)?;
 
     Some(DateTime::from_naive_utc_and_offset(naive_datetime, Utc))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_full_tennis_identity_from_market_title() {
+        assert_eq!(
+            extract_tennis_competitor_from_market_title(
+                "Will Juan Manuel Cerundolo win the Cerundolo vs Auger-Aliassime: Round Of 32 match?"
+            ),
+            Some("JUAN MANUEL CERUNDOLO".to_string())
+        );
+        assert_eq!(
+            extract_tennis_competitor_from_market_title(
+                "Will Cerundolo win the Cerundolo vs Auger-Aliassime match?"
+            ),
+            None
+        );
+        assert_eq!(
+            extract_tennis_competitor_from_market_title("Jesper De Jong wins"),
+            Some("JESPER DE JONG".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_only_two_competitor_tennis_events() {
+        let event = json!({
+            "event_ticker": "KXATPMATCH-26AUG18TEST",
+            "markets": [
+                {
+                    "ticker": "KXATPMATCH-26AUG18TEST-CERUNDOLO",
+                    "title": "Will Juan Manuel Cerundolo win the Cerundolo vs Auger-Aliassime match?",
+                    "yes_ask": 45
+                },
+                {
+                    "ticker": "KXATPMATCH-26AUG18TEST-AUGER",
+                    "title": "Will Felix Auger-Aliassime win the Cerundolo vs Auger-Aliassime match?",
+                    "yes_ask": 55
+                }
+            ]
+        });
+
+        let parsed = parse_tennis_event(&event).unwrap();
+        assert_eq!(
+            parsed.name,
+            "FELIX AUGER ALIASSIME VS JUAN MANUEL CERUNDOLO"
+        );
+        assert_eq!(parsed.markets.len(), 2);
+    }
+
+    #[test]
+    fn parses_current_tennis_market_titles_and_dollar_prices() {
+        let event = json!({
+            "event_ticker": "KXATPMATCH-26AUG30DEJPAS",
+            "markets": [
+                {
+                    "ticker": "KXATPMATCH-26AUG30DEJPAS-DEJ",
+                    "title": "Jesper De Jong wins",
+                    "yes_sub_title": "Jesper De Jong",
+                    "yes_ask_dollars": "0.4400",
+                    "volume_fp": "740891.24",
+                    "open_interest_fp": "404822.66"
+                },
+                {
+                    "ticker": "KXATPMATCH-26AUG30DEJPAS-PAS",
+                    "title": "Francesco Passaro wins",
+                    "yes_sub_title": "Francesco Passaro",
+                    "yes_ask_dollars": "0.5600"
+                }
+            ]
+        });
+
+        let parsed = parse_tennis_event(&event).unwrap();
+        assert_eq!(parsed.name, "FRANCESCO PASSARO VS JESPER DE JONG");
+        assert_eq!(parsed.markets[0].yes_price, 0.44);
+        assert_eq!(parsed.markets[0].volume, Some(740891.24));
+        assert_eq!(parsed.markets[0].liquidity, Some(404822.66));
+    }
+
+    #[test]
+    fn rejects_current_tennis_events_with_invalid_prices() {
+        let event = json!({
+            "event_ticker": "KXATPMATCH-26AUG30DEJPAS",
+            "markets": [
+                {
+                    "ticker": "KXATPMATCH-26AUG30DEJPAS-DEJ",
+                    "yes_sub_title": "Jesper De Jong",
+                    "yes_ask_dollars": "1.1"
+                },
+                {
+                    "ticker": "KXATPMATCH-26AUG30DEJPAS-PAS",
+                    "yes_sub_title": "Francesco Passaro",
+                    "yes_ask_dollars": "0.5600"
+                }
+            ]
+        });
+
+        assert!(parse_tennis_event(&event).is_none());
+    }
+
+    #[test]
+    fn parses_rest_quote_asks_as_dollar_prices() {
+        let quote = parse_market_rest_quote(&json!({
+            "ticker": "KXATPMATCH-26AUG18CERAUG-CER",
+            "yes_bid_dollars": "0.2500",
+            "yes_ask_dollars": "0.2600",
+            "no_bid_dollars": "0.7400",
+            "no_ask_dollars": "0.7500"
+        }))
+        .unwrap();
+
+        assert_eq!(quote.market_id, "KXATPMATCH-26AUG18CERAUG-CER");
+        assert_eq!(quote.yes_ask, 0.26);
+        assert_eq!(quote.no_ask, 0.75);
+    }
+
+    #[test]
+    fn rejects_invalid_rest_quote_price() {
+        let error = parse_market_rest_quote(&json!({
+            "ticker": "KXATPMATCH-26AUG18CERAUG-CER",
+            "yes_ask_dollars": "1.0000001",
+            "no_ask_dollars": "0.7500"
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Invalid Kalshi REST quote"));
+    }
+
+    #[test]
+    fn converts_no_side_orders_to_v2_yes_book_orders() {
+        assert_eq!(
+            v2_order_book_side_and_price("buy", "no", 44).unwrap(),
+            ("ask", 56)
+        );
+        assert_eq!(
+            v2_order_book_side_and_price("sell", "no", 44).unwrap(),
+            ("bid", 56)
+        );
+
+        let payload = v2_order_payload("KXATPMATCH-26AUG30DEJPAS-DEJ", "ask", 3, 56)
+            .unwrap();
+        assert_eq!(payload["side"], "ask");
+        assert_eq!(payload["count"], "3.00");
+        assert_eq!(payload["price"], "0.5600");
+        assert_eq!(payload["time_in_force"], "immediate_or_cancel");
+        assert_eq!(payload["self_trade_prevention_type"], "taker_at_cross");
+        assert!(payload.get("exchange_index").is_none());
+        assert!(payload["client_order_id"].as_str().is_some());
+    }
 }

@@ -111,6 +111,21 @@ impl WebSocketManager {
             );
         }
 
+        let market_idx = self
+            .matched_markets
+            .read()
+            .iter()
+            .position(|market| market.market_key() == key);
+        let Some(market_idx) = market_idx else {
+            return (false, "Matched market is no longer available".to_string());
+        };
+        if !self.is_market_ready(market_idx) {
+            return (
+                false,
+                "Market data is incomplete or Polymarket REST quote is stale".to_string(),
+            );
+        }
+
         if self.auto_traded_opportunities.read().contains(key) {
             return (
                 false,
@@ -211,8 +226,8 @@ impl WebSocketManager {
 
     /// Check if a skip reason should be recorded (deduplication)
     pub fn should_record_skip(&self, market_key: &str, skip_reason: &str) -> bool {
-        let simplified_reason = if skip_reason.contains("Polymarket depth insufficient") {
-            "poly_depth"
+        let simplified_reason = if skip_reason.contains("Polymarket US executable liquidity") {
+            "poly_us_executable_liquidity_unavailable"
         } else if skip_reason.contains("Kalshi depth insufficient") {
             "kalshi_depth"
         } else if skip_reason.contains("exceeds limit") {
@@ -248,165 +263,5 @@ impl WebSocketManager {
         self.storage.increment_trade_count()
     }
 
-    /// Validate orderbook depth and price before auto-trade execution
-    pub fn validate_auto_trade_depth(
-        &self,
-        kalshi_ticker: &str,
-        kalshi_side: &str,
-        poly_token: &str,
-        required_contracts: i32,
-    ) -> (bool, i32, f64, f64, f64, String) {
-        let kalshi_book = match &self.kalshi_client {
-            Some(client) => client.get_orderbook(kalshi_ticker),
-            None => {
-                return (
-                    false,
-                    0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    "Kalshi client not initialized".to_string(),
-                );
-            }
-        };
 
-        let poly_book = match &self.polymarket_client {
-            Some(client) => client.get_orderbook(poly_token),
-            None => {
-                return (
-                    false,
-                    0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    "Polymarket client not initialized".to_string(),
-                );
-            }
-        };
-
-        let kalshi_book = match kalshi_book {
-            Some(book) => book,
-            None => {
-                return (
-                    false,
-                    0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    format!("Kalshi order book does not exist: {}", kalshi_ticker),
-                );
-            }
-        };
-
-        let poly_book = match poly_book {
-            Some(book) => book,
-            None => {
-                return (
-                    false,
-                    0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    format!("Polymarket order book does not exist: {}", poly_token),
-                );
-            }
-        };
-
-        let kalshi_depth = kalshi_book.ask_depth_for_side(kalshi_side, required_contracts);
-
-        let kalshi_price = {
-            let prices = self.kalshi_prices.read();
-            match prices.get(kalshi_ticker) {
-                Some((_, yes_ask, _, no_ask)) => {
-                    if kalshi_side == "yes" {
-                        *yes_ask
-                    } else {
-                        *no_ask
-                    }
-                }
-                None => {
-                    return (
-                        false,
-                        kalshi_depth,
-                        0.0,
-                        0.0,
-                        0.0,
-                        format!("Kalshi price cache does not exist: {}", kalshi_ticker),
-                    );
-                }
-            }
-        };
-
-        let (poly_price, poly_size) = match poly_book.best_ask() {
-            Some((price, size)) => (price, size),
-            None => {
-                return (
-                    false,
-                    kalshi_depth,
-                    0.0,
-                    kalshi_price,
-                    0.0,
-                    "Polymarket has no available ask".to_string(),
-                );
-            }
-        };
-
-        let required_poly_amount = required_contracts as f64 * poly_price;
-        let poly_depth = poly_price * poly_size;
-
-        if kalshi_depth < required_contracts {
-            return (
-                false,
-                kalshi_depth,
-                poly_depth,
-                kalshi_price,
-                poly_price,
-                format!(
-                    "Kalshi depth insufficient: need {} contracts, available {} contracts",
-                    required_contracts, kalshi_depth
-                ),
-            );
-        }
-
-        if poly_depth < required_poly_amount {
-            return (
-                false,
-                kalshi_depth,
-                poly_depth,
-                kalshi_price,
-                poly_price,
-                format!(
-                    "Polymarket depth insufficient: need ${:.2}, available ${:.2}",
-                    required_poly_amount, poly_depth
-                ),
-            );
-        }
-
-        let price_sum = kalshi_price + poly_price;
-        if price_sum >= 1.0 {
-            return (
-                false,
-                kalshi_depth,
-                poly_depth,
-                kalshi_price,
-                poly_price,
-                format!(
-                    "Arbitrage condition no longer holds: K={:.4} + P={:.4} = {:.4} >= 1",
-                    kalshi_price, poly_price, price_sum
-                ),
-            );
-        }
-
-        (
-            true,
-            kalshi_depth,
-            poly_depth,
-            kalshi_price,
-            poly_price,
-            format!(
-                "Validation passed: K depth={}, P depth=${:.2}, combined price={:.4}",
-                kalshi_depth, poly_depth, price_sum
-            ),
-        )
-    }
 }

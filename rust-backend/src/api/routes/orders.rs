@@ -12,15 +12,15 @@ use serde::Deserialize;
 use tracing::error;
 
 use crate::api::AppState;
+use crate::models::PolymarketPositionSide;
 
 /// Kalshi order request
 #[derive(Deserialize)]
 pub struct KalshiOrderRequest {
     ticker: String,
     side: String,
-    outcome: String,
+    action: String,
     count: i32,
-    price: i32,
 }
 
 /// Place a Kalshi order
@@ -28,14 +28,49 @@ pub async fn place_kalshi_order(
     State(state): State<Arc<AppState>>,
     Json(req): Json<KalshiOrderRequest>,
 ) -> impl IntoResponse {
-    let service = state.service.read().await;
+    let kalshi_client = {
+        let service = state.service.read().await;
+        service.kalshi_client.clone()
+    };
 
-    match service
-        .place_kalshi_order(&req.ticker, &req.side, &req.outcome, req.count, req.price)
+    if !matches!(req.side.as_str(), "yes" | "no")
+        || !matches!(req.action.as_str(), "buy" | "sell")
+        || req.count <= 0
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "side must be yes or no, action must be buy or sell, and count must be positive"
+            })),
+        )
+            .into_response();
+    }
+
+    let price = match kalshi_client
+        .get_orderbook(&req.ticker)
+        .and_then(|book| book.limit_price_for_order(&req.side, &req.action))
+    {
+        Some(price) if (1..=99).contains(&price) => price,
+        _ => {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": "No executable Kalshi quote is available for this order"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    match kalshi_client
+        .place_order(&req.ticker, &req.action, &req.side, req.count, price)
         .await
     {
         Ok(response) => Json(serde_json::json!({
             "success": true,
+            "order": response.get("order"),
             "data": response
         }))
         .into_response(),
@@ -57,9 +92,10 @@ pub async fn place_kalshi_order(
 #[derive(Deserialize)]
 pub struct PolymarketOrderRequest {
     market_slug: String,
-    outcome: String,
+    position_side: PolymarketPositionSide,
     side: String,
-    amount: f64,
+    contracts: i32,
+    price: f64,
 }
 
 /// Place a Polymarket order
@@ -69,8 +105,30 @@ pub async fn place_polymarket_order(
 ) -> impl IntoResponse {
     let service = state.service.read().await;
 
+    if req.market_slug.trim().is_empty()
+        || !matches!(req.side.as_str(), "buy" | "sell")
+        || req.contracts <= 0
+        || !req.price.is_finite()
+        || !(0.0..1.0).contains(&req.price)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "market_slug, position_side, buy or sell action, a positive whole contract count, and a current price are required"
+            })),
+        )
+            .into_response();
+    }
+
     match service
-        .place_polymarket_order(&req.market_slug, &req.outcome, &req.side, req.amount)
+        .place_polymarket_order(
+            &req.market_slug,
+            req.position_side,
+            &req.side,
+            req.contracts,
+            req.price,
+        )
         .await
     {
         Ok(response) => Json(serde_json::json!({
@@ -98,8 +156,8 @@ pub struct ExecuteArbitrageRequest {
     event_name: String,
     team_name: String,
     kalshi_side: String,
-    polymarket_side: String,
-    amount: f64,
+    polymarket_competitor: String,
+    contracts: i32,
 }
 
 /// Execute an arbitrage trade
@@ -107,108 +165,58 @@ pub async fn execute_arbitrage(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ExecuteArbitrageRequest>,
 ) -> impl IntoResponse {
-    let service = state.service.read().await;
-
-    // Find the matched market
-    let matched_market = service
-        .get_matched_markets()
-        .iter()
-        .find(|m| m.event_name == req.event_name && m.team_name == req.team_name);
-
-    let mm = match matched_market {
-        Some(m) => m.clone(),
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({
-                    "success": false,
-                    "error": "Market not found"
-                })),
-            )
-                .into_response();
-        }
-    };
-
-    // Calculate order amounts
-    let total_bet = req.amount;
-    let kalshi_amount = (total_bet / 2.0 * 100.0) as i32;
-    let poly_amount = total_bet / 2.0;
-
-    // Polymarket US trades are addressed by market slug and outcome, not CLOB
-    // token IDs. The matched market ID is the slug supplied by the US feed.
-    let poly_market_slug = mm.polymarket_market.market_id.as_str();
-
-    // Check Polymarket depth
-    let poly_depth = mm
-        .polymarket_market
-        .get_token_for_team(&mm.team_name)
-        .and_then(|token| service.polymarket_client.get_orderbook(token))
-        .map(|book| book.ask_depth(poly_amount))
-        .unwrap_or(0.0);
-
-    let min_poly_depth = poly_amount * 0.9;
-    if poly_depth < min_poly_depth {
-        return Json(serde_json::json!({
-            "success": false,
-            "error": format!("Insufficient Polymarket depth: {:.2} USD required, {:.2} USD available", min_poly_depth, poly_depth),
-            "poly_depth": poly_depth,
-            "required_depth": min_poly_depth
-        }))
-        .into_response();
-    }
-
-    // Check Kalshi depth
-    let kalshi_contracts = kalshi_amount / 100;
-    let kalshi_depth = service
-        .kalshi_client
-        .get_orderbook(&mm.kalshi_market.market_id)
-        .map(|book| book.ask_depth_for_side(&req.kalshi_side, kalshi_contracts))
-        .unwrap_or(0);
-
-    let min_kalshi_depth = (kalshi_contracts as f64 * 0.9) as i32;
-    if kalshi_depth < min_kalshi_depth {
-        return Json(serde_json::json!({
-            "success": false,
-            "error": format!("Insufficient Kalshi depth: {} contracts required, {} contracts available", min_kalshi_depth, kalshi_depth),
-            "kalshi_depth": kalshi_depth,
-            "required_depth": min_kalshi_depth
-        }))
-        .into_response();
-    }
-
-    // Execute orders
-    let kalshi_price = if req.kalshi_side == "yes" {
-        (mm.kalshi_market.yes_price * 100.0) as i32
-    } else {
-        (mm.kalshi_market.no_price * 100.0) as i32
-    };
-
-    let kalshi_result = service
-        .place_kalshi_order(
-            &mm.kalshi_market.market_id,
-            "buy",
-            &req.kalshi_side,
-            kalshi_amount / kalshi_price,
-            kalshi_price,
+    if !matches!(req.kalshi_side.as_str(), "yes" | "no") || req.contracts <= 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "kalshi_side must be yes or no and contract count must be positive"
+            })),
         )
-        .await;
+            .into_response();
+    }
 
-    let poly_result = service
-        .place_polymarket_order(poly_market_slug, &req.polymarket_side, "buy", poly_amount)
-        .await;
+    let service = state.service.read().await;
+    let matched_market = service.get_matched_markets().iter().find(|market| {
+        market.event_name == req.event_name && market.team_name == req.team_name
+    });
+    let Some(matched_market) = matched_market else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"success": false, "error": "Market not found"})),
+        )
+            .into_response();
+    };
 
-    Json(serde_json::json!({
-        "success": kalshi_result.is_ok() && poly_result.is_ok(),
-        "depth_check": {
-            "poly_depth": poly_depth,
-            "kalshi_depth": kalshi_depth
-        },
-        "kalshi": kalshi_result.map(|r| serde_json::json!({"success": true, "data": r}))
-            .unwrap_or_else(|e| serde_json::json!({"success": false, "error": e.to_string()})),
-        "polymarket": poly_result.map(|r| serde_json::json!({"success": true, "data": r}))
-            .unwrap_or_else(|e| serde_json::json!({"success": false, "error": e.to_string()}))
-    }))
-    .into_response()
+    // Resolve the user-selected competitor against the matched US gateway
+    // market. This yields the authoritative market slug and LONG/SHORT side;
+    // neither is inferred from a yes/no array position.
+    let Some(execution) = matched_market
+        .polymarket_market
+        .us_execution_for_competitor(&req.polymarket_competitor)
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "Polymarket competitor is not part of the matched market"
+            })),
+        )
+            .into_response();
+    };
+
+    // The US quote feed has no verified executable order-book size. Do not
+    // place the Kalshi leg first, or either leg, for a manual paired trade.
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "success": false,
+            "error": "Polymarket US executable liquidity is unavailable; paired arbitrage was not submitted",
+            "polymarket_market_slug": execution.market_slug,
+            "polymarket_position_side": execution.position_side,
+        })),
+    )
+        .into_response()
 }
 
 /// Query params for orders

@@ -13,9 +13,17 @@ type Action = 'buy' | 'sell';
 
 export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps) {
   const [count, setCount] = useState(1);
-  const [amount, setAmount] = useState(10); // Polymarket USDC amount
+  const [polyContracts, setPolyContracts] = useState(1);
   const [loading, setLoading] = useState<string | null>(null);
   const [result, setResult] = useState<{ success: boolean; message: string; elapsed_ms?: number } | null>(null);
+  const hasLivePolymarketQuote =
+    market.poly_ready
+    && Number.isFinite(market.poly_yes_price)
+    && Number.isFinite(market.poly_no_price)
+    && market.poly_yes_price > 0
+    && market.poly_yes_price < 1
+    && market.poly_no_price > 0
+    && market.poly_no_price < 1;
 
   // Place a Kalshi order.
   const handleKalshiOrder = async (side: Side, action: Action) => {
@@ -55,13 +63,13 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
   };
 
   // Place a Polymarket order.
-  const handlePolyOrder = async (side: 'buy' | 'sell', teamIndex: 0 | 1) => {
-    const loadingKey = `poly_${side}_${teamIndex}`;
+  const handlePolyOrder = async (side: 'buy' | 'sell', competitor: 'team' | 'opponent') => {
+    const loadingKey = `poly_${side}_${competitor}`;
     setLoading(loadingKey);
     setResult(null);
 
     try {
-      const marketSlug = market.polymarket_market_id;
+      const marketSlug = market.polymarket_market_slug;
       if (!marketSlug) {
         setResult({
           success: false,
@@ -72,9 +80,12 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
 
       const response = await createPolymarketOrder(apiBaseUrl, {
         market_slug: marketSlug,
-        outcome: teamIndex === 0 ? 'yes' : 'no',
+        position_side: competitor === 'team'
+          ? market.polymarket_team_position_side
+          : market.polymarket_opponent_position_side,
         side,
-        amount,
+        contracts: polyContracts,
+        price: competitor === 'team' ? market.poly_yes_price : market.poly_no_price,
       });
 
       if (response.success) {
@@ -114,21 +125,15 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
       // Determine the arbitrage strategy.
       const isKalshiYes = market.arbitrage_type.includes('KalshiYes');
       const kalshiSide: Side = isKalshiYes ? 'yes' : 'no';
-      const polySide: 'buy' | 'sell' = isKalshiYes ? 'sell' : 'buy';
-
-      // Calculate bet amounts from the contract count and prices.
-      const kalshiPrice = isKalshiYes ? market.kalshi_yes_price : market.kalshi_no_price;
-      const kalshiBet = count * kalshiPrice; // USD
-      const polyAmount = amount; // USDC
 
       const response = await executeArbitrage(apiBaseUrl, {
-        kalshi_ticker: market.kalshi_market_id,
+        event_name: market.event_name,
+        team_name: market.team_name,
         kalshi_side: kalshiSide,
-        kalshi_bet: kalshiBet,
-        kalshi_price: kalshiPrice,
-        poly_token_id: market.polymarket_market_id,
-        poly_side: polySide,
-        poly_amount: polyAmount,
+        polymarket_competitor: isKalshiYes
+          ? market.polymarket_opponent_name
+          : market.team_name,
+        contracts: polyContracts,
       });
 
       if (response.success) {
@@ -140,8 +145,8 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
         onOrderPlaced?.();
       } else {
         const errors = [];
-        if (!response.kalshi?.success) errors.push(`Kalshi: ${response.kalshi?.error || 'Failed'}`);
-        if (!response.polymarket?.success) errors.push(`Poly: ${response.polymarket?.error || 'Failed'}`);
+        if (response.kalshi && !response.kalshi.success) errors.push(`Kalshi: ${response.kalshi.error || 'Failed'}`);
+        if (response.polymarket && !response.polymarket.success) errors.push(`Poly: ${response.polymarket.error || 'Failed'}`);
         setResult({
           success: false,
           message: errors.join('; ') || response.error || 'Arbitrage failed',
@@ -188,27 +193,28 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
           </div>
         </div>
 
-        {/* Polymarket USDC amount */}
+        {/* Polymarket contract count */}
         <div className="bg-[--bg-tertiary] rounded p-2">
-          <div className="text-[10px] text-[--text-muted] mb-1">Poly USDC</div>
+          <div className="text-[10px] text-[--text-muted] mb-1">Poly Contracts</div>
           <div className="flex items-center gap-1">
             <button
               className="w-6 h-6 rounded bg-[--bg-secondary] text-[--text-secondary] hover:bg-[--bg-primary] disabled:opacity-50 text-xs"
-              onClick={() => setAmount(Math.max(1, amount - 5))}
-              disabled={amount <= 1}
+              onClick={() => setPolyContracts(Math.max(1, polyContracts - 1))}
+              disabled={polyContracts <= 1}
             >
               -
             </button>
             <input
               type="number"
               min={1}
-              value={amount}
-              onChange={(e) => setAmount(Math.max(1, parseFloat(e.target.value) || 1))}
+              step={1}
+              value={polyContracts}
+              onChange={(e) => setPolyContracts(Math.max(1, parseInt(e.target.value) || 1))}
               className="flex-1 h-6 px-1 text-center text-xs bg-[--bg-secondary] border border-[--border-color] rounded text-[--text-primary]"
             />
             <button
               className="w-6 h-6 rounded bg-[--bg-secondary] text-[--text-secondary] hover:bg-[--bg-primary] text-xs"
-              onClick={() => setAmount(amount + 5)}
+              onClick={() => setPolyContracts(polyContracts + 1)}
             >
               +
             </button>
@@ -260,38 +266,42 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
       <div className="bg-[--bg-tertiary] rounded p-2">
         <div className="flex items-center justify-between mb-2">
           <span className="text-[10px] text-purple-400 font-medium">Polymarket</span>
-          <span className="text-[10px] text-[--text-muted] truncate max-w-[120px]">{market.polymarket_market_id.slice(0, 16)}...</span>
+          <span className="text-[10px] text-[--text-muted] truncate max-w-[120px]">{market.polymarket_market_slug.slice(0, 16)}...</span>
         </div>
         <div className="grid grid-cols-2 gap-1.5 mb-1.5">
           <button
             className="py-1.5 text-[10px] rounded bg-green-500/20 text-green-400 hover:bg-green-500/30 disabled:opacity-50"
-            onClick={() => handlePolyOrder('buy', 0)}
-            disabled={loading !== null}
+            onClick={() => handlePolyOrder('buy', 'team')}
+            disabled={loading !== null || !hasLivePolymarketQuote}
+            title={hasLivePolymarketQuote ? undefined : 'Waiting for a current Polymarket quote'}
           >
-            {loading === 'poly_buy_0' ? '...' : `Buy ${(market.poly_yes_price * 100).toFixed(0)}¢`}
+            {loading === 'poly_buy_team' ? '...' : `Buy ${market.team_name} Limit ${(market.poly_yes_price * 100).toFixed(0)}¢`}
           </button>
           <button
             className="py-1.5 text-[10px] rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 disabled:opacity-50"
-            onClick={() => handlePolyOrder('buy', 1)}
-            disabled={loading !== null}
+            onClick={() => handlePolyOrder('buy', 'opponent')}
+            disabled={loading !== null || !hasLivePolymarketQuote}
+            title={hasLivePolymarketQuote ? undefined : 'Waiting for a current Polymarket quote'}
           >
-            {loading === 'poly_buy_1' ? '...' : `Buy ${(market.poly_no_price * 100).toFixed(0)}¢`}
+            {loading === 'poly_buy_opponent' ? '...' : `Buy ${market.polymarket_opponent_name} Limit ${(market.poly_no_price * 100).toFixed(0)}¢`}
           </button>
         </div>
         <div className="grid grid-cols-2 gap-1.5">
           <button
             className="py-1 text-[9px] rounded bg-green-500/10 text-green-400/70 hover:bg-green-500/20 disabled:opacity-50"
-            onClick={() => handlePolyOrder('sell', 0)}
-            disabled={loading !== null}
+            onClick={() => handlePolyOrder('sell', 'team')}
+            disabled={loading !== null || !hasLivePolymarketQuote}
+            title={hasLivePolymarketQuote ? undefined : 'Waiting for a current Polymarket quote'}
           >
-            {loading === 'poly_sell_0' ? '...' : 'Sell'}
+            {loading === 'poly_sell_team' ? '...' : `Sell ${market.team_name} Limit`}
           </button>
           <button
             className="py-1 text-[9px] rounded bg-red-500/10 text-red-400/70 hover:bg-red-500/20 disabled:opacity-50"
-            onClick={() => handlePolyOrder('sell', 1)}
-            disabled={loading !== null}
+            onClick={() => handlePolyOrder('sell', 'opponent')}
+            disabled={loading !== null || !hasLivePolymarketQuote}
+            title={hasLivePolymarketQuote ? undefined : 'Waiting for a current Polymarket quote'}
           >
-            {loading === 'poly_sell_1' ? '...' : 'Sell'}
+            {loading === 'poly_sell_opponent' ? '...' : `Sell ${market.polymarket_opponent_name} Limit`}
           </button>
         </div>
       </div>

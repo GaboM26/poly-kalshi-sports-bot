@@ -108,29 +108,14 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
       // K↓ P↑ = Kalshi No + Polymarket Yes
       const isKalshiYes = market.arbitrage_type?.includes('KalshiYes');
       
-      // Calculate bet amounts (assume a $10 total investment for testing).
-      const totalBet = 10;
-      const impliedSum = (isKalshiYes ? market.kalshi_yes_price : market.kalshi_no_price) +
-                         (isKalshiYes ? market.poly_no_price : market.poly_yes_price);
-      const guaranteedReturn = totalBet / impliedSum;
-      
-      const kalshiPrice = isKalshiYes ? market.kalshi_yes_price : market.kalshi_no_price;
-      const polyPrice = isKalshiYes ? market.poly_no_price : market.poly_yes_price;
-      
-      const kalshiBet = guaranteedReturn * kalshiPrice;
-      const polyBet = guaranteedReturn * polyPrice;
-      
-      // Build the request; the correct token_id is required.
-      // polymarket_market_id is the condition ID, so its matching token ID is needed.
-      // This simplified implementation uses market_id as token_id; production may need a backend lookup.
       const request: ArbitrageExecuteRequest = {
-        kalshi_ticker: market.kalshi_market_id,
+        event_name: market.event_name,
+        team_name: market.team_name,
         kalshi_side: isKalshiYes ? 'yes' : 'no',
-        kalshi_bet: kalshiBet,
-        kalshi_price: kalshiPrice,
-        poly_token_id: market.polymarket_market_id, // TODO: use the correct token ID
-        poly_side: 'buy',
-        poly_amount: polyBet
+        polymarket_competitor: isKalshiYes
+          ? market.polymarket_opponent_name
+          : market.team_name,
+        contracts: 10,
       };
       
       const result = await executeArbitrage(apiBaseUrl, request);
@@ -139,9 +124,9 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
         setLastResult({ key: executionKey, success: true, message: 'Arbitrage executed successfully!' });
       } else {
         const errors = [];
-        if (!result.kalshi.success) errors.push(`K: ${result.kalshi.error}`);
-        if (!result.polymarket.success) errors.push(`P: ${result.polymarket.error}`);
-        setLastResult({ key: executionKey, success: false, message: errors.join('; ') });
+        if (result.kalshi && !result.kalshi.success) errors.push(`K: ${result.kalshi.error}`);
+        if (result.polymarket && !result.polymarket.success) errors.push(`P: ${result.polymarket.error}`);
+        setLastResult({ key: executionKey, success: false, message: errors.join('; ') || result.error || 'Execution failed' });
       }
     } catch (err) {
       setLastResult({ key: executionKey, success: false, message: err instanceof Error ? err.message : 'Execution failed' });

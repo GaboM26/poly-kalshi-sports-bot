@@ -26,16 +26,17 @@ impl WebSocketManager {
             return true;
         }
 
-        let kalshi_prices = self.kalshi_prices.read();
-        let (k_yes_ask, k_no_ask) = match kalshi_prices.get(&mm.kalshi_market.market_id) {
-            Some((_, ya, _, na)) => (*ya, *na),
+        let (k_yes_ask, k_no_ask) =
+            match self.fresh_kalshi_rest_prices(mm, std::time::Instant::now()) {
+                Some(prices) => prices,
+                None => return false,
+            };
+
+        let (p_yes, p_no) = match self.fresh_poly_rest_prices(mm, std::time::Instant::now()) {
+            Some(prices) => prices,
             None => return false,
         };
 
-        let p_yes = mm.poly_yes_price;
-        let p_no = mm.poly_no_price;
-
-        drop(kalshi_prices);
         drop(markets);
 
         let kalshi_extreme = self.is_kalshi_price_extreme(k_yes_ask, k_no_ask);
@@ -100,10 +101,10 @@ impl WebSocketManager {
         pattern1 || pattern2
     }
 
-    /// Remove ended markets and return subscription IDs to unsubscribe
-    pub fn remove_ended_markets(&self) -> (Vec<String>, Vec<String>) {
+    /// Remove ended markets and return Kalshi subscription IDs to unsubscribe.
+    pub fn remove_ended_markets(&self) -> Vec<String> {
         let mut kalshi_to_unsub = Vec::new();
-        let mut poly_to_unsub = Vec::new();
+        let mut poly_market_ids_to_remove = Vec::new();
         let mut indices_to_remove = Vec::new();
         let mut market_keys_to_remove = Vec::new();
 
@@ -117,28 +118,20 @@ impl WebSocketManager {
                     market_keys_to_remove.push(market_key);
 
                     kalshi_to_unsub.push(mm.kalshi_market.market_id.clone());
+                    poly_market_ids_to_remove.push(mm.polymarket_market.market_id.clone());
 
-                    if let Some(token) = mm.polymarket_market.get_token_for_team(&mm.team_name) {
-                        poly_to_unsub.push(token.to_string());
-                    }
-                    if let Some(opponent) = mm.polymarket_market.get_opponent(&mm.team_name) {
-                        if let Some(token) = mm.polymarket_market.get_token_for_team(opponent) {
-                            poly_to_unsub.push(token.to_string());
-                        }
-                    }
                 }
             }
         }
 
         if indices_to_remove.is_empty() {
-            return (kalshi_to_unsub, poly_to_unsub);
+            return kalshi_to_unsub;
         }
 
         info!(
-            "🧹 清理已结束的市场: {} 个 (Kalshi: {} 个, Poly: {} 个 token)",
+            "🧹 清理已结束的市场: {} 个 (Kalshi: {} 个)",
             indices_to_remove.len(),
             kalshi_to_unsub.len(),
-            poly_to_unsub.len()
         );
 
         {
@@ -156,10 +149,6 @@ impl WebSocketManager {
             for ticker in &kalshi_to_unsub {
                 lookup.remove(ticker);
             }
-            for token in &poly_to_unsub {
-                lookup.remove(token);
-            }
-
             let markets = self.matched_markets.read();
             let matcher = EventMatcher::new(24);
             let new_sub_info = matcher.get_subscription_info(&markets);
@@ -168,15 +157,21 @@ impl WebSocketManager {
         }
 
         {
-            let mut kalshi_prices = self.kalshi_prices.write();
+            let mut kalshi_ws_prices = self.kalshi_ws_prices.write();
             for ticker in &kalshi_to_unsub {
-                kalshi_prices.remove(ticker);
+                kalshi_ws_prices.remove(ticker);
             }
         }
         {
-            let mut poly_prices = self.poly_token_prices.write();
-            for token in &poly_to_unsub {
-                poly_prices.remove(token);
+            let mut kalshi_quotes = self.kalshi_rest_quotes.write();
+            for ticker in &kalshi_to_unsub {
+                kalshi_quotes.remove(ticker);
+            }
+        }
+        {
+            let mut poly_quotes = self.poly_rest_quotes.write();
+            for market_id in &poly_market_ids_to_remove {
+                poly_quotes.remove(market_id);
             }
         }
 
@@ -206,15 +201,13 @@ impl WebSocketManager {
 
         kalshi_to_unsub.sort();
         kalshi_to_unsub.dedup();
-        poly_to_unsub.sort();
-        poly_to_unsub.dedup();
 
         info!(
             "✅ 清理完成，剩余 {} 个活跃市场",
             self.matched_markets.read().len()
         );
 
-        (kalshi_to_unsub, poly_to_unsub)
+        kalshi_to_unsub
     }
 
     /// Get count of markets currently being monitored for ending

@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 import toml
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from polymarket_us import PolymarketUS
 
 logging.basicConfig(
@@ -33,15 +33,30 @@ class MarketOrderRequest(BaseModel):
     """A Polymarket US market order."""
 
     market_slug: str = Field(min_length=1)
-    outcome: str
+    position_side: Optional[str] = None
+    # Compatibility only for direct clients that still use an endpoint where
+    # YES/NO has a verified direction. Rust always sends position_side.
+    outcome: Optional[str] = None
     side: str
     amount: float = Field(gt=0)
     price: Optional[float] = Field(default=None, gt=0, lt=1)
     order_type: str = "FAK"
 
+    @field_validator("position_side")
+    @classmethod
+    def validate_position_side(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        position_side = value.lower()
+        if position_side not in {"long", "short"}:
+            raise ValueError("position_side must be 'long' or 'short'")
+        return position_side
+
     @field_validator("outcome")
     @classmethod
-    def validate_outcome(cls, value: str) -> str:
+    def validate_outcome(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
         outcome = value.lower()
         if outcome not in {"yes", "no"}:
             raise ValueError("outcome must be 'yes' or 'no'")
@@ -54,6 +69,14 @@ class MarketOrderRequest(BaseModel):
         if side not in {"buy", "sell"}:
             raise ValueError("side must be 'buy' or 'sell'")
         return side
+
+    @model_validator(mode="after")
+    def require_position_side(self) -> "MarketOrderRequest":
+        if self.position_side is None:
+            if self.outcome is None:
+                raise ValueError("position_side is required")
+            self.position_side = "long" if self.outcome == "yes" else "short"
+        return self
 
 
 class LimitOrderRequest(MarketOrderRequest):
@@ -122,9 +145,9 @@ def init_polymarket_client() -> PolymarketUS:
     return polymarket_client
 
 
-def order_intent(outcome: str, side: str) -> str:
-    """Map the local YES/NO action to the US API's explicit order intent."""
-    return f"ORDER_INTENT_{side.upper()}_{'LONG' if outcome == 'yes' else 'SHORT'}"
+def order_intent(position_side: str, side: str) -> str:
+    """Build the official US SDK intent from an explicit position direction."""
+    return f"ORDER_INTENT_{side.upper()}_{position_side.upper()}"
 
 
 def order_status(order: dict[str, Any]) -> Optional[str]:
@@ -135,7 +158,7 @@ def market_order_params(request: MarketOrderRequest) -> dict[str, Any]:
     """Build an SDK payload without applying client-side price fallbacks."""
     params: dict[str, Any] = {
         "marketSlug": request.market_slug,
-        "intent": order_intent(request.outcome, request.side),
+        "intent": order_intent(request.position_side, request.side),
         "type": "ORDER_TYPE_MARKET",
         "tif": TIF_MAP.get(request.order_type.upper(), TIF_MAP["FAK"]),
         "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
@@ -157,7 +180,7 @@ def market_order_params(request: MarketOrderRequest) -> dict[str, Any]:
 def limit_order_params(request: LimitOrderRequest) -> dict[str, Any]:
     return {
         "marketSlug": request.market_slug,
-        "intent": order_intent(request.outcome, request.side),
+        "intent": order_intent(request.position_side, request.side),
         "type": "ORDER_TYPE_LIMIT",
         "price": {"value": str(request.price), "currency": "USD"},
         "quantity": request.size,

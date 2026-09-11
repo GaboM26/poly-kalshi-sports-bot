@@ -28,11 +28,11 @@ pub enum Operation {
 impl Operation {
     fn name(&self) -> &'static str {
         match self {
-            Operation::KalshiWsProcess => "Kalshi WS 处理",
-            Operation::PolyWsProcess => "Polymarket WS 处理",
-            Operation::ArbitrageCalc => "套利计算",
-            Operation::FullScan => "全市场扫描",
-            Operation::MarketMatch => "市场匹配",
+            Operation::KalshiWsProcess => "Kalshi WebSocket Processing",
+            Operation::PolyWsProcess => "Polymarket WebSocket Processing",
+            Operation::ArbitrageCalc => "Arbitrage Calculation",
+            Operation::FullScan => "Full Market Scan",
+            Operation::MarketMatch => "Market Matching",
         }
     }
 }
@@ -328,7 +328,7 @@ mod tests {
         let arb_stats = report
             .operations
             .iter()
-            .find(|s| s.name == "套利计算")
+            .find(|s| s.name == "Arbitrage Calculation")
             .unwrap();
 
         assert_eq!(arb_stats.count, 2);
@@ -349,7 +349,7 @@ mod tests {
         let scan_stats = report
             .operations
             .iter()
-            .find(|s| s.name == "全市场扫描")
+            .find(|s| s.name == "Full Market Scan")
             .unwrap();
 
         assert_eq!(scan_stats.count, 1);
@@ -385,7 +385,7 @@ mod tests {
         let arb_stats = report
             .operations
             .iter()
-            .find(|s| s.name == "套利计算")
+            .find(|s| s.name == "Arbitrage Calculation")
             .unwrap();
 
         assert_eq!(arb_stats.count, 0);

@@ -24,6 +24,8 @@ export function useWebSocket(url: string) {
     full_coverage: '0/0',
     kalshi_connected: false,
     polymarket_connected: false,
+    kalshi_source: 'rest_polling',
+    polymarket_source: 'rest_polling',
   });
   const [metrics, setMetrics] = useState<MetricsReport | null>(null);
   const wsRef = useRef<WebSocket | null>(null);

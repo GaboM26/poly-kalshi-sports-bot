@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::sync::mpsc;
@@ -13,8 +13,13 @@ use tracing::{error, info};
 use crate::clients::{KalshiClient, PolymarketClient};
 use crate::config::Config;
 use crate::core::{EventMatcher, SubscriptionInfo};
-use crate::models::{ArbitrageOpportunity, MatchedEvent, MatchedMarket, PriceUpdate, SystemStats};
+use crate::models::{
+    ArbitrageOpportunity, MatchedEvent, MatchedMarket, PolymarketPositionSide, PriceUpdate,
+    SystemStats,
+};
 use crate::services::{ArbitrageStorage, Operation, PerformanceMetrics, WebSocketManager};
+
+const MIN_REST_QUOTE_REFRESH_SECS: u64 = 5;
 
 /// Arbitrage service
 pub struct ArbitrageService {
@@ -42,9 +47,9 @@ impl ArbitrageService {
         let kalshi_client = KalshiClient::new(config.kalshi.clone())?;
         let mut polymarket_client = PolymarketClient::new(config.polymarket.clone());
 
-        // Initialize Polymarket CLOB for order placement
-        if let Err(e) = polymarket_client.init_clob().await {
-            info!("Polymarket CLOB initialization skipped: {}", e);
+        // Check the official Polymarket US order service for manual orders.
+        if let Err(e) = polymarket_client.init_order_service().await {
+            info!("Polymarket US order service initialization skipped: {}", e);
         }
 
         // Create matcher
@@ -57,10 +62,17 @@ impl ArbitrageService {
             config.settings.tracking_threshold,
             storage.clone(),
             metrics.clone(),
+            Duration::from_secs(
+                config
+                    .settings
+                    .refresh_interval
+                    .max(MIN_REST_QUOTE_REFRESH_SECS)
+                    .saturating_mul(2),
+            ),
         );
 
-        // Set clients for orderbook depth queries
-        ws_manager.set_clients(kalshi_client.clone(), polymarket_client.clone());
+        // Kalshi's live order book remains the only executable-depth source.
+        ws_manager.set_kalshi_client(kalshi_client.clone());
 
         // Load excluded markets from database
         ws_manager.load_excluded_markets();
@@ -81,17 +93,21 @@ impl ArbitrageService {
 
     /// Initialize the service by fetching and matching markets
     pub async fn initialize(&mut self) -> Result<()> {
-        info!("🔍 Fetching market data from both platforms...");
+        info!("🔍 Fetching supported NBA and tennis match-winner data from both platforms...");
 
         // Fetch data from both platforms
-        let (kalshi_events, kalshi_markets) =
-            self.kalshi_client.get_nba_events_and_markets().await?;
+        let (kalshi_events, kalshi_markets) = self
+            .kalshi_client
+            .get_supported_events_and_markets()
+            .await?;
 
-        let (polymarket_events, polymarket_markets) =
-            self.polymarket_client.get_nba_events_and_markets().await?;
+        let (polymarket_events, polymarket_markets) = self
+            .polymarket_client
+            .get_supported_events_and_markets()
+            .await?;
 
         info!(
-            "📊 Loaded: Kalshi {} events/{} markets, Polymarket {} events/{} markets",
+            "📊 Loaded supported sports: Kalshi {} events/{} markets, Polymarket {} events/{} markets",
             kalshi_events.len(),
             kalshi_markets.len(),
             polymarket_events.len(),
@@ -114,10 +130,27 @@ impl ArbitrageService {
 
         // Configure WebSocket manager
         self.ws_manager.set_matched_markets(matched_markets);
+        let refreshed_polymarket_quotes = self
+            .ws_manager
+            .update_polymarket_rest_quotes(&polymarket_markets);
+        let kalshi_tickers = self.ws_manager.get_kalshi_quote_tickers();
+        let refreshed_kalshi_quotes =
+            match self.kalshi_client.get_market_quotes(&kalshi_tickers).await {
+                Ok(quotes) => self.ws_manager.update_kalshi_rest_quotes(&quotes),
+                Err(error) => {
+                    tracing::warn!(
+                        "Initial authoritative Kalshi REST quote refresh failed: {}",
+                        error
+                    );
+                    0
+                }
+            };
 
         info!(
-            "✅ Initialization complete: {} matched markets",
-            self.matched_markets.len()
+            "✅ Initialization complete: {} matched markets, {} Kalshi and {} Polymarket REST quote updates",
+            self.matched_markets.len(),
+            refreshed_kalshi_quotes,
+            refreshed_polymarket_quotes,
         );
 
         Ok(())
@@ -128,19 +161,16 @@ impl ArbitrageService {
         &self,
         price_tx: mpsc::Sender<PriceUpdate>,
     ) -> Result<()> {
-        let (kalshi_tickers, poly_tokens) = self.ws_manager.get_subscription_ids();
+        let kalshi_tickers = self.ws_manager.get_kalshi_subscription_ids();
 
         info!(
-            "📡 Starting WebSocket connections: {} Kalshi markets, {} Polymarket tokens",
-            kalshi_tickers.len(),
-            poly_tokens.len()
+            "📡 Starting WebSocket connections: {} Kalshi markets; Polymarket US uses REST quotes",
+            kalshi_tickers.len()
         );
 
         let kalshi_client = self.kalshi_client.clone();
-        let polymarket_client = self.polymarket_client.clone();
 
         let price_tx_kalshi = price_tx.clone();
-        let price_tx_poly = price_tx.clone();
 
         // Spawn Kalshi WebSocket
         let kalshi_tickers_clone = kalshi_tickers.clone();
@@ -159,29 +189,13 @@ impl ArbitrageService {
             }
         });
 
-        // Spawn Polymarket WebSocket
-        let poly_tokens_clone = poly_tokens.clone();
-        tokio::spawn(async move {
-            loop {
-                if let Err(e) = polymarket_client
-                    .connect_websocket(poly_tokens_clone.clone(), price_tx_poly.clone())
-                    .await
-                {
-                    error!(
-                        "Polymarket WebSocket error: {}. Reconnecting in 5 seconds...",
-                        e
-                    );
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                }
-            }
-        });
-
         Ok(())
     }
 
     /// Run periodic market scanning
     pub async fn run_periodic_scan(&self, interval_secs: u64) {
         let ws_manager = self.ws_manager.clone();
+        let interval_secs = interval_secs.max(MIN_REST_QUOTE_REFRESH_SECS);
 
         tokio::spawn(async move {
             let mut interval =
@@ -200,6 +214,113 @@ impl ArbitrageService {
                             .map(|o| o.profit_margin)
                             .unwrap_or(0.0)
                     );
+                }
+            }
+        });
+    }
+
+    /// Poll the Polymarket US gateway for current quotes on the same feed used
+    /// by discovery. CLOB order books remain separate and are never inferred
+    /// from the gateway's market-side IDs.
+    pub async fn run_polymarket_quote_refresh(&self, requested_interval_secs: u64) {
+        let interval_secs = requested_interval_secs.max(MIN_REST_QUOTE_REFRESH_SECS);
+        if interval_secs != requested_interval_secs {
+            tracing::warn!(
+                "Polymarket quote refresh interval {}s is too low; clamping to {}s",
+                requested_interval_secs,
+                interval_secs
+            );
+        }
+
+        let polymarket_client = self.polymarket_client.clone();
+        let ws_manager = self.ws_manager.clone();
+
+        tokio::spawn(async move {
+            info!(
+                "📡 Polymarket US REST quote refresh started, interval {} seconds",
+                interval_secs
+            );
+            let mut interval =
+                tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
+
+            loop {
+                interval.tick().await;
+
+                match polymarket_client.get_supported_events_and_markets().await {
+                    Ok((_, markets)) => {
+                        let updated = ws_manager.update_polymarket_rest_quotes(&markets);
+                        let matched_count = ws_manager.matched_markets.read().len();
+                        if matched_count > 0 && updated == 0 {
+                            tracing::warn!(
+                                "Polymarket US REST quote refresh returned no quotes for {} matched markets",
+                                matched_count
+                            );
+                        } else {
+                            info!(
+                                "✅ Polymarket US REST quote refresh updated {} matched markets",
+                                updated
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        error!("❌ Polymarket US REST quote refresh failed: {}", e);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Poll authoritative Kalshi REST asks for currently matched tickers.
+    ///
+    /// The WebSocket order-book cache stays independent and remains the only
+    /// source allowed to satisfy execution-depth checks.
+    pub async fn run_kalshi_quote_refresh(&self, requested_interval_secs: u64) {
+        let interval_secs = requested_interval_secs.max(MIN_REST_QUOTE_REFRESH_SECS);
+        if interval_secs != requested_interval_secs {
+            tracing::warn!(
+                "Kalshi quote refresh interval {}s is too low; clamping to {}s",
+                requested_interval_secs,
+                interval_secs
+            );
+        }
+
+        let kalshi_client = self.kalshi_client.clone();
+        let ws_manager = self.ws_manager.clone();
+
+        tokio::spawn(async move {
+            info!(
+                "📡 Kalshi authoritative REST quote refresh started, interval {} seconds",
+                interval_secs
+            );
+            let mut interval =
+                tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
+
+            loop {
+                interval.tick().await;
+                let tickers = ws_manager.get_kalshi_quote_tickers();
+                if tickers.is_empty() {
+                    continue;
+                }
+
+                match kalshi_client.get_market_quotes(&tickers).await {
+                    Ok(quotes) => {
+                        let updated = ws_manager.update_kalshi_rest_quotes(&quotes);
+                        if updated != tickers.len() {
+                            tracing::warn!(
+                                "Kalshi REST quote refresh updated {}/{} matched tickers",
+                                updated,
+                                tickers.len()
+                            );
+                        } else {
+                            info!(
+                                "✅ Kalshi REST quote refresh updated {} matched tickers",
+                                updated
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        error!("❌ Kalshi REST quote refresh failed: {}", error);
+                    }
                 }
             }
         });
@@ -241,12 +362,13 @@ impl ArbitrageService {
     pub async fn place_polymarket_order(
         &self,
         market_slug: &str,
-        outcome: &str,
+        position_side: PolymarketPositionSide,
         side: &str,
-        amount: f64,
+        contracts: i32,
+        price: f64,
     ) -> Result<serde_json::Value> {
         self.polymarket_client
-            .place_market_order(market_slug, outcome, side, amount)
+            .place_limit_order(market_slug, position_side, side, contracts, price)
             .await
     }
 
@@ -281,7 +403,7 @@ impl ArbitrageService {
 
         // 2. Fetch fresh market data
         let (kalshi_events, kalshi_markets) =
-            match self.kalshi_client.get_nba_events_and_markets().await {
+            match self.kalshi_client.get_supported_events_and_markets().await {
                 Ok(data) => data,
                 Err(e) => {
                     error!("❌ Failed to fetch Kalshi market data: {}", e);
@@ -289,14 +411,17 @@ impl ArbitrageService {
                 }
             };
 
-        let (polymarket_events, polymarket_markets) =
-            match self.polymarket_client.get_nba_events_and_markets().await {
-                Ok(data) => data,
-                Err(e) => {
-                    error!("❌ Failed to fetch Polymarket market data: {}", e);
-                    return Ok((Vec::new(), SubscriptionInfo::empty()));
-                }
-            };
+        let (polymarket_events, polymarket_markets) = match self
+            .polymarket_client
+            .get_supported_events_and_markets()
+            .await
+        {
+            Ok(data) => data,
+            Err(e) => {
+                error!("❌ Failed to fetch Polymarket market data: {}", e);
+                return Ok((Vec::new(), SubscriptionInfo::empty()));
+            }
+        };
 
         info!(
             "   Scan state after scan: Kalshi {} events/{} markets, Polymarket {} events/{} markets",
@@ -351,9 +476,8 @@ impl ArbitrageService {
         let new_sub_info = self.matcher.get_subscription_info(&new_matched_markets);
 
         info!(
-            "   📡 New subscription requirements: Kalshi {} markets, Polymarket {} tokens",
-            new_sub_info.kalshi_tickers.len(),
-            new_sub_info.polymarket_token_ids.len()
+            "   📡 New subscription requirements: Kalshi {} markets; Polymarket US uses REST quotes",
+            new_sub_info.kalshi_tickers.len()
         );
         info!("============================================================");
 

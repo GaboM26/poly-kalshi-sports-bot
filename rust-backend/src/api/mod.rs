@@ -53,6 +53,12 @@ pub async fn create_app(config: Config) -> Result<Router> {
     service
         .run_periodic_scan(config.settings.refresh_interval)
         .await;
+    service
+        .run_polymarket_quote_refresh(config.settings.refresh_interval)
+        .await;
+    service
+        .run_kalshi_quote_refresh(config.settings.refresh_interval)
+        .await;
 
     // Initialize Telegram client
     let telegram_client = Arc::new(TelegramClient::new(config.telegram.clone()));
@@ -166,26 +172,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
                             }
                         };
 
-                        let poly_success = {
-                            let service = state_for_scanner.service.read().await;
-                            if !sub_info.polymarket_token_ids.is_empty() {
-                                match service
-                                    .polymarket_client
-                                    .subscribe_tokens(sub_info.polymarket_token_ids.clone())
-                                    .await
-                                {
-                                    Ok(success) => success,
-                                    Err(e) => {
-                                        error!("❌ Polymarket hot-subscription failed: {}", e);
-                                        false
-                                    }
-                                }
-                            } else {
-                                true
-                            }
-                        };
-
-                        if kalshi_success && poly_success {
+                        if kalshi_success {
                             let service = state_for_scanner.service.read().await;
                             let total_markets =
                                 service.ws_manager.get_matched_markets_for_frontend().len();
@@ -512,739 +499,63 @@ async fn check_and_queue_auto_trade(state: &Arc<AppState>, _metrics: &Arc<Perfor
 /// Execute auto-trade for a single opportunity (extracted from original for loop)
 async fn execute_single_auto_trade(
     service: &ArbitrageService,
-    state: &Arc<AppState>,
-    metrics: &Arc<PerformanceMetrics>,
+    _state: &Arc<AppState>,
+    _metrics: &Arc<PerformanceMetrics>,
     key: &str,
 ) {
-    // Revalidate opportunity (may have expired)
     let (record, duration_ms) = match service.ws_manager.get_tracking_record(key) {
-        Some((r, d)) => (r, d),
+        Some((record, duration_ms)) => (record, duration_ms),
         None => {
-            info!("⚠️  [Auto-trade] Opportunity no longer exists: {}", key);
+            info!("⚠️ [Auto-trade] Opportunity no longer exists: {}", key);
             return;
         }
     };
 
-    // Recheck eligibility
     let auto_state = service.ws_manager.get_auto_trade_state();
     let (eligible, reason) = service
         .ws_manager
         .check_auto_trade_eligibility(key, duration_ms);
-
     if !eligible {
         info!(
-            "⚠️  [Auto-trade] Opportunity no longer meets conditions: {} - {}",
+            "⚠️ [Auto-trade] Opportunity no longer meets conditions: {} - {}",
             key, reason
         );
         return;
     }
 
-    // Get current opportunity data
     let opportunity = match service.ws_manager.get_opportunity_by_key(key) {
-        Some(opp) => opp,
+        Some(opportunity) => opportunity,
         None => {
-            info!("⚠️  [Auto-trade] Opportunity data does not exist: {}", key);
+            info!("⚠️ [Auto-trade] Opportunity data does not exist: {}", key);
             return;
         }
     };
 
-    info!("🤖 [Auto-trade] Found a valid arbitrage opportunity:");
-    info!("   Event: {} - {}", record.event_name, record.team_name);
+    // The US gateway provides display quotes but no verified executable order
+    // book quantity. A paired automated trade must never place either leg
+    // without verified liquidity on both exchanges.
+    let skip_reason = "Polymarket US executable liquidity is unavailable";
     info!(
-        "   Duration: {}ms, profit margin: {:.2}%",
-        duration_ms, opportunity.profit_margin
+        "⚠️ [Auto-trade] {}: {} - {}",
+        skip_reason, record.event_name, record.team_name
     );
-    info!("   Reason: {}", reason);
-    info!(
-        "   Mode: {} (min={}, max={})",
-        if auto_state.flexible_mode {
-            "flexible"
-        } else {
-            "fixed"
-        },
-        auto_state.min_contracts,
-        auto_state.max_contracts
-    );
-
-    // Get poly token first for depth validation
-    let poly_token = match service.ws_manager.get_poly_token_for_side(
-        &record.event_name,
-        &record.team_name,
-        &opportunity.polymarket_side,
-    ) {
-        Some(token) => token,
-        None => {
-            let skip_reason = format!(
-                "Unable to fetch Polymarket token ({} side)",
-                opportunity.polymarket_side
-            );
-            error!(
-                "❌ {}: {} - {}",
-                skip_reason, record.event_name, record.team_name
-            );
-            if service.ws_manager.should_record_skip(&key, &skip_reason) {
-                let storage = service.ws_manager.get_storage();
-                let _ = storage.save_skipped_auto_trade_record(
-                    &record.event_name,
-                    &record.team_name,
-                    &record.kalshi_market_id,
-                    &record.polymarket_market_id,
-                    &opportunity.kalshi_side,
-                    &opportunity.polymarket_side,
-                    auto_state.min_contracts,
-                    opportunity.kalshi_price,
-                    opportunity.polymarket_price,
-                    opportunity.profit_margin,
-                    duration_ms,
-                    &skip_reason,
-                );
-            }
-            return;
-        }
-    };
-
-    // Get depth information for contract calculation
-    let kalshi_depth = service
-        .ws_manager
-        .get_kalshi_ask_depth(&record.kalshi_market_id, &opportunity.kalshi_side);
-
-    // Get poly depth in contracts (depth_usd / price = contracts)
-    let (poly_depth_usd, _poly_size) = service.ws_manager.get_poly_ask_depth_and_size(&poly_token);
-    let poly_depth_contracts = if opportunity.polymarket_price > 0.0 {
-        (poly_depth_usd / opportunity.polymarket_price).floor() as i32
-    } else {
-        0
-    };
-
-    info!(
-        "   Depth: Kalshi={} contracts, Poly={} contracts (${:.2})",
-        kalshi_depth, poly_depth_contracts, poly_depth_usd
-    );
-
-    // Calculate contracts to trade using flexible/fixed logic
-    let contracts_to_trade = match calculate_contracts_to_trade(
-        kalshi_depth,
-        poly_depth_contracts,
-        auto_state.flexible_mode,
-        auto_state.min_contracts,
-        auto_state.max_contracts,
-    ) {
-        Some(c) => c,
-        None => {
-            let skip_reason = format!(
-                "Depth too low: Kalshi={}, Poly={} (minimum required {} contracts)",
-                kalshi_depth, poly_depth_contracts, auto_state.min_contracts
-            );
-            info!("   ⚠️ {}", skip_reason);
-            if service.ws_manager.should_record_skip(&key, &skip_reason) {
-                let storage = service.ws_manager.get_storage();
-                let _ = storage.save_skipped_auto_trade_record(
-                    &record.event_name,
-                    &record.team_name,
-                    &record.kalshi_market_id,
-                    &record.polymarket_market_id,
-                    &opportunity.kalshi_side,
-                    &opportunity.polymarket_side,
-                    auto_state.min_contracts,
-                    opportunity.kalshi_price,
-                    opportunity.polymarket_price,
-                    opportunity.profit_margin,
-                    duration_ms,
-                    &skip_reason,
-                );
-            }
-            return;
-        }
-    };
-
-    info!(
-        "   Calculated contract count: {} contracts",
-        contracts_to_trade
-    );
-
-    // Calculate amounts based on contracts
-    let kalshi_contracts = contracts_to_trade;
-    let kalshi_bet = contracts_to_trade as f64 * opportunity.kalshi_price;
-
-    // Calculate Kalshi trading fee: fee = 0.07 × C × P × (1-P), rounded up to cent
-    let kalshi_fee_raw = 0.07
-        * kalshi_contracts as f64
-        * opportunity.kalshi_price
-        * (1.0 - opportunity.kalshi_price);
-    let kalshi_fee = (kalshi_fee_raw * 100.0).ceil() / 100.0;
-
-    // Polymarket: same number of "contracts" (equivalent amount), no trading fee
-    let poly_amount = contracts_to_trade as f64 * opportunity.polymarket_price;
-
-    // Calculate total investment including fees
-    let total_bet = kalshi_bet + kalshi_fee + poly_amount;
-
-    // Verify total doesn't exceed max_amount
-    if total_bet > auto_state.max_amount {
-        let skip_reason = format!(
-            "Total stake ${:.2} exceeds limit ${:.2}",
-            total_bet, auto_state.max_amount
-        );
-        info!("   ⚠️ {}", skip_reason);
-        if service.ws_manager.should_record_skip(&key, &skip_reason) {
-            let storage = service.ws_manager.get_storage();
-            let _ = storage.save_skipped_auto_trade_record(
-                &record.event_name,
-                &record.team_name,
-                &record.kalshi_market_id,
-                &record.polymarket_market_id,
-                &opportunity.kalshi_side,
-                &opportunity.polymarket_side,
-                contracts_to_trade,
-                opportunity.kalshi_price,
-                opportunity.polymarket_price,
-                opportunity.profit_margin,
-                duration_ms,
-                &skip_reason,
-            );
-        }
-        return;
-    }
-
-    // === Balance check from local cache (no API call needed) ===
-    let (kalshi_balance, poly_balance) = metrics.get_cached_balances();
-
-    let kalshi_required = kalshi_bet + kalshi_fee;
-    let poly_required = poly_amount;
-
-    match (kalshi_balance, poly_balance) {
-        (Some(k_bal), Some(p_bal)) => {
-            if k_bal < kalshi_required {
-                let skip_reason = format!(
-                    "Kalshi balance insufficient: required ${:.2}, available ${:.2}",
-                    kalshi_required, k_bal
-                );
-                info!("   ⚠️ {}", skip_reason);
-                if service.ws_manager.should_record_skip(&key, &skip_reason) {
-                    let storage = service.ws_manager.get_storage();
-                    let _ = storage.save_skipped_auto_trade_record(
-                        &record.event_name,
-                        &record.team_name,
-                        &record.kalshi_market_id,
-                        &record.polymarket_market_id,
-                        &opportunity.kalshi_side,
-                        &opportunity.polymarket_side,
-                        contracts_to_trade,
-                        opportunity.kalshi_price,
-                        opportunity.polymarket_price,
-                        opportunity.profit_margin,
-                        duration_ms,
-                        &skip_reason,
-                    );
-                }
-                return;
-            }
-            if p_bal < poly_required {
-                let skip_reason = format!(
-                    "Polymarket balance insufficient: required ${:.2}, available ${:.2}",
-                    poly_required, p_bal
-                );
-                info!("   ⚠️ {}", skip_reason);
-                if service.ws_manager.should_record_skip(&key, &skip_reason) {
-                    let storage = service.ws_manager.get_storage();
-                    let _ = storage.save_skipped_auto_trade_record(
-                        &record.event_name,
-                        &record.team_name,
-                        &record.kalshi_market_id,
-                        &record.polymarket_market_id,
-                        &opportunity.kalshi_side,
-                        &opportunity.polymarket_side,
-                        contracts_to_trade,
-                        opportunity.kalshi_price,
-                        opportunity.polymarket_price,
-                        opportunity.profit_margin,
-                        duration_ms,
-                        &skip_reason,
-                    );
-                }
-                return;
-            }
-            info!(
-                "   ✅ Balance check passed: Kalshi ${:.2}/{:.2}, Poly ${:.2}/{:.2}",
-                kalshi_required, k_bal, poly_required, p_bal
-            );
-        }
-        _ => {
-            info!("   ⚠️ Balance cache not ready yet; skipping balance check (waiting for next ping_apis refresh)");
-        }
-    }
-
-    // === Pre-order depth and price validation from local orderbook cache ===
-    let (
-        depth_valid,
-        validated_k_depth,
-        validated_p_depth,
-        current_k_price,
-        current_p_price,
-        validation_reason,
-    ) = service.ws_manager.validate_auto_trade_depth(
-        &record.kalshi_market_id,
-        &opportunity.kalshi_side,
-        &poly_token,
-        contracts_to_trade,
-    );
-
-    if !depth_valid {
-        info!(
-            "   ⚠️ [Depth/price check] Skipping order: {}",
-            validation_reason
-        );
-        if service
-            .ws_manager
-            .should_record_skip(&key, &validation_reason)
-        {
-            let storage = service.ws_manager.get_storage();
-            let _ = storage.save_skipped_auto_trade_record(
-                &record.event_name,
-                &record.team_name,
-                &record.kalshi_market_id,
-                &record.polymarket_market_id,
-                &opportunity.kalshi_side,
-                &opportunity.polymarket_side,
-                contracts_to_trade,
-                opportunity.kalshi_price,
-                opportunity.polymarket_price,
-                opportunity.profit_margin,
-                duration_ms,
-                &validation_reason,
-            );
-        }
-        return;
-    }
-
-    info!("   ✅ [Depth/price check] {}", validation_reason);
-    info!(
-        "      Kalshi depth: {} contracts, Poly depth: ${:.2}",
-        validated_k_depth, validated_p_depth
-    );
-    info!(
-        "      Current prices: K={:.4}, P={:.4}, combined={:.4}",
-        current_k_price,
-        current_p_price,
-        current_k_price + current_p_price
-    );
-
-    // Recalculate amounts using current prices from local orderbook
-    let kalshi_price_cents = (current_k_price * 100.0).round() as i32;
-    let kalshi_bet = contracts_to_trade as f64 * current_k_price;
-    let kalshi_fee_raw = 0.07 * kalshi_contracts as f64 * current_k_price * (1.0 - current_k_price);
-    let kalshi_fee = (kalshi_fee_raw * 100.0).ceil() / 100.0;
-    let poly_amount = contracts_to_trade as f64 * current_p_price;
-    let total_bet = kalshi_bet + kalshi_fee + poly_amount;
-
-    // Check if either side price exceeds 0.90 (90 cents) - avoid late-stage markets
-    if current_k_price > 0.90 || current_p_price > 0.90 {
-        let skip_reason = format!(
-            "High-risk price spike - Kalshi: {:.4}, Polymarket: {:.4} (either side exceeds 0.90)",
-            current_k_price, current_p_price
-        );
-        info!("   ⚠️ {}", skip_reason);
-        if service.ws_manager.should_record_skip(&key, &skip_reason) {
-            let storage = service.ws_manager.get_storage();
-            let _ = storage.save_skipped_auto_trade_record(
-                &record.event_name,
-                &record.team_name,
-                &record.kalshi_market_id,
-                &record.polymarket_market_id,
-                &opportunity.kalshi_side,
-                &opportunity.polymarket_side,
-                contracts_to_trade,
-                current_k_price,
-                current_p_price,
-                opportunity.profit_margin,
-                duration_ms,
-                &skip_reason,
-            );
-        }
-        return;
-    }
-
-    // Check if either side price is below 0.10 (10 cents) - avoid low-probability markets
-    if current_k_price < 0.10 || current_p_price < 0.10 {
-        let skip_reason = format!(
-            "Low-risk price floor - Kalshi: {:.4}, Polymarket: {:.4} (either side below 0.10)",
-            current_k_price, current_p_price
-        );
-        info!("   ⚠️ {}", skip_reason);
-        if service.ws_manager.should_record_skip(&key, &skip_reason) {
-            let storage = service.ws_manager.get_storage();
-            let _ = storage.save_skipped_auto_trade_record(
-                &record.event_name,
-                &record.team_name,
-                &record.kalshi_market_id,
-                &record.polymarket_market_id,
-                &opportunity.kalshi_side,
-                &opportunity.polymarket_side,
-                contracts_to_trade,
-                current_k_price,
-                current_p_price,
-                opportunity.profit_margin,
-                duration_ms,
-                &skip_reason,
-            );
-        }
-        return;
-    }
-
-    // Re-verify total doesn't exceed max_amount with updated prices
-    if total_bet > auto_state.max_amount {
-        let skip_reason = format!(
-            "Updated price total stake ${:.2} exceeds limit ${:.2}",
-            total_bet, auto_state.max_amount
-        );
-        info!("   ⚠️ {}", skip_reason);
-        if service.ws_manager.should_record_skip(&key, &skip_reason) {
-            let storage = service.ws_manager.get_storage();
-            let _ = storage.save_skipped_auto_trade_record(
-                &record.event_name,
-                &record.team_name,
-                &record.kalshi_market_id,
-                &record.polymarket_market_id,
-                &opportunity.kalshi_side,
-                &opportunity.polymarket_side,
-                contracts_to_trade,
-                current_k_price,
-                current_p_price,
-                opportunity.profit_margin,
-                duration_ms,
-                &skip_reason,
-            );
-        }
-        return;
-    }
-
-    info!(
-        "   📊 Order calculation ({} {} contracts, using latest prices):",
-        if auto_state.flexible_mode {
-            "flexible"
-        } else {
-            "fixed"
-        },
-        contracts_to_trade
-    );
-    info!(
-        "      Kalshi: {} contracts @ {:.2}¢ = ${:.2} + fee ${:.2} ({} side)",
-        kalshi_contracts, kalshi_price_cents, kalshi_bet, kalshi_fee, opportunity.kalshi_side
-    );
-    info!(
-        "      Polymarket: {} contracts equivalent = ${:.4} ({} side)",
-        contracts_to_trade, poly_amount, opportunity.polymarket_side
-    );
-    info!(
-        "      Total stake: ${:.2} (including fees) / ${:.2}",
-        total_bet, auto_state.max_amount
-    );
-
-    // === DETAILED PRE-ORDER LOGGING ===
-    info!("════════════════════════════════════════════════════════════");
-    info!("📝 [Auto-trade detailed context]");
-    info!("   Market information:");
-    info!("      Event name: {}", record.event_name);
-    info!("      Team name: {}", record.team_name);
-    info!("      Market key: {}", key);
-    info!("      Game date: {:?}", record.game_date);
-    info!("   Kalshi order:");
-    info!("      market_id: {}", record.kalshi_market_id);
-    info!(
-        "      side: {} (buy {} side)",
-        opportunity.kalshi_side, opportunity.kalshi_side
-    );
-    info!("      contracts: {}", kalshi_contracts);
-    info!("      price_cents: {}", kalshi_price_cents);
-    info!("      Current price: {:.4}", current_k_price);
-    info!("   Polymarket order:");
-    info!("      token_id: {}", poly_token);
-    info!(
-        "      token_id (first 20 chars): {}...",
-        &poly_token[..20.min(poly_token.len())]
-    );
-    info!("      side: buy (buy {} side)", opportunity.polymarket_side);
-    info!("      amount: {:.4}", poly_amount);
-    info!("      Current price: {:.4}", current_p_price);
-    info!("   Raw opportunity data:");
-    info!(
-        "      polymarket_market_id: {}",
-        record.polymarket_market_id
-    );
-    info!("      profit_margin: {:.4}%", opportunity.profit_margin);
-    info!("      duration_ms: {}", duration_ms);
-
-    // Write to debug log for post-mortem analysis
-    {
-        use std::io::Write;
-        let debug_log = serde_json::json!({
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-            "location": "api/mod.rs:auto_trade_execution",
-        "message": "Auto-trade execution pre-context",
-            "data": {
-                "event_name": &record.event_name,
-                "team_name": &record.team_name,
-                "market_key": &key,
-                "game_date": format!("{:?}", record.game_date),
-                "kalshi": {
-                    "market_id": &record.kalshi_market_id,
-                    "side": &opportunity.kalshi_side,
-                    "contracts": kalshi_contracts,
-                    "price_cents": kalshi_price_cents,
-                    "current_price": current_k_price,
-                },
-                "polymarket": {
-                    "token_id": &poly_token,
-                    "market_id": &record.polymarket_market_id,
-                    "side": &opportunity.polymarket_side,
-                    "amount": poly_amount,
-                    "current_price": current_p_price,
-                },
-                "opportunity": {
-                    "profit_margin": opportunity.profit_margin,
-                    "duration_ms": duration_ms,
-                },
-                "amounts": {
-                    "kalshi_bet": kalshi_bet,
-                    "kalshi_fee": kalshi_fee,
-                    "poly_amount": poly_amount,
-                    "total_bet": total_bet,
-                }
-            }
-        });
-        let path = crate::utils::get_debug_log_path();
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-        {
-            let _ = writeln!(f, "{}", debug_log.to_string());
-        }
-    }
-    info!("════════════════════════════════════════════════════════════");
-
-    // Mark as auto-traded BEFORE executing (to prevent duplicate orders)
-    service.ws_manager.mark_as_auto_traded(&key);
-
-    // End tracking for this opportunity (mark as completed in arbitrage_tracking table)
-    // This ensures the tracking record has end_time set and can be queried later
-    service.storage.track_end(&key);
-
-    // Record execution start time for measuring order latency
-    let exec_start = Instant::now();
-
-    // Execute orders SEQUENTIALLY: Polymarket first, then Kalshi
-    // This ensures Poly order is confirmed before placing Kalshi order
-    info!("🚀 [Sequential order execution] Polymarket first, then Kalshi...");
-    info!(
-        "   Poly: {} tokens, expected USDC={:.4}",
-        contracts_to_trade, poly_amount
-    );
-    info!(
-        "   Kalshi: {} contracts @ {}¢",
-        kalshi_contracts, kalshi_price_cents
-    );
-
-    // Step 1: Place Polymarket order first
-    let poly_start = Instant::now();
-    let poly_result = service
-        .polymarket_client
-        .place_market_order_by_tokens(&poly_token, "buy", contracts_to_trade as f64)
-        .await;
-    let poly_latency_ms = poly_start.elapsed().as_millis() as i64;
-
-    // Check if Poly order succeeded
-    let poly_success = poly_result.is_ok();
-    let (poly_order_id, poly_error) = match &poly_result {
-        Ok(res) => {
-            let order_id = res
-                .get("order_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let status = res
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-
-            // Check if order actually matched
-            if status.to_uppercase() == "MATCHED" {
-                info!(
-                    "✅ Poly order filled successfully: order_id={:?}, status={}",
-                    order_id, status
-                );
-                (order_id, None)
-            } else {
-                warn!(
-                    "⚠️ Poly order did not fill: status={}, canceling Kalshi order",
-                    status
-                );
-                (
-                    order_id,
-                    Some(format!(
-                        "Order status is {}, not immediately filled",
-                        status
-                    )),
-                )
-            }
-        }
-        Err(e) => {
-            warn!("❌ Poly order failed: {}, canceling Kalshi order", e);
-            (None, Some(e.to_string()))
-        }
-    };
-
-    // Step 2: Only place Kalshi order if Poly succeeded AND matched
-    let (kalshi_result, kalshi_latency_ms) = if poly_success && poly_error.is_none() {
-        info!("🎯 Poly order has filled; continuing with Kalshi order...");
-        let kalshi_start = Instant::now();
-        let result = service
-            .kalshi_client
-            .place_order(
-                &record.kalshi_market_id,
-                "buy",
-                &opportunity.kalshi_side,
-                kalshi_contracts,
-                kalshi_price_cents,
-            )
-            .await;
-        let duration = kalshi_start.elapsed().as_millis() as i64;
-        (result, duration)
-    } else {
-        warn!("🚫 Poly order did not succeed; skipping Kalshi order");
-        (
-            Err(anyhow::anyhow!("Poly order did not succeed; canceled")),
-            0,
-        )
-    };
-
-    // Calculate total execution time
-    let exec_duration_ms = exec_start.elapsed().as_millis() as i64;
-
-    // Calculate total time from opportunity detection to order completion
-    let total_duration_ms = Utc::now()
-        .signed_duration_since(record.start_time)
-        .num_milliseconds();
-
-    // Extract results for logging and recording
-    let kalshi_success = kalshi_result.is_ok();
-    // poly_success already determined above based on MATCHED status
-    let poly_success = poly_result.is_ok() && poly_error.is_none();
-
-    // Extract Kalshi order ID and error
-    let (kalshi_order_id, kalshi_error) = match &kalshi_result {
-        Ok(res) => (
-            res.get("order_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            None,
-        ),
-        Err(e) => (None, Some(e.to_string())),
-    };
-
-    // poly_order_id and poly_error already extracted above
-
-    // Save trade record to database (using current validated prices)
-    // Calculate actual profit margin based on current prices
-    let actual_profit_margin = if total_bet > 0.0 {
-        let expected_profit = contracts_to_trade as f64 - total_bet;
-        (expected_profit / total_bet) * 100.0
-    } else {
-        0.0
-    };
-
-    let storage = service.ws_manager.get_storage();
-    if let Err(e) = storage.save_auto_trade_record(
-        &record.event_name,
-        &record.team_name,
-        &record.kalshi_market_id,
-        &record.polymarket_market_id,
-        &opportunity.kalshi_side,
-        &opportunity.polymarket_side,
-        kalshi_contracts,
-        current_k_price, // Use current validated price
-        kalshi_fee,
-        poly_amount,
-        current_p_price, // Use current validated price
-        total_bet,
-        actual_profit_margin, // Use recalculated profit margin
-        duration_ms,          // Opportunity duration before order (ms)
-        total_duration_ms,    // Total time from detection to order completion (ms)
-        kalshi_success,
-        poly_success,
-        kalshi_order_id.as_deref(),
-        poly_order_id.as_deref(),
-        kalshi_error.as_deref(),
-        poly_error.as_deref(),
-        kalshi_latency_ms, // Kalshi API latency
-        poly_latency_ms,   // Polymarket API latency
-    ) {
-        error!("Failed to save auto-trade record: {}", e);
-    }
-
-    // Send Telegram notification (non-blocking, errors logged only)
-    {
-        let telegram = state.telegram_client.clone();
-        let event_name = record.event_name.clone();
-        let team_name = record.team_name.clone();
-        let profit = actual_profit_margin;
-        let k_err = kalshi_error.clone();
-        let p_err = poly_error.clone();
-        let expected_profit = contracts_to_trade as f64 - total_bet;
-
-        tokio::spawn(async move {
-            telegram
-                .send_auto_trade_notification(
-                    &event_name,
-                    &team_name,
-                    profit,
-                    kalshi_success,
-                    poly_success,
-                    k_err.as_deref(),
-                    p_err.as_deref(),
-                    total_bet,
-                    expected_profit,
-                )
-                .await;
-        });
-    }
-
-    // Log results
-    if kalshi_success && poly_success {
-        // Increment trade count on success
-        if let Ok(new_count) = service.ws_manager.increment_trade_count() {
-            info!(
-                "✅ [Auto-trade] Success! Executed {}/{} times",
-                new_count, auto_state.max_trade_count
-            );
-            info!(
-                "   ⏱️ Total time: {}ms (from opportunity detection to order completion)",
-                total_duration_ms
-            );
-            info!(
-                "   ⏱️ API latency: Kalshi={}ms, Poly={}ms (concurrent execution total: {}ms)",
-                kalshi_latency_ms, poly_latency_ms, exec_duration_ms
-            );
-        }
-        info!("   Kalshi: {:?}", kalshi_result.unwrap());
-        info!("   Polymarket: {:?}", poly_result.unwrap());
-    } else {
-        // Still increment count even on partial failure to track attempts
-        if let Ok(new_count) = service.ws_manager.increment_trade_count() {
-            info!(
-                "⚠️ [Auto-trade] Partial success recorded; {}/{} attempts logged",
-                new_count, auto_state.max_trade_count
-            );
-            info!(
-                "   ⏱️ API latency: Kalshi={}ms, Poly={}ms",
-                kalshi_latency_ms, poly_latency_ms
-            );
-        }
-        error!("❌ [Auto-trade] Partial failure:");
-        if let Some(err) = &kalshi_error {
-            error!("   Kalshi failed ({}ms): {}", kalshi_latency_ms, err);
-        }
-        if let Some(err) = &poly_error {
-            error!("   Polymarket failed ({}ms): {}", poly_latency_ms, err);
+    if service.ws_manager.should_record_skip(key, skip_reason) {
+        let storage = service.ws_manager.get_storage();
+        if let Err(error) = storage.save_skipped_auto_trade_record(
+            &record.event_name,
+            &record.team_name,
+            &record.kalshi_market_id,
+            &record.polymarket_market_id,
+            &opportunity.kalshi_side,
+            &opportunity.polymarket_side,
+            auto_state.min_contracts,
+            opportunity.kalshi_price,
+            opportunity.polymarket_price,
+            opportunity.profit_margin,
+            duration_ms,
+            skip_reason,
+        ) {
+            error!("Failed to save skipped auto-trade record: {}", error);
         }
     }
 }
@@ -1270,10 +581,10 @@ async fn cleanup_ended_markets(state: &Arc<AppState>) {
         );
     }
 
-    // Remove ended markets and get subscription IDs to unsubscribe
-    let (kalshi_to_unsub, poly_to_unsub) = service.ws_manager.remove_ended_markets();
+    // Remove ended markets and get Kalshi subscriptions to unsubscribe.
+    let kalshi_to_unsub = service.ws_manager.remove_ended_markets();
 
-    if kalshi_to_unsub.is_empty() && poly_to_unsub.is_empty() {
+    if kalshi_to_unsub.is_empty() {
         return;
     }
 
@@ -1296,29 +607,6 @@ async fn cleanup_ended_markets(state: &Arc<AppState>) {
             }
             Err(e) => {
                 error!("❌ [Cleanup] Kalshi unsubscribe failed: {}", e);
-            }
-        }
-    }
-
-    // Unsubscribe from Polymarket tokens
-    if !poly_to_unsub.is_empty() {
-        match service
-            .polymarket_client
-            .unsubscribe_tokens(poly_to_unsub.clone())
-            .await
-        {
-            Ok(success) => {
-                if success {
-                    info!(
-                        "✅ [Cleanup] Polymarket unsubscribe succeeded: {} tokens",
-                        poly_to_unsub.len()
-                    );
-                } else {
-                    warn!("⚠️ [Cleanup] Polymarket unsubscribe partially failed");
-                }
-            }
-            Err(e) => {
-                error!("❌ [Cleanup] Polymarket unsubscribe failed: {}", e);
             }
         }
     }

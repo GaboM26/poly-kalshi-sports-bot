@@ -64,7 +64,16 @@ function App() {
   const totalProfit = matchedMarkets
     .filter(m => m.has_opportunity)
     .reduce((sum, m) => sum + m.expected_profit, 0);
-  const [selectedMarket, setSelectedMarket] = useState<MatchedMarketData | null>(null);
+  const [selectedMarketKey, setSelectedMarketKey] = useState<string | null>(null);
+  const selectedMarket = useMemo(() => {
+    if (selectedMarketKey === null) {
+      return null;
+    }
+    return matchedMarkets.find(
+      (market) =>
+        `${market.kalshi_market_id}_${market.polymarket_market_id}` === selectedMarketKey,
+    ) ?? null;
+  }, [matchedMarkets, selectedMarketKey]);
   const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking'>('detail');
   const [leftBottomTab, setLeftBottomTab] = useState<'positions' | 'history'>('positions');
   const [showHistoryExplorer, setShowHistoryExplorer] = useState(false);
@@ -77,13 +86,6 @@ function App() {
       const params = new URLSearchParams();
       if (market.kalshi_market_id) {
         params.append('kalshi_ticker', market.kalshi_market_id);
-      }
-      // Polymarket: use the own token for Yes depth and the opponent token for No depth.
-      if (market.poly_token_id) {
-        params.append('poly_token_id', market.poly_token_id);
-      }
-      if (market.poly_opponent_token_id) {
-        params.append('poly_opponent_token_id', market.poly_opponent_token_id);
       }
       const response = await fetch(`${apiBaseUrl}/api/orderbook/depth?${params}`);
       if (response.ok) {
@@ -134,7 +136,11 @@ function App() {
           <div className="flex-1 min-h-0 overflow-hidden flex flex-col bg-[--bg-secondary] rounded border border-[--border-color] shadow-lg" style={{flexBasis: '55%'}}>
             <OpportunityList 
               matchedMarkets={matchedMarkets}
-              onSelectMarket={setSelectedMarket}
+              onSelectMarket={(market) =>
+                setSelectedMarketKey(
+                  `${market.kalshi_market_id}_${market.polymarket_market_id}`,
+                )
+              }
               apiBaseUrl={apiBaseUrl}
             />
           </div>

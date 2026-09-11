@@ -1,7 +1,7 @@
 //! Event and Market Matcher
 //!
 //! Matching logic optimization:
-//! - Event matching: Use team abbreviation + game date to match events on both platforms
+//! - Event matching: Use canonical competitors + game date to match events on both platforms
 //! - Market matching: 2:1 matching (two Kalshi markets correspond to one Poly market)
 //!
 //! Key points:
@@ -27,8 +27,6 @@ pub struct EventMatcher {
 pub struct SubscriptionInfo {
     /// Kalshi tickers to subscribe
     pub kalshi_tickers: Vec<String>,
-    /// Polymarket token IDs to subscribe
-    pub polymarket_token_ids: Vec<String>,
     /// Lookup map: subscription_id -> Vec<MatchedMarket index>
     pub market_lookup: HashMap<String, Vec<usize>>,
 }
@@ -38,7 +36,6 @@ impl SubscriptionInfo {
     pub fn empty() -> Self {
         Self {
             kalshi_tickers: Vec::new(),
-            polymarket_token_ids: Vec::new(),
             market_lookup: HashMap::new(),
         }
     }
@@ -96,10 +93,12 @@ impl EventMatcher {
         let mut matched_events = Vec::new();
         let mut used_poly_ids = std::collections::HashSet::new();
 
-        // Build Polymarket event index: event_name -> [events]
+        // Build Polymarket event index: category + event_name -> [events].
+        // Keeping sports separate prevents a coincidental competitor string from
+        // ever matching an NBA event to a tennis event.
         let mut poly_index: HashMap<String, Vec<&PolymarketEvent>> = HashMap::new();
         for event in polymarket_events {
-            let key = event.name.to_uppercase();
+            let key = format!("{}:{}", event.category, event.name.to_uppercase());
             poly_index.entry(key).or_default().push(event);
         }
 
@@ -129,7 +128,11 @@ impl EventMatcher {
                     continue;
                 };
 
-                let candidates = poly_index.get(name).map(|v| v.as_slice()).unwrap_or(&[]);
+                let index_key = format!("{}:{}", k_event.category, name);
+                let candidates = poly_index
+                    .get(&index_key)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
 
                 for p_event in candidates {
                     if used_poly_ids.contains(&p_event.event_id) {
@@ -265,24 +268,13 @@ impl EventMatcher {
 
     /// Get WebSocket subscription info
     ///
-    /// Important: Each MatchedMarket needs to subscribe to two Poly tokens:
-    /// - Own token (for poly_yes_price)
-    /// - Opponent token (for poly_no_price)
-    ///
-    /// Because poly_no_price != 1 - poly_yes_ask,
-    /// it equals opponent token's ask price
-    ///
-    /// Returns:
-    /// - kalshi_tickers: Kalshi tickers to subscribe
-    /// - polymarket_token_ids: Polymarket token IDs to subscribe
-    /// - market_lookup: subscription_id -> Vec<MatchedMarket index> mapping
+    /// Polymarket US gateway markets are REST-polled, not CLOB-subscribed.
+    /// The lookup therefore contains Kalshi tickers only.
     pub fn get_subscription_info(&self, matched_markets: &[MatchedMarket]) -> SubscriptionInfo {
         let mut kalshi_tickers = Vec::new();
-        let mut polymarket_token_ids = Vec::new();
         let mut market_lookup: HashMap<String, Vec<usize>> = HashMap::new();
 
         let mut seen_kalshi = std::collections::HashSet::new();
-        let mut seen_poly = std::collections::HashSet::new();
 
         for (idx, mm) in matched_markets.iter().enumerate() {
             // Kalshi ticker
@@ -295,40 +287,15 @@ impl EventMatcher {
             // Add to lookup
             market_lookup.entry(k_id.clone()).or_default().push(idx);
 
-            // Polymarket: Subscribe to both tokens (own and opponent)
-            let poly_market = &mm.polymarket_market;
-
-            // Own token (for yes_price)
-            let own_token = poly_market.get_token_for_team(&mm.team_name);
-
-            // Opponent token (for no_price)
-            let opponent = poly_market.get_opponent(&mm.team_name);
-            let opponent_token = opponent.and_then(|o| poly_market.get_token_for_team(o));
-
-            // Subscribe to both tokens
-            for p_token in [own_token, opponent_token].into_iter().flatten() {
-                if !seen_poly.contains(p_token) {
-                    polymarket_token_ids.push(p_token.to_string());
-                    seen_poly.insert(p_token.to_string());
-                }
-
-                // Both tokens point to the same MatchedMarket
-                market_lookup
-                    .entry(p_token.to_string())
-                    .or_default()
-                    .push(idx);
-            }
         }
 
         info!(
-            "📡 Subscription information: Kalshi {} tickers, Polymarket {} tokens",
-            kalshi_tickers.len(),
-            polymarket_token_ids.len()
+            "📡 Subscription information: Kalshi {} tickers; Polymarket US uses REST quotes",
+            kalshi_tickers.len()
         );
 
         SubscriptionInfo {
             kalshi_tickers,
-            polymarket_token_ids,
             market_lookup,
         }
     }
@@ -341,15 +308,16 @@ mod tests {
     fn create_test_poly_market() -> PolymarketMarket {
         PolymarketMarket {
             market_id: "poly-123".to_string(),
+            market_slug: "lal-mem-2026-08-17".to_string(),
             event_name: "LAL-MEM".to_string(),
             team_a: "LAL".to_string(),
             team_b: "MEM".to_string(),
             price_a: 0.45,
             price_b: 0.55,
+            team_a_position: crate::models::PolymarketPositionSide::Long,
+            team_b_position: crate::models::PolymarketPositionSide::Short,
             start_time: None,
             volume: None,
-            token_id_a: Some("token-lal".to_string()),
-            token_id_b: Some("token-mem".to_string()),
         }
     }
 
@@ -376,11 +344,16 @@ mod tests {
     }
 
     #[test]
-    fn test_get_token_for_team() {
+    fn test_us_execution_for_competitor() {
         let market = create_test_poly_market();
 
-        assert_eq!(market.get_token_for_team("LAL"), Some("token-lal"));
-        assert_eq!(market.get_token_for_team("MEM"), Some("token-mem"));
-        assert_eq!(market.get_token_for_team("BOS"), None);
+        assert_eq!(
+            market
+                .us_execution_for_competitor("LAL")
+                .unwrap()
+                .position_side,
+            crate::models::PolymarketPositionSide::Long
+        );
+        assert_eq!(market.us_execution_for_competitor("BOS"), None);
     }
 }
