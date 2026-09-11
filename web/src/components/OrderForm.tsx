@@ -234,14 +234,14 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
             onClick={() => handleKalshiOrder('yes', 'buy')}
             disabled={loading !== null}
           >
-            {loading === 'kalshi_yes_buy' ? '...' : `Buy YES ${(market.kalshi_yes_price * 100).toFixed(0)}¢`}
+            {loading === 'kalshi_yes_buy' ? '...' : `Buy YES Limit ${(market.kalshi_yes_price * 100).toFixed(0)}¢`}
           </button>
           <button
             className="py-1.5 text-[10px] rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 disabled:opacity-50"
             onClick={() => handleKalshiOrder('no', 'buy')}
             disabled={loading !== null}
           >
-            {loading === 'kalshi_no_buy' ? '...' : `Buy NO ${(market.kalshi_no_price * 100).toFixed(0)}¢`}
+            {loading === 'kalshi_no_buy' ? '...' : `Buy NO Limit ${(market.kalshi_no_price * 100).toFixed(0)}¢`}
           </button>
         </div>
         <div className="grid grid-cols-2 gap-1.5">
@@ -250,14 +250,14 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
             onClick={() => handleKalshiOrder('yes', 'sell')}
             disabled={loading !== null}
           >
-            {loading === 'kalshi_yes_sell' ? '...' : 'Sell YES'}
+            {loading === 'kalshi_yes_sell' ? '...' : 'Sell YES Limit'}
           </button>
           <button
             className="py-1 text-[9px] rounded bg-red-500/10 text-red-400/70 hover:bg-red-500/20 disabled:opacity-50"
             onClick={() => handleKalshiOrder('no', 'sell')}
             disabled={loading !== null}
           >
-            {loading === 'kalshi_no_sell' ? '...' : 'Sell NO'}
+            {loading === 'kalshi_no_sell' ? '...' : 'Sell NO Limit'}
           </button>
         </div>
       </div>
@@ -275,7 +275,7 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
             disabled={loading !== null || !hasLivePolymarketQuote}
             title={hasLivePolymarketQuote ? undefined : 'Waiting for a current Polymarket quote'}
           >
-            {loading === 'poly_buy_team' ? '...' : `Buy ${market.team_name} Limit ${(market.poly_yes_price * 100).toFixed(0)}¢`}
+            {loading === 'poly_buy_team' ? '...' : `Buy YES Limit ${(market.poly_yes_price * 100).toFixed(0)}¢`}
           </button>
           <button
             className="py-1.5 text-[10px] rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 disabled:opacity-50"
@@ -283,7 +283,7 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
             disabled={loading !== null || !hasLivePolymarketQuote}
             title={hasLivePolymarketQuote ? undefined : 'Waiting for a current Polymarket quote'}
           >
-            {loading === 'poly_buy_opponent' ? '...' : `Buy ${market.polymarket_opponent_name} Limit ${(market.poly_no_price * 100).toFixed(0)}¢`}
+            {loading === 'poly_buy_opponent' ? '...' : `Buy NO Limit ${(market.poly_no_price * 100).toFixed(0)}¢`}
           </button>
         </div>
         <div className="grid grid-cols-2 gap-1.5">
@@ -293,7 +293,7 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
             disabled={loading !== null || !hasLivePolymarketQuote}
             title={hasLivePolymarketQuote ? undefined : 'Waiting for a current Polymarket quote'}
           >
-            {loading === 'poly_sell_team' ? '...' : `Sell ${market.team_name} Limit`}
+            {loading === 'poly_sell_team' ? '...' : 'Sell YES Limit'}
           </button>
           <button
             className="py-1 text-[9px] rounded bg-red-500/10 text-red-400/70 hover:bg-red-500/20 disabled:opacity-50"
@@ -301,7 +301,7 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
             disabled={loading !== null || !hasLivePolymarketQuote}
             title={hasLivePolymarketQuote ? undefined : 'Waiting for a current Polymarket quote'}
           >
-            {loading === 'poly_sell_opponent' ? '...' : `Sell ${market.polymarket_opponent_name} Limit`}
+            {loading === 'poly_sell_opponent' ? '...' : 'Sell NO Limit'}
           </button>
         </div>
       </div>
