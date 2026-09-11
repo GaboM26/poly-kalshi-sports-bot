@@ -47,6 +47,7 @@ impl WebSocketManager {
         flexible_mode: Option<bool>,
         max_contracts: Option<i32>,
         min_contracts: Option<i32>,
+        neutralization_max_loss_cents: Option<i32>,
     ) -> anyhow::Result<()> {
         self.storage.update_auto_trade_settings(
             max_amount,
@@ -55,6 +56,7 @@ impl WebSocketManager {
             flexible_mode,
             max_contracts,
             min_contracts,
+            neutralization_max_loss_cents,
         )?;
         Ok(())
     }

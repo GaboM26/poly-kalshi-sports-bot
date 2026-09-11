@@ -8,5 +8,7 @@
 pub mod kalshi;
 pub mod polymarket;
 
-pub use kalshi::{KalshiClient, KalshiMarketQuote};
-pub use polymarket::PolymarketClient;
+pub use kalshi::{KalshiClient, KalshiMarketQuote, KalshiOrderResult};
+pub use polymarket::{
+    PolymarketBookLevel, PolymarketClient, PolymarketMarketBook, PolymarketOrderResult,
+};

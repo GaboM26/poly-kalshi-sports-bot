@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -70,6 +70,7 @@ pub struct KalshiClient {
 pub struct OrderBook {
     pub yes: Vec<(i32, i32)>, // (price_cents, quantity)
     pub no: Vec<(i32, i32)>,
+    updated_at: Option<Instant>,
 }
 
 /// Authoritative price-only quote from Kalshi's REST market endpoint.
@@ -81,6 +82,19 @@ pub struct KalshiMarketQuote {
     pub market_id: String,
     pub yes_ask: f64,
     pub no_ask: f64,
+}
+
+/// A parsed immediate-or-cancel order acknowledgement. A submitted order is
+/// only considered filled when Kalshi returned an explicit positive fill count.
+#[derive(Debug, Clone)]
+pub struct KalshiOrderResult {
+    pub accepted: bool,
+    pub filled_contracts: i32,
+    pub fill_quantity_valid: bool,
+    pub order_id: Option<String>,
+    pub status: Option<String>,
+    pub error: Option<String>,
+    pub average_fill_price: Option<f64>,
 }
 
 impl OrderBook {
@@ -237,6 +251,13 @@ impl KalshiClient {
         self.orderbook_cache.read().get(ticker).cloned()
     }
 
+    /// Return only a recent websocket book. REST quotes are intentionally not
+    /// used for executable depth or automatic execution.
+    pub fn get_fresh_orderbook(&self, ticker: &str, max_age: Duration) -> Option<OrderBook> {
+        self.get_orderbook(ticker)
+            .filter(|book| book.updated_at.is_some_and(|updated| updated.elapsed() <= max_age))
+    }
+
     /// Fetch authoritative current ask quotes for the requested market tickers.
     ///
     /// Kalshi supports a comma-separated `tickers` filter. Requests are
@@ -375,6 +396,20 @@ impl KalshiClient {
         let body = v2_order_payload(ticker, book_side, count, yes_price_cents)?;
 
         self.post("/portfolio/events/orders", &body).await
+    }
+
+    /// Submit an IOC order and parse only explicit fill data from the
+    /// acknowledgement. Unknown acknowledgement shapes fail closed.
+    pub async fn submit_order(
+        &self,
+        ticker: &str,
+        action: &str,
+        outcome: &str,
+        count: i32,
+        price: i32,
+    ) -> Result<KalshiOrderResult> {
+        let response = self.place_order(ticker, action, outcome, count, price).await?;
+        Ok(parse_kalshi_order_result(&response))
     }
 
     /// Get orders with optional status filter
@@ -692,6 +727,7 @@ impl KalshiClient {
                 // Sort by price
                 book.yes.sort_by_key(|(p, _)| *p);
                 book.no.sort_by_key(|(p, _)| *p);
+                book.updated_at = Some(Instant::now());
 
                 orderbook_cache
                     .write()
@@ -758,6 +794,7 @@ impl KalshiClient {
                     book_side.push((price, delta));
                     book_side.sort_by_key(|(p, _)| *p);
                 }
+                book.updated_at = Some(Instant::now());
 
                 // Recalculate prices
                 let yes_bid = book.yes.last().map(|(p, _)| *p as f64 / 100.0);
@@ -778,10 +815,70 @@ impl KalshiClient {
                 } else {
                     None
                 }
+
             }
             _ => None,
         }
     }
+}
+
+fn parse_kalshi_order_result(response: &Value) -> KalshiOrderResult {
+    let order = response.get("order").unwrap_or(response);
+    let order_id = order
+        .get("order_id")
+        .or_else(|| order.get("id"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let status = order
+        .get("status")
+        .or_else(|| order.get("state"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let reported_fill = ["fill_count", "filled_count", "filled_contracts"]
+        .iter()
+        .find_map(|field| order.get(*field).and_then(value_to_f64));
+    let fill_quantity_valid = reported_fill
+        .map(|value| value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= i32::MAX as f64)
+        .unwrap_or(true);
+    let filled_contracts = reported_fill
+        .filter(|_| fill_quantity_valid)
+        .map(|value| value as i32)
+        .unwrap_or(0);
+    let average_fill_price = ["average_fill_price", "average_price", "avg_price"]
+        .iter()
+        .find_map(|field| order.get(*field).and_then(value_to_price));
+    let error = response
+        .get("error")
+        .or_else(|| response.get("message"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| (!fill_quantity_valid).then(|| "Kalshi returned a non-whole or invalid fill quantity".to_string()))
+        .or_else(|| {
+            (filled_contracts == 0).then(|| {
+                format!(
+                    "Kalshi IOC order has no explicit fill (status: {})",
+                    status.as_deref().unwrap_or("unknown")
+                )
+            })
+        });
+    KalshiOrderResult {
+        accepted: order_id.is_some() || status.is_some(),
+        filled_contracts,
+        fill_quantity_valid,
+        order_id,
+        status,
+        error,
+        average_fill_price,
+    }
+}
+
+fn value_to_f64(value: &Value) -> Option<f64> {
+    value.as_f64().or_else(|| value.as_str()?.parse().ok())
+}
+
+fn value_to_price(value: &Value) -> Option<f64> {
+    let value = value.as_f64().or_else(|| value.as_str()?.parse().ok())?;
+    (value.is_finite() && (0.0..1.0).contains(&value)).then_some(value)
 }
 
 fn v2_order_book_side_and_price(action: &str, outcome: &str, price: i32) -> Result<(&'static str, i32)> {
@@ -1226,6 +1323,16 @@ fn extract_game_date_from_ticker(event_ticker: &str) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn does_not_treat_ioc_acknowledgement_as_fill() {
+        let result = parse_kalshi_order_result(&json!({
+            "order": {"order_id": "order-1", "status": "canceled", "fill_count": "0.00"}
+        }));
+        assert!(result.accepted);
+        assert_eq!(result.filled_contracts, 0);
+        assert!(result.error.unwrap().contains("no explicit fill"));
+    }
 
     #[test]
     fn extracts_full_tennis_identity_from_market_title() {

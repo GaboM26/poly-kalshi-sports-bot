@@ -28,6 +28,8 @@ pub struct AutoTradeStatusResponse {
     pub max_contracts: i32,
     /// 最低合同数（深度低于此值不下单）
     pub min_contracts: i32,
+    /// Maximum permitted adverse close price after a partial/unpaired fill.
+    pub neutralization_max_loss_cents: i32,
     pub last_trade_time: Option<String>,
 }
 
@@ -46,6 +48,7 @@ pub async fn get_auto_trade_status(State(state): State<Arc<AppState>>) -> impl I
         flexible_mode: auto_state.flexible_mode,
         max_contracts: auto_state.max_contracts,
         min_contracts: auto_state.min_contracts,
+        neutralization_max_loss_cents: auto_state.neutralization_max_loss_cents,
         last_trade_time: auto_state.last_trade_time,
     })
 }
@@ -134,6 +137,7 @@ pub struct AutoTradeSettingsRequest {
     pub max_contracts: Option<i32>,
     /// 最低合同数（深度低于此值不下单）
     pub min_contracts: Option<i32>,
+    pub neutralization_max_loss_cents: Option<i32>,
 }
 
 /// Update auto-trade settings
@@ -141,6 +145,19 @@ pub async fn update_auto_trade_settings(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AutoTradeSettingsRequest>,
 ) -> impl IntoResponse {
+    if req
+        .neutralization_max_loss_cents
+        .is_some_and(|cents| !(0..=99).contains(&cents))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "neutralization_max_loss_cents must be between 0 and 99"
+            })),
+        )
+            .into_response();
+    }
     let service = state.service.read().await;
 
     match service.ws_manager.update_auto_trade_settings(
@@ -150,6 +167,7 @@ pub async fn update_auto_trade_settings(
         req.flexible_mode,
         req.max_contracts,
         req.min_contracts,
+        req.neutralization_max_loss_cents,
     ) {
         Ok(_) => Json(serde_json::json!({
             "success": true,

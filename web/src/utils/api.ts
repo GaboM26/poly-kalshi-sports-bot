@@ -216,6 +216,8 @@ export interface AutoTradeStatus {
   max_contracts: number;
   /** Minimum contracts required to trade. */
   min_contracts: number;
+  /** Maximum adverse price allowed for an emergency close, in cents/contract. */
+  neutralization_max_loss_cents: number;
   last_trade_time: string | null;
 }
 
@@ -283,6 +285,8 @@ export async function updateAutoTradeSettings(
     max_contracts?: number;
     /** Minimum contracts required. */
     min_contracts?: number;
+    /** Maximum adverse price allowed for an emergency close, in cents/contract. */
+    neutralization_max_loss_cents?: number;
   }
 ): Promise<{ success: boolean; message?: string; error?: string }> {
   const response = await fetch(`${baseUrl}/api/auto-trade/settings`, {

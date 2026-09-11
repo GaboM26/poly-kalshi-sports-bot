@@ -15,6 +15,6 @@ pub mod websocket_manager;
 
 pub use arbitrage::ArbitrageService;
 pub use metrics::{Operation, PerformanceMetrics};
-pub use storage::ArbitrageStorage;
+pub use storage::{ArbitrageStorage, AutoTradeExecutionRecord};
 pub use telegram::TelegramClient;
 pub use websocket_manager::WebSocketManager;

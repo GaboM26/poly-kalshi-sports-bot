@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::config::PolymarketConfig;
 use crate::core::{competitor_event_name, normalize_competitor_name, normalize_team_name};
@@ -94,6 +94,38 @@ struct OrderResponse {
     error: Option<String>,
     data: Option<Value>,
     latency_ms: Option<i64>,
+}
+
+/// Fresh, normalized native Polymarket US LONG-price order book.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PolymarketMarketBook {
+    pub success: bool,
+    pub market_slug: String,
+    pub state: String,
+    pub transact_time: Option<String>,
+    pub fetched_at_ms: i64,
+    pub bids: Vec<PolymarketBookLevel>,
+    pub offers: Vec<PolymarketBookLevel>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PolymarketBookLevel {
+    pub price: f64,
+    pub quantity: f64,
+}
+
+/// Result returned by the official SDK execution envelope, normalized by the
+/// local Python service. A submission without a positive fill is not success.
+#[derive(Debug, Clone)]
+pub struct PolymarketOrderResult {
+    pub accepted: bool,
+    pub filled_contracts: i32,
+    pub fill_quantity_valid: bool,
+    pub order_id: Option<String>,
+    pub status: Option<String>,
+    pub error: Option<String>,
+    pub latency_ms: Option<i64>,
+    pub average_fill_price: Option<f64>,
 }
 
 /// Position data for aggregation (internal use)
@@ -373,6 +405,35 @@ impl PolymarketClient {
         contracts: i32,
         price: f64,
     ) -> Result<Value> {
+        let response = self
+            .submit_limit_order(market_slug, position_side, side, contracts, price)
+            .await?;
+        if response.filled_contracts <= 0 {
+            anyhow::bail!(
+                "Polymarket US limit order did not fill: {}",
+                response.error.unwrap_or_else(|| "Unknown error".to_string())
+            );
+        }
+        Ok(json!({
+            "success": true,
+            "order_id": response.order_id,
+            "status": response.status,
+            "filled_contracts": response.filled_contracts,
+            "latency_ms": response.latency_ms,
+        }))
+    }
+
+    /// Submit a FAK order and retain explicit acceptance/fill information for
+    /// paired-execution recovery. Transport failures remain errors; exchange
+    /// rejections and zero fills are returned for durable recording.
+    pub async fn submit_limit_order(
+        &self,
+        market_slug: &str,
+        position_side: PolymarketPositionSide,
+        side: &str,
+        contracts: i32,
+        price: f64,
+    ) -> Result<PolymarketOrderResult> {
         let side = side.to_ascii_lowercase();
         if market_slug.trim().is_empty()
             || contracts <= 0
@@ -401,19 +462,57 @@ impl PolymarketClient {
             .send()
             .await
             .context("Failed to call the Python order service")?;
-        let response: OrderResponse = resp.json().await?;
-
-        if response.success {
-            serde_json::to_value(response)
-                .context("Failed to serialize Polymarket US order response")
-        } else {
-            anyhow::bail!(
-                "Polymarket US market order failed: {}",
-                response
-                    .error
-                    .unwrap_or_else(|| "Unknown error".to_string())
-            )
+        if !resp.status().is_success() {
+            anyhow::bail!("Polymarket US order service returned HTTP {}", resp.status());
         }
+        let response: OrderResponse = resp.json().await?;
+        let reported_fill = response.filled_contracts.unwrap_or(0.0);
+        let fill_quantity_valid = reported_fill.is_finite()
+            && reported_fill >= 0.0
+            && reported_fill.fract() == 0.0
+            && reported_fill <= i32::MAX as f64;
+        let filled_contracts = fill_quantity_valid.then_some(reported_fill as i32).unwrap_or(0);
+        let average_fill_price = response
+            .data
+            .as_ref()
+            .and_then(extract_average_fill_price);
+        Ok(PolymarketOrderResult {
+            accepted: response.success || response.order_id.is_some(),
+            filled_contracts,
+            order_id: response.order_id,
+            status: response.status,
+            error: if fill_quantity_valid {
+                response.error
+            } else {
+                Some("Polymarket US returned a non-whole or invalid fill quantity".to_string())
+            },
+            fill_quantity_valid,
+            latency_ms: response.latency_ms,
+            average_fill_price,
+        })
+    }
+
+    /// Retrieve a fresh book from the local official-SDK gateway. This must be
+    /// called immediately before an automated paired order; display quotes and
+    /// cached account data are deliberately not substitutes.
+    pub async fn get_market_book(&self, market_slug: &str) -> Result<PolymarketMarketBook> {
+        if market_slug.trim().is_empty() {
+            anyhow::bail!("Polymarket US market slug cannot be empty");
+        }
+        let url = format!("{}/market/book", self.config.order_service_url.trim_end_matches('/'));
+        let response = self
+            .http
+            .get(&url)
+            .query(&[("market_slug", market_slug)])
+            .send()
+            .await
+            .context("Failed to retrieve Polymarket US market book")?;
+        if !response.status().is_success() {
+            anyhow::bail!("Polymarket US market book service returned HTTP {}", response.status());
+        }
+        let book: PolymarketMarketBook = response.json().await?;
+        validate_market_book(&book, market_slug)?;
+        Ok(book)
     }
 
     /// Get open orders via Python service
@@ -503,6 +602,46 @@ impl PolymarketClient {
         }
     }
 
+}
+
+fn validate_market_book(book: &PolymarketMarketBook, requested_slug: &str) -> Result<()> {
+    if !book.success
+        || book.market_slug != requested_slug
+        || book.state.trim().is_empty()
+        || book
+            .transact_time
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        || book.fetched_at_ms <= 0
+    {
+        anyhow::bail!("Polymarket US market book response was incomplete or mismatched");
+    }
+    for level in book.bids.iter().chain(book.offers.iter()) {
+        if !level.price.is_finite()
+            || !(0.0..1.0).contains(&level.price)
+            || !level.quantity.is_finite()
+            || level.quantity <= 0.0
+        {
+            anyhow::bail!("Polymarket US market book contained an invalid level");
+        }
+    }
+    Ok(())
+}
+
+fn extract_average_fill_price(response: &Value) -> Option<f64> {
+    let executions = response.get("executions")?.as_array()?;
+    let order = executions.last()?.get("order")?;
+    ["averageFillPrice", "averagePrice", "avgPrice", "avg_price"]
+        .iter()
+        .find_map(|field| amount_as_f64(&order[*field]))
+        .filter(|price| price.is_finite() && (0.0..1.0).contains(price))
+}
+
+fn amount_as_f64(value: &Value) -> Option<f64> {
+    let value = value.get("value").unwrap_or(value);
+    value.as_f64().or_else(|| value.as_str()?.parse().ok())
 }
 
 fn sport_code(sport: &Value) -> Option<&str> {

@@ -7,7 +7,7 @@ pub mod static_files;
 pub mod websocket;
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use axum::{
@@ -21,11 +21,16 @@ use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
 
 use crate::config::Config;
-use crate::models::PriceUpdate;
-use crate::services::{ArbitrageService, PerformanceMetrics, TelegramClient};
+use crate::clients::{KalshiOrderResult, PolymarketBookLevel, PolymarketMarketBook, PolymarketOrderResult};
+use crate::models::{PolymarketPositionSide, PriceUpdate};
+use crate::services::{ArbitrageService, AutoTradeExecutionRecord, PerformanceMetrics, TelegramClient};
 
 /// Market scan interval in seconds (5 minutes)
 const MARKET_SCAN_INTERVAL_SECS: u64 = 300;
+/// A cached websocket book may only drive an automatic order while it is this
+/// recent. The Python endpoint is requested synchronously, so its response is
+/// inherently a fresh Polymarket US book.
+const EXECUTABLE_BOOK_MAX_AGE: Duration = Duration::from_secs(2);
 
 /// Application state shared across handlers
 pub struct AppState {
@@ -457,6 +462,248 @@ fn calculate_contracts_to_trade(
     Some(contracts.min(max_contracts))
 }
 
+#[derive(Debug)]
+struct RecoveryResult {
+    filled_contracts: i32,
+    order_id: Option<String>,
+    error: Option<String>,
+}
+
+fn failed_poly_order(error: String) -> PolymarketOrderResult {
+    PolymarketOrderResult {
+        accepted: false,
+        filled_contracts: 0,
+        fill_quantity_valid: true,
+        order_id: None,
+        status: None,
+        error: Some(error),
+        latency_ms: None,
+        average_fill_price: None,
+    }
+}
+
+fn failed_kalshi_order(error: String) -> KalshiOrderResult {
+    KalshiOrderResult {
+        accepted: false,
+        filled_contracts: 0,
+        fill_quantity_valid: true,
+        order_id: None,
+        status: None,
+        error: Some(error),
+        average_fill_price: None,
+    }
+}
+
+fn kalshi_buy_levels(book: &crate::clients::kalshi::OrderBook, side: &str) -> Vec<(i32, i32)> {
+    let mut levels = match side {
+        "yes" => book.no.iter().rev().map(|(price, qty)| (100 - price, *qty)).collect(),
+        "no" => book.yes.iter().rev().map(|(price, qty)| (100 - price, *qty)).collect(),
+        _ => Vec::new(),
+    };
+    levels.sort_by_key(|(price, _)| *price);
+    levels
+}
+
+fn kalshi_sell_levels(book: &crate::clients::kalshi::OrderBook, side: &str) -> Vec<(i32, i32)> {
+    let mut levels = match side {
+        "yes" => book.yes.iter().rev().map(|(price, qty)| (*price, *qty)).collect(),
+        "no" => book.no.iter().rev().map(|(price, qty)| (*price, *qty)).collect(),
+        _ => Vec::new(),
+    };
+    levels.sort_by(|left, right| right.0.cmp(&left.0));
+    levels
+}
+
+fn polymarket_buy_levels(
+    book: &PolymarketMarketBook,
+    position_side: PolymarketPositionSide,
+) -> Vec<(f64, i32)> {
+    let levels = match position_side {
+        // Long buys consume native LONG offers in ascending price order.
+        PolymarketPositionSide::Long => &book.offers,
+        // Short buys consume native LONG bids descending, at complement price.
+        PolymarketPositionSide::Short => &book.bids,
+    };
+    let iter: Box<dyn Iterator<Item = &PolymarketBookLevel>> = match position_side {
+        PolymarketPositionSide::Long => Box::new(levels.iter()),
+        PolymarketPositionSide::Short => Box::new(levels.iter().rev()),
+    };
+    let mut result: Vec<_> = iter.filter_map(|level| {
+        let quantity = level.quantity.floor() as i32;
+        (quantity > 0).then_some((
+            if position_side == PolymarketPositionSide::Long {
+                level.price
+            } else {
+                1.0 - level.price
+            },
+            quantity,
+        ))
+    })
+    .collect();
+    result.sort_by(|left, right| left.0.total_cmp(&right.0));
+    result
+}
+
+fn polymarket_sell_levels(
+    book: &PolymarketMarketBook,
+    position_side: PolymarketPositionSide,
+) -> Vec<(f64, i32)> {
+    let levels = match position_side {
+        // Selling LONG consumes native LONG bids descending.
+        PolymarketPositionSide::Long => &book.bids,
+        // Selling SHORT consumes native LONG offers ascending, complemented.
+        PolymarketPositionSide::Short => &book.offers,
+    };
+    let iter: Box<dyn Iterator<Item = &PolymarketBookLevel>> = match position_side {
+        PolymarketPositionSide::Long => Box::new(levels.iter()),
+        PolymarketPositionSide::Short => Box::new(levels.iter()),
+    };
+    let mut result: Vec<_> = iter.filter_map(|level| {
+        let quantity = level.quantity.floor() as i32;
+        (quantity > 0).then_some((
+            if position_side == PolymarketPositionSide::Long {
+                level.price
+            } else {
+                1.0 - level.price
+            },
+            quantity,
+        ))
+    })
+    .collect();
+    result.sort_by(|left, right| right.0.total_cmp(&left.0));
+    result
+}
+
+fn executable_depth<T>(levels: &[(T, i32)]) -> i32 {
+    levels.iter().fold(0_i32, |total, (_, quantity)| total.saturating_add(*quantity))
+}
+
+fn worst_price<T: Copy>(levels: &[(T, i32)], contracts: i32) -> Option<T> {
+    let mut remaining = contracts;
+    for (price, quantity) in levels {
+        if *quantity <= 0 {
+            continue;
+        }
+        remaining -= (*quantity).min(remaining);
+        if remaining <= 0 {
+            return Some(*price);
+        }
+    }
+    None
+}
+
+fn kalshi_fee(contracts: i32, price: f64) -> f64 {
+    (0.07 * contracts as f64 * price * (1.0 - price) * 100.0).ceil() / 100.0
+}
+
+fn find_profitable_contract_size(
+    size_cap: i32,
+    min_contracts: i32,
+    max_amount: f64,
+    kalshi_levels: &[(i32, i32)],
+    poly_levels: &[(f64, i32)],
+) -> Option<(i32, i32, f64, f64, f64)> {
+    if !max_amount.is_finite() || max_amount <= 0.0 {
+        return None;
+    }
+    for contracts in (min_contracts..=size_cap).rev() {
+        let kalshi_price_cents = worst_price(kalshi_levels, contracts)?;
+        let poly_price = worst_price(poly_levels, contracts)?;
+        let kalshi_price = kalshi_price_cents as f64 / 100.0;
+        let fee = kalshi_fee(contracts, kalshi_price);
+        let total_cost = contracts as f64 * (kalshi_price + poly_price) + fee;
+        if total_cost.is_finite() && total_cost <= max_amount && total_cost < contracts as f64 {
+            let margin = ((contracts as f64 - total_cost) / total_cost) * 100.0;
+            return Some((contracts, kalshi_price_cents, poly_price, fee, margin));
+        }
+    }
+    None
+}
+
+async fn neutralize_polymarket(
+    service: &ArbitrageService,
+    market_slug: &str,
+    position_side: PolymarketPositionSide,
+    contracts: i32,
+    entry_price: Option<f64>,
+    max_loss_cents: i32,
+) -> Result<RecoveryResult, String> {
+    let entry_price = entry_price.ok_or_else(|| {
+        "Polymarket actual entry price was not returned; bounded close cannot be verified".to_string()
+    })?;
+    let book = service.polymarket_client.get_market_book(market_slug).await
+        .map_err(|error| format!("Unable to fetch fresh Polymarket close book: {error}"))?;
+    let close_price = worst_price(&polymarket_sell_levels(&book, position_side), contracts)
+        .ok_or_else(|| "Fresh Polymarket close book lacks required executable depth".to_string())?;
+    if close_price + f64::EPSILON < entry_price - max_loss_cents as f64 / 100.0 {
+        return Err(format!(
+            "Polymarket close price {:.4} exceeds configured {}¢ loss bound from actual entry {:.4}",
+            close_price, max_loss_cents, entry_price
+        ));
+    }
+    let result = service.polymarket_client.submit_limit_order(
+        market_slug, position_side, "sell", contracts, close_price
+    ).await.map_err(|error| format!("Polymarket bounded close submission failed: {error}"))?;
+    Ok(RecoveryResult {
+        filled_contracts: result.filled_contracts,
+        order_id: result.order_id,
+        error: result.error,
+    })
+}
+
+async fn neutralize_kalshi(
+    service: &ArbitrageService,
+    ticker: &str,
+    side: &str,
+    contracts: i32,
+    entry_price: Option<f64>,
+    max_loss_cents: i32,
+) -> Result<RecoveryResult, String> {
+    let entry_price = entry_price.ok_or_else(|| {
+        "Kalshi actual entry price was not returned; bounded close cannot be verified".to_string()
+    })?;
+    let book = service.kalshi_client.get_fresh_orderbook(ticker, EXECUTABLE_BOOK_MAX_AGE)
+        .ok_or_else(|| "Fresh Kalshi websocket close depth is unavailable".to_string())?;
+    let close_price = worst_price(&kalshi_sell_levels(&book, side), contracts)
+        .ok_or_else(|| "Fresh Kalshi close book lacks required executable depth".to_string())?;
+    let close_price_dollars = close_price as f64 / 100.0;
+    if close_price_dollars + f64::EPSILON < entry_price - max_loss_cents as f64 / 100.0 {
+        return Err(format!(
+            "Kalshi close price {:.4} exceeds configured {}¢ loss bound from actual entry {:.4}",
+            close_price_dollars, max_loss_cents, entry_price
+        ));
+    }
+    let result = service.kalshi_client.submit_order(ticker, "sell", side, contracts, close_price)
+        .await.map_err(|error| format!("Kalshi bounded close submission failed: {error}"))?;
+    Ok(RecoveryResult {
+        filled_contracts: result.filled_contracts,
+        order_id: result.order_id,
+        error: result.error,
+    })
+}
+
+fn save_auto_trade_skip(
+    service: &ArbitrageService,
+    key: &str,
+    record: &crate::models::ArbitrageTrackingRecord,
+    opportunity: &crate::models::ArbitrageOpportunity,
+    contracts: i32,
+    duration_ms: i64,
+    reason: &str,
+) {
+    info!("⚠️ [Auto-trade] {}: {} - {}", reason, record.event_name, record.team_name);
+    if service.ws_manager.should_record_skip(key, reason) {
+        if let Err(error) = service.ws_manager.get_storage().save_skipped_auto_trade_record(
+            &record.event_name, &record.team_name, &record.kalshi_market_id,
+            &record.polymarket_market_id, &opportunity.kalshi_side, &opportunity.polymarket_side,
+            contracts, opportunity.kalshi_price, opportunity.polymarket_price,
+            opportunity.profit_margin, duration_ms, reason,
+        ) {
+            error!("Failed to save skipped auto-trade record: {}", error);
+        }
+    }
+}
+
 /// Check and add eligible opportunities to auto-trade queue
 async fn check_and_queue_auto_trade(state: &Arc<AppState>, _metrics: &Arc<PerformanceMetrics>) {
     let service = state.service.read().await;
@@ -499,7 +746,7 @@ async fn check_and_queue_auto_trade(state: &Arc<AppState>, _metrics: &Arc<Perfor
 /// Execute auto-trade for a single opportunity (extracted from original for loop)
 async fn execute_single_auto_trade(
     service: &ArbitrageService,
-    _state: &Arc<AppState>,
+    state: &Arc<AppState>,
     _metrics: &Arc<PerformanceMetrics>,
     key: &str,
 ) {
@@ -531,31 +778,294 @@ async fn execute_single_auto_trade(
         }
     };
 
-    // The US gateway provides display quotes but no verified executable order
-    // book quantity. A paired automated trade must never place either leg
-    // without verified liquidity on both exchanges.
-    let skip_reason = "Polymarket US executable liquidity is unavailable";
-    info!(
-        "⚠️ [Auto-trade] {}: {} - {}",
-        skip_reason, record.event_name, record.team_name
-    );
-    if service.ws_manager.should_record_skip(key, skip_reason) {
-        let storage = service.ws_manager.get_storage();
-        if let Err(error) = storage.save_skipped_auto_trade_record(
-            &record.event_name,
-            &record.team_name,
-            &record.kalshi_market_id,
-            &record.polymarket_market_id,
-            &opportunity.kalshi_side,
-            &opportunity.polymarket_side,
+    let Some(matched_market) = service
+        .get_matched_markets()
+        .iter()
+        .find(|market| market.market_key() == key)
+    else {
+        save_auto_trade_skip(service, key, &record, &opportunity, auto_state.min_contracts,
+            duration_ms, "Matched market disappeared before execution");
+        return;
+    };
+    let Some(poly_execution) = matched_market
+        .polymarket_market
+        .us_execution_for_competitor(&record.team_name)
+    else {
+        save_auto_trade_skip(service, key, &record, &opportunity, auto_state.min_contracts,
+            duration_ms, "Polymarket US position side is unavailable for the matched competitor");
+        return;
+    };
+
+    let Some(kalshi_book) = service.kalshi_client.get_fresh_orderbook(
+        &record.kalshi_market_id,
+        EXECUTABLE_BOOK_MAX_AGE,
+    ) else {
+        save_auto_trade_skip(service, key, &record, &opportunity, auto_state.min_contracts,
+            duration_ms, "Fresh Kalshi websocket executable depth is unavailable");
+        return;
+    };
+    let poly_book = match service
+        .polymarket_client
+        .get_market_book(&poly_execution.market_slug)
+        .await
+    {
+        Ok(book) => book,
+        Err(reason) => {
+            save_auto_trade_skip(service, key, &record, &opportunity, auto_state.min_contracts,
+                duration_ms, &format!("Fresh Polymarket US executable book is unavailable: {reason}"));
+            return;
+        }
+    };
+
+    let kalshi_levels = kalshi_buy_levels(&kalshi_book, &opportunity.kalshi_side);
+    let poly_levels = polymarket_buy_levels(&poly_book, poly_execution.position_side);
+    let max_depth = executable_depth(&kalshi_levels).min(executable_depth(&poly_levels));
+    let Some(size_cap) = calculate_contracts_to_trade(
+        max_depth,
+        max_depth,
+        auto_state.flexible_mode,
+        auto_state.min_contracts,
+        auto_state.max_contracts,
+    ) else {
+        save_auto_trade_skip(service, key, &record, &opportunity, auto_state.min_contracts,
+            duration_ms, "Fresh executable depth is below the configured contract minimum");
+        return;
+    };
+
+    let Some((contracts, kalshi_price_cents, poly_price, kalshi_fee, profit_margin)) =
+        find_profitable_contract_size(
+            size_cap,
             auto_state.min_contracts,
-            opportunity.kalshi_price,
-            opportunity.polymarket_price,
-            opportunity.profit_margin,
+            auto_state.max_amount,
+            &kalshi_levels,
+            &poly_levels,
+        )
+    else {
+        save_auto_trade_skip(service, key, &record, &opportunity, size_cap, duration_ms,
+            "No fresh executable size remains profitable after fees, worst-case prices, and amount limit");
+        return;
+    };
+
+    let started = Instant::now();
+    let lifecycle_id = service.ws_manager.get_storage().save_auto_trade_execution(
+        &AutoTradeExecutionRecord {
+            event_name: record.event_name.clone(),
+            team_name: record.team_name.clone(),
+            kalshi_market_id: record.kalshi_market_id.clone(),
+            polymarket_market_id: poly_execution.market_slug.clone(),
+            kalshi_side: opportunity.kalshi_side.clone(),
+            polymarket_side: poly_execution.position_side.as_str().to_string(),
+            contracts,
+            kalshi_price: kalshi_price_cents as f64 / 100.0,
+            kalshi_fee,
+            polymarket_price: poly_price,
+            profit_margin,
             duration_ms,
-            skip_reason,
-        ) {
-            error!("Failed to save skipped auto-trade record: {}", error);
+            total_duration_ms: 0,
+            kalshi_success: false,
+            polymarket_success: false,
+            kalshi_order_id: None,
+            polymarket_order_id: None,
+            kalshi_error: None,
+            polymarket_error: None,
+            kalshi_latency_ms: None,
+            poly_latency_ms: None,
+            kalshi_filled_contracts: 0,
+            polymarket_filled_contracts: 0,
+            kalshi_order_status: None,
+            polymarket_order_status: None,
+            neutralization_leg: None,
+            neutralization_success: None,
+            neutralization_order_id: None,
+            neutralization_filled_contracts: 0,
+            neutralization_error: None,
+            residual_leg: None,
+            residual_contracts: 0,
+            status: "submitting".to_string(),
+        },
+    ).map_err(|reason| {
+        error!("Failed to persist auto-trade submission before order placement: {}", reason);
+        reason
+    }).ok();
+    // Every input below came from the direct executable books above. Both
+    // native orders are IOC/FAK; an acknowledgement with zero fill is failure.
+    let poly_started = Instant::now();
+    let poly_result = match service
+        .polymarket_client
+        .submit_limit_order(
+            &poly_execution.market_slug,
+            poly_execution.position_side,
+            "buy",
+            contracts,
+            poly_price,
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(reason) => failed_poly_order(reason.to_string()),
+    };
+    let poly_latency = poly_result
+        .latency_ms
+        .or(Some(poly_started.elapsed().as_millis() as i64));
+
+    let kalshi_started = Instant::now();
+    let kalshi_result = match service
+        .kalshi_client
+        .submit_order(
+            &record.kalshi_market_id,
+            "buy",
+            &opportunity.kalshi_side,
+            contracts,
+            kalshi_price_cents,
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(reason) => failed_kalshi_order(reason.to_string()),
+    };
+    let kalshi_latency = Some(kalshi_started.elapsed().as_millis() as i64);
+
+    let mut neutralization_leg = None;
+    let mut neutralization_success = None;
+    let mut neutralization_order_id = None;
+    let mut neutralization_filled_contracts = 0;
+    let mut neutralization_error = None;
+    let mut residual_leg = None;
+    let mut residual_contracts = 0;
+    let unsafe_fill_quantity = !poly_result.fill_quantity_valid || !kalshi_result.fill_quantity_valid;
+
+    if unsafe_fill_quantity {
+        residual_leg = Some("unknown".to_string());
+        neutralization_error = Some(
+            "An exchange reported a non-whole fill quantity; exact bounded neutralization is unsafe"
+                .to_string(),
+        );
+    } else if poly_result.filled_contracts != kalshi_result.filled_contracts {
+        let (leg, excess) = if poly_result.filled_contracts > kalshi_result.filled_contracts {
+            ("polymarket", poly_result.filled_contracts - kalshi_result.filled_contracts)
+        } else {
+            ("kalshi", kalshi_result.filled_contracts - poly_result.filled_contracts)
+        };
+        neutralization_leg = Some(leg.to_string());
+        let recovery = if leg == "polymarket" {
+            neutralize_polymarket(
+                service,
+                &poly_execution.market_slug,
+                poly_execution.position_side,
+                excess,
+                poly_result.average_fill_price,
+                auto_state.neutralization_max_loss_cents,
+            )
+            .await
+        } else {
+            neutralize_kalshi(
+                service,
+                &record.kalshi_market_id,
+                &opportunity.kalshi_side,
+                excess,
+                kalshi_result.average_fill_price,
+                auto_state.neutralization_max_loss_cents,
+            )
+            .await
+        };
+        match recovery {
+            Ok(recovery) if recovery.filled_contracts >= excess => {
+                neutralization_success = Some(true);
+                neutralization_order_id = recovery.order_id;
+                neutralization_filled_contracts = recovery.filled_contracts;
+            }
+            Ok(recovery) => {
+                neutralization_success = Some(false);
+                neutralization_order_id = recovery.order_id;
+                neutralization_filled_contracts = recovery.filled_contracts;
+                neutralization_error = recovery.error;
+                residual_leg = Some(leg.to_string());
+                residual_contracts = excess - neutralization_filled_contracts;
+            }
+            Err(reason) => {
+                neutralization_success = Some(false);
+                neutralization_error = Some(reason);
+                residual_leg = Some(leg.to_string());
+                residual_contracts = excess;
+            }
+        }
+    }
+
+    let status = if unsafe_fill_quantity || residual_contracts > 0 {
+        "exposed"
+    } else if neutralization_leg.is_some() {
+        "neutralized"
+    } else if poly_result.filled_contracts == contracts && kalshi_result.filled_contracts == contracts {
+        "executed"
+    } else if poly_result.filled_contracts == 0 && kalshi_result.filled_contracts == 0 {
+        "rejected"
+    } else {
+        // Equal partial fills can still be directionally paired, but are
+        // recorded explicitly rather than presented as a full execution.
+        "partial_paired"
+    };
+    let execution_record = AutoTradeExecutionRecord {
+        event_name: record.event_name.clone(),
+        team_name: record.team_name.clone(),
+        kalshi_market_id: record.kalshi_market_id.clone(),
+        polymarket_market_id: poly_execution.market_slug.clone(),
+        kalshi_side: opportunity.kalshi_side.clone(),
+        polymarket_side: poly_execution.position_side.as_str().to_string(),
+        contracts,
+        kalshi_price: kalshi_price_cents as f64 / 100.0,
+        kalshi_fee,
+        polymarket_price: poly_price,
+        profit_margin,
+        duration_ms,
+        total_duration_ms: started.elapsed().as_millis() as i64,
+        kalshi_success: kalshi_result.filled_contracts > 0,
+        polymarket_success: poly_result.filled_contracts > 0,
+        kalshi_order_id: kalshi_result.order_id.clone(),
+        polymarket_order_id: poly_result.order_id.clone(),
+        kalshi_error: kalshi_result.error.clone(),
+        polymarket_error: poly_result.error.clone(),
+        kalshi_latency_ms: kalshi_latency,
+        poly_latency_ms: poly_latency,
+        kalshi_filled_contracts: kalshi_result.filled_contracts,
+        polymarket_filled_contracts: poly_result.filled_contracts,
+        kalshi_order_status: kalshi_result.status.clone(),
+        polymarket_order_status: poly_result.status.clone(),
+        neutralization_leg,
+        neutralization_success,
+        neutralization_order_id,
+        neutralization_filled_contracts,
+        neutralization_error: neutralization_error.clone(),
+        residual_leg: residual_leg.clone(),
+        residual_contracts,
+        status: status.to_string(),
+    };
+    if let Some(lifecycle_id) = lifecycle_id {
+        if let Err(reason) = service.ws_manager.get_storage().finish_auto_trade_execution(lifecycle_id, &execution_record) {
+            error!("Failed to finalize automatic paired execution: {}", reason);
+        }
+    } else if let Err(reason) = service.ws_manager.get_storage().save_auto_trade_execution(&execution_record) {
+        error!("Failed to persist automatic paired execution: {}", reason);
+    }
+
+    if unsafe_fill_quantity || residual_contracts > 0 {
+        // The recovery bound was unavailable or could not be met. Stop future
+        // automated submissions and notify through the configured alert path.
+        if let Err(reason) = service.ws_manager.disable_auto_trade() {
+            error!("Failed to halt auto-trading after residual exposure: {}", reason);
+        }
+        state.telegram_client.send_auto_trade_notification(
+            &record.event_name, &record.team_name, profit_margin,
+            execution_record.kalshi_success, execution_record.polymarket_success,
+            execution_record.kalshi_error.as_deref(), execution_record.polymarket_error.as_deref(),
+            contracts as f64 * (kalshi_price_cents as f64 / 100.0 + poly_price) + kalshi_fee,
+            0.0,
+        ).await;
+    } else {
+        service.ws_manager.mark_as_auto_traded(key);
+    }
+    if status == "executed" {
+        if let Err(reason) = service.ws_manager.increment_trade_count() {
+            error!("Failed to increment auto-trade count: {}", reason);
         }
     }
 }
@@ -617,4 +1127,51 @@ async fn cleanup_ended_markets(state: &Arc<AppState>) {
         "✅ [Cleanup] Complete; {} active markets remain",
         remaining_markets
     );
+}
+
+#[cfg(test)]
+mod auto_execution_tests {
+    use super::*;
+
+    fn native_book() -> PolymarketMarketBook {
+        PolymarketMarketBook {
+            success: true,
+            market_slug: "match-winner".to_string(),
+            state: "open".to_string(),
+            transact_time: Some("2026-09-11T19:37:00Z".to_string()),
+            fetched_at_ms: 1,
+            bids: vec![
+                PolymarketBookLevel { price: 0.62, quantity: 2.0 },
+                PolymarketBookLevel { price: 0.60, quantity: 3.0 },
+            ],
+            offers: vec![
+                PolymarketBookLevel { price: 0.64, quantity: 2.0 },
+                PolymarketBookLevel { price: 0.66, quantity: 3.0 },
+            ],
+        }
+    }
+
+    #[test]
+    fn derives_short_buy_depth_from_descending_native_bids() {
+        let levels = polymarket_buy_levels(&native_book(), PolymarketPositionSide::Short);
+        assert_eq!(levels, vec![(0.38, 2), (0.40, 3)]);
+        assert_eq!(worst_price(&levels, 3), Some(0.40));
+    }
+
+    #[test]
+    fn rejects_size_when_worst_case_fee_removes_profit() {
+        let kalshi = vec![(50, 10)];
+        let poly = vec![(0.50, 10)];
+        assert!(find_profitable_contract_size(10, 1, 100.0, &kalshi, &poly).is_none());
+    }
+
+    #[test]
+    fn uses_worst_level_and_respects_total_amount_limit() {
+        let kalshi = vec![(40, 2), (42, 3)];
+        let poly = vec![(0.45, 2), (0.47, 3)];
+        let result = find_profitable_contract_size(5, 1, 5.0, &kalshi, &poly).unwrap();
+        assert_eq!(result.0, 5);
+        assert_eq!(result.1, 42);
+        assert_eq!(result.2, 0.47);
+    }
 }

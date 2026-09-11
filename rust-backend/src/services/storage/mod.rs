@@ -26,7 +26,7 @@ use tracing::{error, info};
 use crate::models::ArbitrageTrackingRecord;
 
 // Re-export types from sub-modules
-pub use auto_trade_repo::AutoTradeState;
+pub use auto_trade_repo::{AutoTradeExecutionRecord, AutoTradeState};
 
 /// Storage command for async queue
 pub enum StorageCommand {
@@ -168,6 +168,10 @@ impl ArbitrageStorage {
             "ALTER TABLE auto_trade_state ADD COLUMN min_contracts INTEGER DEFAULT 10",
             [],
         );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_state ADD COLUMN neutralization_max_loss_cents INTEGER DEFAULT 5",
+            [],
+        );
 
         // Initialize auto_trade_state with default row if not exists
         conn.execute(
@@ -232,6 +236,50 @@ impl ArbitrageStorage {
         );
         let _ = conn.execute(
             "ALTER TABLE auto_trade_history ADD COLUMN poly_latency_ms INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN kalshi_filled_contracts INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN polymarket_filled_contracts INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN kalshi_order_status TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN polymarket_order_status TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN neutralization_leg TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN neutralization_success INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN neutralization_order_id TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN neutralization_filled_contracts INTEGER DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN neutralization_error TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN residual_leg TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN residual_contracts INTEGER DEFAULT 0",
             [],
         );
 

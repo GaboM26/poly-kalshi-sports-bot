@@ -160,13 +160,13 @@ impl PolymarketMarket {
     /// The caller must use this mapping rather than infer a position from the
     /// outcome order, displayed yes/no price, condition ID, or CLOB token.
     pub fn us_execution_for_competitor(&self, team: &str) -> Option<PolymarketUsExecution> {
-        let team_upper = team.to_uppercase();
-        if team_upper == self.team_a.to_uppercase() {
+        let team_key = competitor_lookup_key(team);
+        if team_key == competitor_lookup_key(&self.team_a) {
             Some(PolymarketUsExecution {
                 market_slug: self.market_slug.clone(),
                 position_side: self.team_a_position,
             })
-        } else if team_upper == self.team_b.to_uppercase() {
+        } else if team_key == competitor_lookup_key(&self.team_b) {
             Some(PolymarketUsExecution {
                 market_slug: self.market_slug.clone(),
                 position_side: self.team_b_position,
@@ -187,6 +187,24 @@ impl PolymarketMarket {
             None
         }
     }
+}
+
+/// Match a displayed competitor spelling to the canonical market-side name
+/// without deriving position direction from outcome ordering.
+fn competitor_lookup_key(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() {
+                character.to_ascii_uppercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Kalshi event

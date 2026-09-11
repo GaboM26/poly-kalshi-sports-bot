@@ -42,6 +42,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
   const [maxTradeCountInput, setMaxTradeCountInput] = useState('2');
   const [maxContractsInput, setMaxContractsInput] = useState('100');
   const [minContractsInput, setMinContractsInput] = useState('10');
+  const [neutralizationLossInput, setNeutralizationLossInput] = useState('5');
   const [autoTradeMessage, setAutoTradeMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
   // Application settings state
@@ -64,6 +65,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
       setMaxTradeCountInput(String(data.max_trade_count));
       setMaxContractsInput(String(data.max_contracts));
       setMinContractsInput(String(data.min_contracts));
+      setNeutralizationLossInput(String(data.neutralization_max_loss_cents));
     } catch (error) {
       console.error('Failed to fetch automated trading status:', error);
     }
@@ -281,6 +283,26 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
       await fetchAutoTradeStatus();
     } catch (error) {
       showAutoTradeMsg('Failed to update settings', 'error');
+    }
+    setAutoTradeLoading(false);
+  };
+
+  const handleUpdateNeutralizationLoss = async () => {
+    const cents = parseInt(neutralizationLossInput);
+    if (isNaN(cents) || cents < 0 || cents > 99) {
+      showAutoTradeMsg('Enter a close-loss bound from 0 to 99 cents', 'error');
+      return;
+    }
+    setAutoTradeLoading(true);
+    try {
+      const result = await updateAutoTradeSettings(apiBaseUrl, {
+        neutralization_max_loss_cents: cents,
+      });
+      if (result.success) showAutoTradeMsg('Close-loss bound updated', 'success');
+      else showAutoTradeMsg(result.error || 'Failed to update close-loss bound', 'error');
+      await fetchAutoTradeStatus();
+    } catch (error) {
+      showAutoTradeMsg('Failed to update close-loss bound', 'error');
     }
     setAutoTradeLoading(false);
   };
@@ -655,6 +677,32 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
                     Update
                   </button>
                 </div>
+
+                {/* Bounded exposure neutralization */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-sm text-[--text-secondary]">Emergency Close Loss Bound</span>
+                    <p className="text-[10px] text-[--text-muted]">Maximum adverse price allowed for a partial-fill close</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={neutralizationLossInput}
+                      onChange={(e) => setNeutralizationLossInput(e.target.value)}
+                      className="w-12 text-xs px-2 py-1 rounded bg-[--bg-primary] border border-[--border-color] text-[--text-primary] focus:outline-none focus:border-blue-500 text-center"
+                      min="0"
+                      max="99"
+                    />
+                    <span className="text-xs text-[--text-muted]">¢</span>
+                    <button
+                      onClick={handleUpdateNeutralizationLoss}
+                      disabled={autoTradeLoading}
+                      className="text-xs px-2 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors disabled:opacity-50"
+                    >
+                      Update
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Last trade time */}
@@ -686,6 +734,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
                   ? `Flexible mode: trade ${autoTradeStatus.min_contracts} contracts at depth 10–20, or half the depth at ≥20 (up to ${autoTradeStatus.max_contracts} contracts)`
                   : `Fixed mode: trade ${autoTradeStatus.min_contracts} contracts each time`
                 }. Both platforms must have depth of at least {autoTradeStatus.min_contracts} contracts before trading.
+                A partial or one-leg fill is closed only within the configured {autoTradeStatus.neutralization_max_loss_cents}¢ bound; otherwise auto-trading halts.
               </p>
             </div>
           </div>

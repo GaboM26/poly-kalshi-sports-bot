@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 import toml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 from polymarket_us import PolymarketUS
 
@@ -111,6 +111,24 @@ class OrderResponse(BaseModel):
     error: Optional[str] = None
     data: Optional[dict[str, Any]] = None
     latency_ms: Optional[int] = None
+
+
+class BookLevel(BaseModel):
+    price: float = Field(gt=0, lt=1)
+    quantity: float = Field(gt=0)
+
+
+class MarketBookResponse(BaseModel):
+    """A normalized, freshly fetched native Polymarket US LONG-price book."""
+
+    success: bool
+    market_slug: str
+    state: str
+    transact_time: Optional[str] = None
+    fetched_at_ms: int
+    bids: list[BookLevel]
+    offers: list[BookLevel]
+    error: Optional[str] = None
 
 
 def load_config() -> dict[str, Any]:
@@ -261,6 +279,57 @@ def concise_api_error(exc: Exception) -> str:
     return message[:500]
 
 
+def normalize_book_levels(levels: Any, field: str) -> list[BookLevel]:
+    """Validate SDK price/quantity objects without accepting lossy book data."""
+    if not isinstance(levels, list):
+        raise ValueError(f"Polymarket US market book {field} must be a list")
+
+    normalized: list[BookLevel] = []
+    for level in levels:
+        if not isinstance(level, dict):
+            raise ValueError(f"Polymarket US market book {field} contains an invalid level")
+        price = amount_value(level.get("px"))
+        quantity = amount_value(level.get("qty"))
+        if price is None or not 0.0 < price < 1.0:
+            raise ValueError(f"Polymarket US market book {field} contains an invalid price")
+        if quantity is None or quantity <= 0:
+            raise ValueError(f"Polymarket US market book {field} contains an invalid quantity")
+        normalized.append(BookLevel(price=price, quantity=quantity))
+
+    return normalized
+
+
+def normalize_market_book(response: Any, requested_slug: str) -> MarketBookResponse:
+    """Normalize the official SDK's `{marketData: {...}}` book envelope."""
+    if not isinstance(response, dict) or not isinstance(response.get("marketData"), dict):
+        raise ValueError("Polymarket US market book did not contain a marketData envelope")
+    market_data = response["marketData"]
+    market_slug = market_data.get("marketSlug")
+    state = market_data.get("state")
+    if not isinstance(market_slug, str) or market_slug != requested_slug:
+        raise ValueError("Polymarket US market book slug did not match the requested market")
+    if not isinstance(state, str) or not state.strip():
+        raise ValueError("Polymarket US market book did not contain a state")
+
+    bids = normalize_book_levels(market_data.get("bids"), "bids")
+    offers = normalize_book_levels(market_data.get("offers"), "offers")
+    bids.sort(key=lambda level: level.price, reverse=True)
+    offers.sort(key=lambda level: level.price)
+    transact_time = market_data.get("transactTime")
+    if transact_time is not None and not isinstance(transact_time, (str, int, float)):
+        raise ValueError("Polymarket US market book contained an invalid transactTime")
+
+    return MarketBookResponse(
+        success=True,
+        market_slug=market_slug,
+        state=state,
+        transact_time=str(transact_time) if transact_time is not None else None,
+        fetched_at_ms=int(time.time() * 1000),
+        bids=bids,
+        offers=offers,
+    )
+
+
 async def cached_balances() -> tuple[float, list[dict[str, Any]]]:
     """Fetch account balances at most once per cache period."""
     global balance_cache
@@ -368,6 +437,20 @@ async def health_check() -> dict[str, Any]:
         "client_initialized": polymarket_client is not None,
         "platform": "polymarket-us",
     }
+
+
+@app.get("/market/book", response_model=MarketBookResponse)
+async def get_market_book(
+    market_slug: str = Query(min_length=1),
+) -> MarketBookResponse:
+    """Fetch a fresh executable book using only the official Polymarket US SDK."""
+    try:
+        response = await asyncio.to_thread(get_client().markets.book, market_slug)
+        return normalize_market_book(response, market_slug)
+    except Exception as exc:
+        error = concise_api_error(exc)
+        logger.error("Polymarket US market book lookup failed for %s: %s", market_slug, error)
+        raise HTTPException(status_code=502, detail=error) from exc
 
 
 @app.post("/order/market", response_model=OrderResponse)
