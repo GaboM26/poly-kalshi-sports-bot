@@ -1,8 +1,9 @@
-"""Offline tests for Polymarket US order-book normalization."""
+"""Offline tests for Polymarket US gateway response normalization."""
 
+import asyncio
 import unittest
 
-from main import normalize_market_book
+from main import normalize_market_book, order_result
 
 
 class MarketBookNormalizationTests(unittest.TestCase):
@@ -43,6 +44,18 @@ class MarketBookNormalizationTests(unittest.TestCase):
                 },
                 "expected-market",
             )
+
+    def test_surfaces_top_level_rejection_without_execution(self) -> None:
+        async def verify() -> None:
+            result = order_result(
+                {"message": "Order rejected: insufficient buying power"},
+                asyncio.get_running_loop().time(),
+            )
+
+            self.assertFalse(result.success)
+            self.assertEqual(result.error, "Order rejected: insufficient buying power")
+
+        asyncio.run(verify())
 
 
 if __name__ == "__main__":

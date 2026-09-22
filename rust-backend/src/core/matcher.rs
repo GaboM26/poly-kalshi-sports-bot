@@ -286,7 +286,6 @@ impl EventMatcher {
 
             // Add to lookup
             market_lookup.entry(k_id.clone()).or_default().push(idx);
-
         }
 
         info!(

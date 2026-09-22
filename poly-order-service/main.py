@@ -200,9 +200,17 @@ def order_result(
     latency_ms = int((asyncio.get_running_loop().time() - started) * 1000)
     executions = response.get("executions")
     if not isinstance(executions, list) or not executions:
+        upstream_error = next(
+            (
+                response.get(field)
+                for field in ("error", "message", "detail", "orderRejectReason", "text")
+                if isinstance(response.get(field), str) and response.get(field)
+            ),
+            None,
+        )
         return OrderResponse(
             success=False,
-            error="Polymarket US did not return an order execution",
+            error=upstream_error or "Polymarket US did not return an order execution",
             data=response,
             latency_ms=latency_ms,
         )
@@ -229,7 +237,12 @@ def order_result(
             latency_ms=latency_ms,
         )
 
-    rejection_reason = execution.get("orderRejectReason") or execution.get("text")
+    reject_code = execution.get("orderRejectReason")
+    reject_text = execution.get("text")
+    if reject_code and reject_text and reject_code != reject_text:
+        rejection_reason = f"{reject_code}: {reject_text}"
+    else:
+        rejection_reason = reject_code or reject_text
     return OrderResponse(
         success=False,
         order_id=order.get("id"),
@@ -403,6 +416,8 @@ def limit_order_params(request: LimitOrderRequest) -> dict[str, Any]:
         "quantity": request.size,
         "tif": TIF_MAP.get(request.order_type.upper(), TIF_MAP["GTC"]),
         "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_MANUAL",
+        "synchronousExecution": True,
+        "maxBlockTime": "5",
     }
 
 

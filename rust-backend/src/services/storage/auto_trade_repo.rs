@@ -287,9 +287,8 @@ impl ArbitrageStorage {
     pub fn save_auto_trade_execution(&self, record: &AutoTradeExecutionRecord) -> Result<i64> {
         let conn = self.conn().lock();
         let polymarket_amount = record.contracts as f64 * record.polymarket_price;
-        let total_amount = record.contracts as f64 * record.kalshi_price
-            + record.kalshi_fee
-            + polymarket_amount;
+        let total_amount =
+            record.contracts as f64 * record.kalshi_price + record.kalshi_fee + polymarket_amount;
         conn.execute(
             "INSERT INTO auto_trade_history (
                 event_name, team_name, kalshi_market_id, polymarket_market_id, kalshi_side,
@@ -305,19 +304,41 @@ impl ArbitrageStorage {
                       ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29,
                       ?30, ?31, ?32, ?33, ?34, ?35, ?36)",
             params![
-                record.event_name, record.team_name, record.kalshi_market_id,
-                record.polymarket_market_id, record.kalshi_side, record.polymarket_side,
-                record.contracts, record.kalshi_price, record.kalshi_fee, polymarket_amount,
-                record.polymarket_price, total_amount, record.profit_margin, record.duration_ms,
-                record.total_duration_ms, record.kalshi_success as i32,
-                record.polymarket_success as i32, record.kalshi_order_id,
-                record.polymarket_order_id, record.kalshi_error, record.polymarket_error,
-                record.kalshi_latency_ms, record.poly_latency_ms, record.status,
-                record.kalshi_filled_contracts, record.polymarket_filled_contracts,
-                record.kalshi_order_status, record.polymarket_order_status,
-                record.neutralization_leg, record.neutralization_success.map(i32::from),
-                record.neutralization_order_id, record.neutralization_filled_contracts,
-                record.neutralization_error, record.residual_leg, record.residual_contracts,
+                record.event_name,
+                record.team_name,
+                record.kalshi_market_id,
+                record.polymarket_market_id,
+                record.kalshi_side,
+                record.polymarket_side,
+                record.contracts,
+                record.kalshi_price,
+                record.kalshi_fee,
+                polymarket_amount,
+                record.polymarket_price,
+                total_amount,
+                record.profit_margin,
+                record.duration_ms,
+                record.total_duration_ms,
+                record.kalshi_success as i32,
+                record.polymarket_success as i32,
+                record.kalshi_order_id,
+                record.polymarket_order_id,
+                record.kalshi_error,
+                record.polymarket_error,
+                record.kalshi_latency_ms,
+                record.poly_latency_ms,
+                record.status,
+                record.kalshi_filled_contracts,
+                record.polymarket_filled_contracts,
+                record.kalshi_order_status,
+                record.polymarket_order_status,
+                record.neutralization_leg,
+                record.neutralization_success.map(i32::from),
+                record.neutralization_order_id,
+                record.neutralization_filled_contracts,
+                record.neutralization_error,
+                record.residual_leg,
+                record.residual_contracts,
                 Utc::now().to_rfc3339(),
             ],
         )?;
@@ -326,12 +347,15 @@ impl ArbitrageStorage {
 
     /// Finalize a durable `submitting` record after both legs and any bounded
     /// recovery attempt have reported their outcomes.
-    pub fn finish_auto_trade_execution(&self, id: i64, record: &AutoTradeExecutionRecord) -> Result<()> {
+    pub fn finish_auto_trade_execution(
+        &self,
+        id: i64,
+        record: &AutoTradeExecutionRecord,
+    ) -> Result<()> {
         let conn = self.conn().lock();
         let polymarket_amount = record.contracts as f64 * record.polymarket_price;
-        let total_amount = record.contracts as f64 * record.kalshi_price
-            + record.kalshi_fee
-            + polymarket_amount;
+        let total_amount =
+            record.contracts as f64 * record.kalshi_price + record.kalshi_fee + polymarket_amount;
         conn.execute(
             "UPDATE auto_trade_history SET kalshi_contracts=?2, kalshi_price=?3, kalshi_fee=?4,
                 polymarket_amount=?5, polymarket_price=?6, total_amount=?7, profit_margin=?8,
@@ -356,6 +380,62 @@ impl ArbitrageStorage {
             ],
         )?;
         Ok(())
+    }
+
+    /// Persist an acknowledged leg before submitting or recovering the other leg.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_auto_trade_leg(
+        &self,
+        id: i64,
+        leg: &str,
+        success: bool,
+        filled_contracts: i32,
+        order_id: Option<&str>,
+        status: Option<&str>,
+        error: Option<&str>,
+        latency_ms: Option<i64>,
+    ) -> Result<()> {
+        let conn = self.conn().lock();
+        match leg {
+            "kalshi" => {
+                conn.execute(
+                    "UPDATE auto_trade_history SET kalshi_success=?2, kalshi_filled_contracts=?3,
+                     kalshi_order_id=?4, kalshi_order_status=?5, kalshi_error=?6,
+                     kalshi_latency_ms=?7 WHERE id=?1",
+                    params![
+                        id,
+                        success as i32,
+                        filled_contracts,
+                        order_id,
+                        status,
+                        error,
+                        latency_ms
+                    ],
+                )?;
+            }
+            "polymarket" => {
+                conn.execute(
+                    "UPDATE auto_trade_history SET polymarket_success=?2, polymarket_filled_contracts=?3,
+                     polymarket_order_id=?4, polymarket_order_status=?5, polymarket_error=?6,
+                     poly_latency_ms=?7 WHERE id=?1",
+                    params![id, success as i32, filled_contracts, order_id, status, error, latency_ms],
+                )?;
+            }
+            _ => anyhow::bail!("Unknown auto-trade execution leg: {leg}"),
+        }
+        Ok(())
+    }
+
+    /// A restarted executor must not submit new pairs while a prior process
+    /// may have been interrupted between durable intent and final outcome.
+    pub fn has_submitting_auto_trade_execution(&self) -> Result<bool> {
+        let conn = self.conn().lock();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM auto_trade_history WHERE status = 'submitting'",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
     }
 
     /// Save an auto-trade execution record
@@ -527,7 +607,12 @@ impl ArbitrageStorage {
                     polymarket_amount, polymarket_price, total_amount, profit_margin,
                     duration_ms, total_duration_ms, kalshi_success, polymarket_success,
                     kalshi_order_id, polymarket_order_id, kalshi_error, polymarket_error,
-                    kalshi_latency_ms, poly_latency_ms, status, skip_reason, created_at
+                    kalshi_latency_ms, poly_latency_ms, status, skip_reason,
+                    kalshi_filled_contracts, polymarket_filled_contracts,
+                    kalshi_order_status, polymarket_order_status,
+                    neutralization_leg, neutralization_success, neutralization_order_id,
+                    neutralization_filled_contracts, neutralization_error,
+                    residual_leg, residual_contracts, created_at
              FROM auto_trade_history
              ORDER BY created_at DESC
              LIMIT ?1",

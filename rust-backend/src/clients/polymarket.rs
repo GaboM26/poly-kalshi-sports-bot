@@ -411,7 +411,9 @@ impl PolymarketClient {
         if response.filled_contracts <= 0 {
             anyhow::bail!(
                 "Polymarket US limit order did not fill: {}",
-                response.error.unwrap_or_else(|| "Unknown error".to_string())
+                response
+                    .error
+                    .unwrap_or_else(|| "Unknown error".to_string())
             );
         }
         Ok(json!({
@@ -463,7 +465,10 @@ impl PolymarketClient {
             .await
             .context("Failed to call the Python order service")?;
         if !resp.status().is_success() {
-            anyhow::bail!("Polymarket US order service returned HTTP {}", resp.status());
+            anyhow::bail!(
+                "Polymarket US order service returned HTTP {}",
+                resp.status()
+            );
         }
         let response: OrderResponse = resp.json().await?;
         let reported_fill = response.filled_contracts.unwrap_or(0.0);
@@ -471,11 +476,10 @@ impl PolymarketClient {
             && reported_fill >= 0.0
             && reported_fill.fract() == 0.0
             && reported_fill <= i32::MAX as f64;
-        let filled_contracts = fill_quantity_valid.then_some(reported_fill as i32).unwrap_or(0);
-        let average_fill_price = response
-            .data
-            .as_ref()
-            .and_then(extract_average_fill_price);
+        let filled_contracts = fill_quantity_valid
+            .then_some(reported_fill as i32)
+            .unwrap_or(0);
+        let average_fill_price = response.data.as_ref().and_then(extract_average_fill_price);
         Ok(PolymarketOrderResult {
             accepted: response.success || response.order_id.is_some(),
             filled_contracts,
@@ -499,7 +503,10 @@ impl PolymarketClient {
         if market_slug.trim().is_empty() {
             anyhow::bail!("Polymarket US market slug cannot be empty");
         }
-        let url = format!("{}/market/book", self.config.order_service_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/market/book",
+            self.config.order_service_url.trim_end_matches('/')
+        );
         let response = self
             .http
             .get(&url)
@@ -508,7 +515,10 @@ impl PolymarketClient {
             .await
             .context("Failed to retrieve Polymarket US market book")?;
         if !response.status().is_success() {
-            anyhow::bail!("Polymarket US market book service returned HTTP {}", response.status());
+            anyhow::bail!(
+                "Polymarket US market book service returned HTTP {}",
+                response.status()
+            );
         }
         let book: PolymarketMarketBook = response.json().await?;
         validate_market_book(&book, market_slug)?;
@@ -601,7 +611,6 @@ impl PolymarketClient {
             anyhow::bail!("Failed to cancel order: {}", error)
         }
     }
-
 }
 
 fn validate_market_book(book: &PolymarketMarketBook, requested_slug: &str) -> Result<()> {
@@ -633,10 +642,16 @@ fn validate_market_book(book: &PolymarketMarketBook, requested_slug: &str) -> Re
 fn extract_average_fill_price(response: &Value) -> Option<f64> {
     let executions = response.get("executions")?.as_array()?;
     let order = executions.last()?.get("order")?;
-    ["averageFillPrice", "averagePrice", "avgPrice", "avg_price"]
-        .iter()
-        .find_map(|field| amount_as_f64(&order[*field]))
-        .filter(|price| price.is_finite() && (0.0..1.0).contains(price))
+    [
+        "avgPx",
+        "averageFillPrice",
+        "averagePrice",
+        "avgPrice",
+        "avg_price",
+    ]
+    .iter()
+    .find_map(|field| amount_as_f64(&order[*field]))
+    .filter(|price| price.is_finite() && (0.0..1.0).contains(price))
 }
 
 fn amount_as_f64(value: &Value) -> Option<f64> {
@@ -677,17 +692,16 @@ fn parse_nba_market(
         return None;
     }
 
-    let (outcomes, sides) =
-        parse_binary_outcomes_and_market_sides(market_data, |outcome| {
-            if matches!(
-                outcome.trim().to_ascii_lowercase().as_str(),
-                "yes" | "no" | "over" | "under"
-            ) {
-                return None;
-            }
-            let normalized = normalize_team_name(outcome);
-            (!normalized.is_empty()).then_some(normalized)
-        })?;
+    let (outcomes, sides) = parse_binary_outcomes_and_market_sides(market_data, |outcome| {
+        if matches!(
+            outcome.trim().to_ascii_lowercase().as_str(),
+            "yes" | "no" | "over" | "under"
+        ) {
+            return None;
+        }
+        let normalized = normalize_team_name(outcome);
+        (!normalized.is_empty()).then_some(normalized)
+    })?;
     let team_a = outcomes[0].clone();
     let team_b = outcomes[1].clone();
     if team_a == team_b {
@@ -849,22 +863,11 @@ fn build_competitor_market(
         .and_then(|value| value.parse::<f64>().ok())
         .or_else(|| market_data["volume"].as_f64());
 
-    let (team_a, team_b, side_a, side_b) =
-        if first_competitor < second_competitor {
-            (
-                first_competitor,
-                second_competitor,
-                first_side,
-                second_side,
-            )
-        } else {
-            (
-                second_competitor,
-                first_competitor,
-                second_side,
-                first_side,
-            )
-        };
+    let (team_a, team_b, side_a, side_b) = if first_competitor < second_competitor {
+        (first_competitor, second_competitor, first_side, second_side)
+    } else {
+        (second_competitor, first_competitor, second_side, first_side)
+    };
 
     let market = PolymarketMarket {
         market_id: condition_id.clone(),
@@ -1024,5 +1027,18 @@ mod tests {
         });
 
         assert!(parse_tennis_match_winner_market(None, &market).is_none());
+    }
+
+    #[test]
+    fn extracts_sdk_average_fill_price() {
+        let response = json!({
+            "executions": [{
+                "order": {
+                    "avgPx": {"value": "0.6250", "currency": "USD"}
+                }
+            }]
+        });
+
+        assert_eq!(extract_average_fill_price(&response), Some(0.625));
     }
 }

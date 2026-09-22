@@ -254,8 +254,10 @@ impl KalshiClient {
     /// Return only a recent websocket book. REST quotes are intentionally not
     /// used for executable depth or automatic execution.
     pub fn get_fresh_orderbook(&self, ticker: &str, max_age: Duration) -> Option<OrderBook> {
-        self.get_orderbook(ticker)
-            .filter(|book| book.updated_at.is_some_and(|updated| updated.elapsed() <= max_age))
+        self.get_orderbook(ticker).filter(|book| {
+            book.updated_at
+                .is_some_and(|updated| updated.elapsed() <= max_age)
+        })
     }
 
     /// Fetch authoritative current ask quotes for the requested market tickers.
@@ -391,8 +393,7 @@ impl KalshiClient {
         count: i32,
         price: i32,
     ) -> Result<Value> {
-        let (book_side, yes_price_cents) =
-            v2_order_book_side_and_price(action, outcome, price)?;
+        let (book_side, yes_price_cents) = v2_order_book_side_and_price(action, outcome, price)?;
         let body = v2_order_payload(ticker, book_side, count, yes_price_cents)?;
 
         self.post("/portfolio/events/orders", &body).await
@@ -408,8 +409,10 @@ impl KalshiClient {
         count: i32,
         price: i32,
     ) -> Result<KalshiOrderResult> {
-        let response = self.place_order(ticker, action, outcome, count, price).await?;
-        Ok(parse_kalshi_order_result(&response))
+        let response = self
+            .place_order(ticker, action, outcome, count, price)
+            .await?;
+        Ok(parse_kalshi_order_result(&response, outcome))
     }
 
     /// Get orders with optional status filter
@@ -815,14 +818,13 @@ impl KalshiClient {
                 } else {
                     None
                 }
-
             }
             _ => None,
         }
     }
 }
 
-fn parse_kalshi_order_result(response: &Value) -> KalshiOrderResult {
+fn parse_kalshi_order_result(response: &Value, outcome: &str) -> KalshiOrderResult {
     let order = response.get("order").unwrap_or(response);
     let order_id = order
         .get("order_id")
@@ -834,11 +836,18 @@ fn parse_kalshi_order_result(response: &Value) -> KalshiOrderResult {
         .or_else(|| order.get("state"))
         .and_then(Value::as_str)
         .map(ToOwned::to_owned);
-    let reported_fill = ["fill_count", "filled_count", "filled_contracts"]
-        .iter()
-        .find_map(|field| order.get(*field).and_then(value_to_f64));
+    let reported_fill = [
+        "fill_count_fp",
+        "fill_count",
+        "filled_count",
+        "filled_contracts",
+    ]
+    .iter()
+    .find_map(|field| order.get(*field).and_then(value_to_f64));
     let fill_quantity_valid = reported_fill
-        .map(|value| value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= i32::MAX as f64)
+        .map(|value| {
+            value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= i32::MAX as f64
+        })
         .unwrap_or(true);
     let filled_contracts = reported_fill
         .filter(|_| fill_quantity_valid)
@@ -846,13 +855,21 @@ fn parse_kalshi_order_result(response: &Value) -> KalshiOrderResult {
         .unwrap_or(0);
     let average_fill_price = ["average_fill_price", "average_price", "avg_price"]
         .iter()
-        .find_map(|field| order.get(*field).and_then(value_to_price));
+        .find_map(|field| order.get(*field).and_then(value_to_price))
+        .and_then(|price| match outcome {
+            "yes" => Some(price),
+            "no" => Some(1.0 - price),
+            _ => None,
+        });
     let error = response
         .get("error")
         .or_else(|| response.get("message"))
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
-        .or_else(|| (!fill_quantity_valid).then(|| "Kalshi returned a non-whole or invalid fill quantity".to_string()))
+        .or_else(|| {
+            (!fill_quantity_valid)
+                .then(|| "Kalshi returned a non-whole or invalid fill quantity".to_string())
+        })
         .or_else(|| {
             (filled_contracts == 0).then(|| {
                 format!(
@@ -881,7 +898,11 @@ fn value_to_price(value: &Value) -> Option<f64> {
     (value.is_finite() && (0.0..1.0).contains(&value)).then_some(value)
 }
 
-fn v2_order_book_side_and_price(action: &str, outcome: &str, price: i32) -> Result<(&'static str, i32)> {
+fn v2_order_book_side_and_price(
+    action: &str,
+    outcome: &str,
+    price: i32,
+) -> Result<(&'static str, i32)> {
     if !(1..=99).contains(&price) {
         bail!("Kalshi order price must be between 1 and 99 cents");
     }
@@ -1025,7 +1046,7 @@ fn fixed_point_to_i32(value: &Value) -> Option<i32> {
                 .as_str()
                 .and_then(|quantity| quantity.parse::<f64>().ok())
         })?
-        .round();
+        .floor();
     (quantity.is_finite() && quantity >= i32::MIN as f64 && quantity <= i32::MAX as f64)
         .then_some(quantity as i32)
 }
@@ -1155,12 +1176,16 @@ fn build_kalshi_market(
         yes_price,
         no_price: 1.0 - yes_price,
         start_time,
-        volume: market_data["volume"]
-            .as_f64()
-            .or_else(|| market_data["volume_fp"].as_str().and_then(|value| value.parse().ok())),
-        liquidity: market_data["open_interest"]
-            .as_f64()
-            .or_else(|| market_data["open_interest_fp"].as_str().and_then(|value| value.parse().ok())),
+        volume: market_data["volume"].as_f64().or_else(|| {
+            market_data["volume_fp"]
+                .as_str()
+                .and_then(|value| value.parse().ok())
+        }),
+        liquidity: market_data["open_interest"].as_f64().or_else(|| {
+            market_data["open_interest_fp"]
+                .as_str()
+                .and_then(|value| value.parse().ok())
+        }),
     })
 }
 
@@ -1326,12 +1351,56 @@ mod tests {
 
     #[test]
     fn does_not_treat_ioc_acknowledgement_as_fill() {
-        let result = parse_kalshi_order_result(&json!({
-            "order": {"order_id": "order-1", "status": "canceled", "fill_count": "0.00"}
-        }));
+        let result = parse_kalshi_order_result(
+            &json!({
+                "order": {"order_id": "order-1", "status": "canceled", "fill_count": "0.00"}
+            }),
+            "yes",
+        );
         assert!(result.accepted);
         assert_eq!(result.filled_contracts, 0);
         assert!(result.error.unwrap().contains("no explicit fill"));
+    }
+
+    #[test]
+    fn parses_current_fixed_point_ioc_fill_count() {
+        let result = parse_kalshi_order_result(
+            &json!({
+                "order": {
+                    "order_id": "order-1",
+                    "status": "executed",
+                    "fill_count_fp": "2.00"
+                }
+            }),
+            "yes",
+        );
+
+        assert_eq!(result.filled_contracts, 2);
+        assert!(result.fill_quantity_valid);
+    }
+
+    #[test]
+    fn converts_no_order_fill_price_from_the_yes_book() {
+        let result = parse_kalshi_order_result(
+            &json!({
+                "order": {
+                    "order_id": "order-1",
+                    "fill_count_fp": "1.00",
+                    "avg_price": "0.6700"
+                }
+            }),
+            "no",
+        );
+
+        assert!(
+            (result.average_fill_price.unwrap() - 0.33).abs() < f64::EPSILON,
+            "expected a 33-cent NO fill price"
+        );
+    }
+
+    #[test]
+    fn floors_fractional_orderbook_depth_for_whole_contract_orders() {
+        assert_eq!(fixed_point_to_i32(&json!("9.99")), Some(9));
     }
 
     #[test]
@@ -1469,8 +1538,7 @@ mod tests {
             ("bid", 56)
         );
 
-        let payload = v2_order_payload("KXATPMATCH-26AUG30DEJPAS-DEJ", "ask", 3, 56)
-            .unwrap();
+        let payload = v2_order_payload("KXATPMATCH-26AUG30DEJPAS-DEJ", "ask", 3, 56).unwrap();
         assert_eq!(payload["side"], "ask");
         assert_eq!(payload["count"], "3.00");
         assert_eq!(payload["price"], "0.5600");

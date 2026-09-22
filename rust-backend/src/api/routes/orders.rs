@@ -181,9 +181,10 @@ pub async fn execute_arbitrage(
     }
 
     let service = state.service.read().await;
-    let matched_market = service.get_matched_markets().iter().find(|market| {
-        market.event_name == req.event_name && market.team_name == req.team_name
-    });
+    let matched_market = service
+        .get_matched_markets()
+        .iter()
+        .find(|market| market.event_name == req.event_name && market.team_name == req.team_name);
     let Some(matched_market) = matched_market else {
         return (
             StatusCode::NOT_FOUND,

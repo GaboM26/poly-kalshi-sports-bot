@@ -113,10 +113,13 @@ default_bet_amount = 10.0     # Default bet amount
 tracking_threshold = 2.0      # Tracking threshold (%)
 
 [auto_trade]
+# Auto-trade limits are persisted in SQLite and managed from the UI/API after
+# first startup. These values document the initial safe defaults.
 enabled = false               # Enable automatic trading
 max_amount = 10.0             # Maximum amount per trade
 max_trade_count = 2           # Maximum execution count
 min_duration_ms = 500         # Minimum opportunity duration
+neutralization_max_loss_cents = 5 # Maximum emergency-close loss per contract
 
 [telegram]
 enabled = false
@@ -180,9 +183,25 @@ cp config.example.toml config.toml
 
 ### Automated Trading
 
-- Filters opportunities by duration threshold
-- Configurable trade amount and execution limits
-- Real-time Telegram notifications
+- Uses a fresh executable Kalshi WebSocket order book and the official
+  `polymarket-us` SDK's US market-book endpoint immediately before submission.
+- Sizes only whole contracts supported by both books, using worst-case fill
+  prices, Kalshi fees, the configured maximum amount, and the required profit
+  margin.
+- Uses IOC/FAK orders and treats a zero-fill acknowledgement as a failed leg.
+- Hedges complementary outcomes only: Kalshi YES is paired with Polymarket NO
+  for the tracked competitor, and Kalshi NO is paired with Polymarket YES.
+  The native Polymarket LONG/SHORT direction is resolved from that selected
+  competitor; it is never inferred from an outcome index.
+- Persists intent before submitting either leg and records each acknowledgement,
+  fill, cancellation, rejection, neutralization attempt, and residual exposure.
+- For mismatched fills, attempts an IOC/FAK offset only within the configured
+  `neutralization_max_loss_cents` bound (5 cents per contract by default).
+  If it cannot safely close the residual, it disables auto-trading and sends
+  the configured Telegram alert.
+- Disables auto-trading at startup if an execution was interrupted while its
+  status was `submitting`. Reconcile that record and every residual position
+  before manually re-enabling the bot.
 
 ### Data Management
 
@@ -195,14 +214,17 @@ cp config.example.toml config.toml
 | Endpoint | Method | Description |
 | --- | --- | --- |
 | `/api/health` | GET | Health check |
-| `/api/login` | POST | User authentication |
+| `/api/auth/login` | POST | User authentication |
 | `/api/settings` | GET/PUT | Settings management |
-| `/api/auto-trade` | GET/PUT | Automated-trading configuration |
+| `/api/auto-trade/status` | GET | Automated-trading state and limits |
+| `/api/auto-trade/enable`, `/api/auto-trade/disable` | POST | Change automated-trading state |
+| `/api/auto-trade/settings` | PUT | Update automated-trading limits |
+| `/api/auto-trade/history` | GET | Submission, fill, recovery, and residual-exposure history |
 | `/api/positions/kalshi` | GET | Kalshi positions |
 | `/api/positions/polymarket` | GET | Polymarket positions |
-| `/api/arbitrage/history` | GET | Arbitrage history |
+| `/api/arbitrage-history` | GET | Arbitrage tracking history |
 | `/api/order/kalshi` | POST | Submit a Kalshi order |
-| `/api/order/polymarket` | POST | Submit a Polymarket order |
+| `/api/order/polymarket` | POST | Submit a Polymarket US order |
 | `/ws` | WebSocket | Live data delivery |
 
 ## Security Recommendations
@@ -225,7 +247,13 @@ tail -f rust-backend/logs/polytaoli.log
 - **The backend will not start**: Check the configuration-file syntax and API credentials.
 - **WebSocket disconnects**: Confirm the backend is running and firewall settings allow access.
 - **Data is not updating**: Verify API-key permissions and network connectivity.
-- **Automated trades are not executing**: Check the profit-margin threshold and account balance.
+- **Automated trades are not executing**: Check the history for a stale book,
+  insufficient executable depth, worst-case profit/amount rejection, or a
+  `submitting`/`exposed` record. Do not re-enable the bot while a residual
+  position or interrupted submission requires reconciliation.
+- **An execution is `exposed`**: The bot has halted after a one-leg or
+  unneutralized partial fill. Resolve the named exchange position manually,
+  verify the account position, and record the reconciliation before re-enabling.
 
 ---
 

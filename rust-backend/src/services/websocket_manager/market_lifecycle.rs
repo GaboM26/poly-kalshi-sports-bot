@@ -119,7 +119,6 @@ impl WebSocketManager {
 
                     kalshi_to_unsub.push(mm.kalshi_market.market_id.clone());
                     poly_market_ids_to_remove.push(mm.polymarket_market.market_id.clone());
-
                 }
             }
         }

@@ -13,22 +13,22 @@ interface HistoryRecord {
   team_name: string;
   kalshi_market_id: string;
   polymarket_market_id: string;
-  kalshi_side: string;  // yes 或 no
-  polymarket_side: string;  // yes 或 no
+  kalshi_side: string;  // yes or no
+  polymarket_side: string;  // yes or no
   start_time: string;
   end_time?: string;
   duration_seconds?: number;
-  duration_ms?: number;  // 毫秒级持续时间
+  duration_ms?: number;  // duration in milliseconds
   max_profit_margin: number;
   max_profit_time?: string;
   profit_history?: ProfitHistoryEntry[];
-  // 深度信息
-  poly_ask_depth?: number;  // Polymarket ask 深度 (USD = price * size)
-  poly_ask_size?: number;   // Polymarket ask 数量 (代币数)
-  kalshi_ask_depth?: number;  // Kalshi ask 深度 (contracts)
-  // 价格信息
-  kalshi_ask_price?: number;  // Kalshi ask 价格
-  polymarket_ask_price?: number;  // Polymarket ask 价格
+  // Depth info
+  poly_ask_depth?: number;  // Polymarket ask depth (USD = price * size)
+  poly_ask_size?: number;   // Polymarket ask size (token count)
+  kalshi_ask_depth?: number;  // Kalshi ask depth (contracts)
+  // Price info
+  kalshi_ask_price?: number;  // Kalshi ask price
+  polymarket_ask_price?: number;  // Polymarket ask price
 }
 
 interface SearchResult {
@@ -70,37 +70,37 @@ interface HistoryExplorerProps {
 }
 
 export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
-  // 筛选条件
+  // Filter criteria
   const [minProfit, setMinProfit] = useState<string>('');
   const [maxProfit, setMaxProfit] = useState<string>('');
   const [minDuration, setMinDuration] = useState<string>('');
   const [maxDuration, setMaxDuration] = useState<string>('');
-  const [durationUnit, setDurationUnit] = useState<'s' | 'ms'>('s'); // 秒或毫秒
+  const [durationUnit, setDurationUnit] = useState<'s' | 'ms'>('s'); // seconds or milliseconds
   const [eventName, setEventName] = useState('');
   const [teamName, setTeamName] = useState('');
   const [sortBy, setSortBy] = useState('start_time');
   const [sortOrder, setSortOrder] = useState('desc');
-  
-  // 分页
+
+  // Pagination
   const [page, setPage] = useState(1);
   const pageSize = 20;
-  
-  // 数据
+
+  // Data
   const [result, setResult] = useState<SearchResult | null>(null);
   const [stats, setStats] = useState<Statistics | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedRecord, setSelectedRecord] = useState<HistoryRecord | null>(null);
   const [activeTab, setActiveTab] = useState<'list' | 'stats'>('list');
 
-  // 搜索函数
+  // Search function
   const search = useCallback(async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (minProfit) params.set('min_profit', minProfit);
       if (maxProfit) params.set('max_profit', maxProfit);
-      
-      // 根据单位转换持续时间（API 使用秒）
+
+      // Convert duration based on unit (API uses seconds)
       if (minDuration) {
         const minDurationSeconds = durationUnit === 'ms' 
           ? parseFloat(minDuration) / 1000 
@@ -134,7 +134,7 @@ export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
     }
   }, [apiBaseUrl, minProfit, maxProfit, minDuration, maxDuration, durationUnit, eventName, teamName, sortBy, sortOrder, page]);
 
-  // 获取统计信息
+  // Fetch statistics
   const fetchStats = useCallback(async () => {
     try {
       const response = await fetch(`${apiBaseUrl}/api/history/statistics`);
@@ -152,7 +152,7 @@ export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
     fetchStats();
   }, [search, fetchStats]);
 
-  // 重置筛选
+  // Reset filters
   const resetFilters = () => {
     setMinProfit('');
     setMaxProfit('');
@@ -183,12 +183,12 @@ export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
 
   const formatTime = (timeStr: string) => {
     const date = new Date(timeStr);
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   };
 
   const formatDate = (timeStr: string) => {
     const date = new Date(timeStr);
-    return date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+    return date.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' });
   };
 
   const totalPages = result ? Math.ceil(result.total / pageSize) : 0;

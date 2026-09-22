@@ -264,6 +264,4 @@ impl WebSocketManager {
     pub fn increment_trade_count(&self) -> anyhow::Result<i32> {
         self.storage.increment_trade_count()
     }
-
-
 }
