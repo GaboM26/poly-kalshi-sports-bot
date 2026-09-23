@@ -3,14 +3,18 @@
 //! Handles tracking of high-profit arbitrage opportunities.
 
 use chrono::Utc;
-use tracing::info;
+use tracing::{debug, info};
 
 use super::WebSocketManager;
-use crate::models::{ArbitrageOpportunity, ArbitrageTrackingRecord};
+use crate::models::{ArbitrageOpportunity, ArbitrageTrackingRecord, PolymarketUsExecution};
 
 impl WebSocketManager {
     /// Track a high-profit opportunity
-    pub(crate) fn track_opportunity(&self, opp: &ArbitrageOpportunity) {
+    pub(crate) fn track_opportunity(
+        &self,
+        opp: &ArbitrageOpportunity,
+        poly_execution: Option<PolymarketUsExecution>,
+    ) {
         let key = opp.market_key();
 
         let mut tracking = self.active_tracking.write();
@@ -47,13 +51,37 @@ impl WebSocketManager {
             };
 
             info!(
-                "📈 开始跟踪: {} {} - {:.2}% (poly_depth: ${:.2}, poly_size: {:.0}, kalshi_depth: {})",
+                "📈 Tracking started: {} {} - {:.2}% (poly_depth: ${:.2}, poly_size: {:.0}, kalshi_depth: {})",
                 opp.event_name, opp.team_name, opp.profit_margin,
                 opp.poly_ask_depth, opp.poly_ask_size, opp.kalshi_ask_depth
             );
 
             self.storage.track_start(record.clone());
-            tracking.insert(key, record);
+            tracking.insert(key.clone(), record);
+
+            // One real CLOB depth snapshot per tracked opportunity, for
+            // Advanced Search visibility only — never used for execution
+            // sizing, and never a substitute for the fresh book fetched
+            // immediately before an order in the auto-trade path.
+            if let (Some(exec), Some(client)) =
+                (poly_execution, self.polymarket_client.clone())
+            {
+                let storage = self.storage.clone();
+                tokio::spawn(async move {
+                    match client.get_market_book(&exec.market_slug).await {
+                        Ok(book) => {
+                            let (usd, size) = book.buy_depth(exec.position_side);
+                            storage.track_depth(&key, usd, size);
+                        }
+                        Err(error) => {
+                            debug!(
+                                "Tracking depth snapshot failed for {}: {}",
+                                key, error
+                            );
+                        }
+                    }
+                });
+            }
         }
     }
 

@@ -5,6 +5,7 @@
 //! - Order placement via Python order service
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -114,6 +115,36 @@ pub struct PolymarketBookLevel {
     pub quantity: f64,
 }
 
+impl PolymarketMarketBook {
+    /// Total executable buy-side depth for a competitor's native position,
+    /// from this same fresh CLOB book. Read-only reporting for tracking/UI
+    /// visibility — not used on the order-submission path.
+    ///
+    /// Mirrors the buy-side selection and complement pricing the execution
+    /// path applies: Long buys consume native LONG offers ascending; Short
+    /// buys consume native LONG bids descending at complement price.
+    /// Returns (usd_notional, token_size).
+    pub fn buy_depth(&self, position_side: PolymarketPositionSide) -> (f64, f64) {
+        let levels: &[PolymarketBookLevel] = match position_side {
+            PolymarketPositionSide::Long => &self.offers,
+            PolymarketPositionSide::Short => &self.bids,
+        };
+        levels
+            .iter()
+            .fold((0.0_f64, 0.0_f64), |(usd, size), level| {
+                let quantity = level.quantity.floor();
+                if quantity <= 0.0 {
+                    return (usd, size);
+                }
+                let price = match position_side {
+                    PolymarketPositionSide::Long => level.price,
+                    PolymarketPositionSide::Short => 1.0 - level.price,
+                };
+                (usd + quantity * price, size + quantity)
+            })
+    }
+}
+
 /// Result returned by the official SDK execution envelope, normalized by the
 /// local Python service. A submission without a positive fill is not success.
 #[derive(Debug, Clone)]
@@ -148,11 +179,13 @@ pub struct PolymarketClient {
 
 impl PolymarketClient {
     /// Create a new Polymarket client
-    pub fn new(config: PolymarketConfig) -> Self {
-        Self {
-            config,
-            http: Client::new(),
-        }
+    pub fn new(config: PolymarketConfig) -> Result<Self> {
+        let http = Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .context("Failed to build Polymarket HTTP client")?;
+
+        Ok(Self { config, http })
     }
 
     /// Initialize client (check if Python order service is available)
@@ -921,6 +954,50 @@ fn extract_date_from_slug(slug: &str) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn book(bids: Vec<(f64, f64)>, offers: Vec<(f64, f64)>) -> PolymarketMarketBook {
+        PolymarketMarketBook {
+            success: true,
+            market_slug: "test-market".to_string(),
+            state: "ACTIVE".to_string(),
+            transact_time: None,
+            fetched_at_ms: 0,
+            bids: bids
+                .into_iter()
+                .map(|(price, quantity)| PolymarketBookLevel { price, quantity })
+                .collect(),
+            offers: offers
+                .into_iter()
+                .map(|(price, quantity)| PolymarketBookLevel { price, quantity })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn long_buy_depth_sums_native_offers_at_native_price() {
+        let book = book(vec![(0.50, 10.0)], vec![(0.22, 4.0), (0.25, 6.5)]);
+        let (usd, size) = book.buy_depth(PolymarketPositionSide::Long);
+        // quantity floors to whole tokens: 4 + 6 = 10; usd = 4*0.22 + 6*0.25
+        assert_eq!(size, 10.0);
+        assert!((usd - (4.0 * 0.22 + 6.0 * 0.25)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn short_buy_depth_sums_native_bids_at_complement_price() {
+        let book = book(vec![(0.70, 3.0)], vec![(0.22, 4.0)]);
+        let (usd, size) = book.buy_depth(PolymarketPositionSide::Short);
+        // Short buys consume native bids at 1 - price.
+        assert_eq!(size, 3.0);
+        assert!((usd - 3.0 * (1.0 - 0.70)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn buy_depth_ignores_non_positive_quantity_levels() {
+        let book = book(vec![], vec![(0.30, 0.0), (0.40, 2.0)]);
+        let (usd, size) = book.buy_depth(PolymarketPositionSide::Long);
+        assert_eq!(size, 2.0);
+        assert!((usd - 2.0 * 0.40).abs() < 1e-9);
+    }
 
     #[test]
     fn parses_binary_tennis_match_winner_outcomes() {

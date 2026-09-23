@@ -45,7 +45,7 @@ impl ArbitrageService {
 
         // Initialize clients
         let kalshi_client = KalshiClient::new(config.kalshi.clone())?;
-        let mut polymarket_client = PolymarketClient::new(config.polymarket.clone());
+        let mut polymarket_client = PolymarketClient::new(config.polymarket.clone())?;
 
         // Check the official Polymarket US order service for manual orders.
         if let Err(e) = polymarket_client.init_order_service().await {
@@ -73,6 +73,9 @@ impl ArbitrageService {
 
         // Kalshi's live order book remains the only executable-depth source.
         ws_manager.set_kalshi_client(kalshi_client.clone());
+        // Used only to fetch a one-time real depth snapshot when tracking
+        // starts, for Advanced Search visibility; never for order submission.
+        ws_manager.set_polymarket_client(polymarket_client.clone());
 
         // Load excluded markets from database
         ws_manager.load_excluded_markets();

@@ -150,9 +150,14 @@ impl KalshiClient {
             })?;
         let signing_key = Arc::new(BlindedSigningKey::<Sha256>::new(private_key));
 
+        let http = Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .context("Failed to build Kalshi HTTP client")?;
+
         Ok(Self {
             config,
-            http: Client::new(),
+            http,
             signing_key,
             orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
             command_tx: Arc::new(RwLock::new(None)),

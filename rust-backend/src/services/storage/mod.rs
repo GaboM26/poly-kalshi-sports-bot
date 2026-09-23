@@ -32,6 +32,7 @@ pub use auto_trade_repo::{AutoTradeExecutionRecord, AutoTradeState};
 pub enum StorageCommand {
     TrackStart(ArbitrageTrackingRecord),
     TrackUpdate { id: String, profit_margin: f64 },
+    TrackDepth { id: String, poly_ask_depth: f64, poly_ask_size: f64 },
     TrackEnd(String),
 }
 
@@ -375,6 +376,19 @@ impl ArbitrageStorage {
                         update_count = update_count + 1
                     WHERE id = ?2",
                     params![profit_margin, id],
+                )?;
+            }
+            StorageCommand::TrackDepth {
+                id,
+                poly_ask_depth,
+                poly_ask_size,
+            } => {
+                conn.execute(
+                    "UPDATE arbitrage_tracking
+                    SET poly_ask_depth = ?1,
+                        poly_ask_size = ?2
+                    WHERE id = ?3",
+                    params![poly_ask_depth, poly_ask_size, id],
                 )?;
             }
             StorageCommand::TrackEnd(id) => {

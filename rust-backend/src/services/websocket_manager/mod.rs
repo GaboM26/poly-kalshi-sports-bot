@@ -23,7 +23,7 @@ use parking_lot::RwLock;
 use tokio::sync::broadcast;
 use tracing::{debug, info};
 
-use crate::clients::{KalshiClient, KalshiMarketQuote};
+use crate::clients::{KalshiClient, KalshiMarketQuote, PolymarketClient};
 use crate::core::{ArbitrageCalculator, EventMatcher};
 use crate::models::{
     ArbitrageOpportunity, ArbitrageTrackingRecord, MatchedMarket, MatchedMarketFrontend, Platform,
@@ -114,6 +114,8 @@ pub struct WebSocketManager {
     pub(crate) metrics: Arc<PerformanceMetrics>,
     /// Kalshi client for orderbook depth queries
     pub(crate) kalshi_client: Option<KalshiClient>,
+    /// Polymarket client for real CLOB depth lookups when tracking starts
+    pub(crate) polymarket_client: Option<PolymarketClient>,
     /// Tracking threshold for high-profit opportunities (percentage)
     pub(crate) tracking_threshold: f64,
     /// Set of opportunity IDs that have been auto-traded (to prevent duplicates)
@@ -172,6 +174,7 @@ impl WebSocketManager {
             polymarket_rest_last_success: Arc::new(RwLock::new(None)),
             metrics,
             kalshi_client: None,
+            polymarket_client: None,
             tracking_threshold,
             auto_traded_opportunities: Arc::new(RwLock::new(std::collections::HashSet::new())),
             ended_market_detection: Arc::new(RwLock::new(HashMap::new())),
@@ -186,6 +189,13 @@ impl WebSocketManager {
     /// Set the Kalshi client used for executable-depth checks.
     pub fn set_kalshi_client(&mut self, kalshi: KalshiClient) {
         self.kalshi_client = Some(kalshi);
+    }
+
+    /// Set the Polymarket client used for real CLOB depth lookups when a
+    /// tracked opportunity starts. Reporting only — the auto-trade path
+    /// fetches its own fresh book immediately before submitting.
+    pub fn set_polymarket_client(&mut self, polymarket: PolymarketClient) {
+        self.polymarket_client = Some(polymarket);
     }
 
     /// Get Kalshi best ask depth for a market and side
@@ -571,12 +581,15 @@ impl WebSocketManager {
         );
 
         let kalshi_ticker = mm.kalshi_market.market_id.clone();
+        let poly_execution = mm.polymarket_market.us_execution_for_competitor(&mm.team_name);
 
         drop(markets);
 
         if let Some(mut opp) = opportunity {
             // Gateway quotes do not include an executable size. Keep these
-            // fields at zero rather than manufacturing CLOB depth.
+            // fields at zero rather than manufacturing CLOB depth; a real
+            // snapshot is fetched separately once tracking starts (see
+            // track_opportunity), for Advanced Search visibility only.
             opp.poly_ask_depth = 0.0;
             opp.poly_ask_size = 0.0;
             opp.kalshi_ask_depth = self.get_kalshi_ask_depth(&kalshi_ticker, &opp.kalshi_side);
@@ -584,7 +597,7 @@ impl WebSocketManager {
             let _ = self.opportunity_tx.send(opp.clone());
 
             if opp.profit_margin >= self.tracking_threshold {
-                self.track_opportunity(&opp);
+                self.track_opportunity(&opp, poly_execution);
             }
 
             self.update_opportunities(opp);

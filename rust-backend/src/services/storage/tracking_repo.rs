@@ -25,6 +25,17 @@ impl ArbitrageStorage {
         });
     }
 
+    /// Record real Polymarket CLOB depth observed for a tracked opportunity.
+    /// Fetched once from the live order book when tracking starts; this is
+    /// reporting only and never substitutes for the fresh execution-time check.
+    pub fn track_depth(&self, id: &str, poly_ask_depth: f64, poly_ask_size: f64) {
+        let _ = self.command_tx().try_send(StorageCommand::TrackDepth {
+            id: id.to_string(),
+            poly_ask_depth,
+            poly_ask_size,
+        });
+    }
+
     /// End tracking for an opportunity
     pub fn track_end(&self, id: &str) {
         let _ = self

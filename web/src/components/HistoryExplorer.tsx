@@ -711,8 +711,8 @@ export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
                     ${selectedRecord.poly_ask_depth?.toFixed(0) ?? '-'}
                   </span>
                 </div>
-                <div className="text-xs text-[--text-muted] mt-1">
-                  Token count × price = USD
+                <div className="text-xs text-[--text-muted] mt-1" title="Fetched from the real Polymarket CLOB book once, at the moment this opportunity started being tracked. Not a live/continuous reading — depth can move afterward.">
+                  Token count × price = USD (real book, snapshot at tracking start)
                 </div>
               </div>
               <div className="bg-[--bg-tertiary] rounded p-3">
