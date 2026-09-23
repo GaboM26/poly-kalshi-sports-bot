@@ -128,6 +128,10 @@ pub struct WebSocketManager {
     pub(crate) recorded_skip_reasons: Arc<RwLock<std::collections::HashSet<String>>>,
     /// Set of market keys excluded from auto-trade (user-defined)
     pub(crate) excluded_markets: Arc<RwLock<std::collections::HashSet<String>>>,
+    /// market_key -> last time a one-shot Polymarket depth snapshot was
+    /// fetched for it, so a market flapping in and out of tracking doesn't
+    /// re-hit Polymarket's real book endpoint on every restart.
+    pub(crate) poly_depth_snapshot_cooldown: Arc<RwLock<HashMap<String, Instant>>>,
     /// Auto-trade queue: market keys waiting to be executed
     pub auto_trade_queue: Arc<RwLock<VecDeque<String>>>,
     /// Flag indicating if an auto-trade is currently being executed
@@ -181,6 +185,7 @@ impl WebSocketManager {
             confirmed_ended_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
             recorded_skip_reasons: Arc::new(RwLock::new(std::collections::HashSet::new())),
             excluded_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            poly_depth_snapshot_cooldown: Arc::new(RwLock::new(HashMap::new())),
             auto_trade_queue: Arc::new(RwLock::new(VecDeque::new())),
             is_auto_trading: Arc::new(AtomicBool::new(false)),
         }
@@ -581,7 +586,9 @@ impl WebSocketManager {
         );
 
         let kalshi_ticker = mm.kalshi_market.market_id.clone();
-        let poly_execution = mm.polymarket_market.us_execution_for_competitor(&mm.team_name);
+        let poly_execution = mm
+            .polymarket_market
+            .us_execution_for_competitor(&mm.team_name);
 
         drop(markets);
 

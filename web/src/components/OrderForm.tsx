@@ -134,12 +134,18 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
           ? market.polymarket_opponent_name
           : market.team_name,
         contracts: polyContracts,
+        // Live: sizing/pricing is computed against real depth and orders are
+        // actually submitted to both exchanges.
+        dry_run: false,
       });
 
       if (response.success) {
+        const dryRun = response.status === 'dry_run';
         setResult({
           success: true,
-          message: `Arbitrage succeeded! Kalshi: ${response.kalshi?.success ? '✓' : '✗'}, Poly: ${response.polymarket?.success ? '✓' : '✗'}`,
+          message: dryRun
+            ? `DRY RUN: would trade ${response.contracts ?? '?'} contracts @ K ${response.kalshi_price != null ? (response.kalshi_price * 100).toFixed(0) + '¢' : '?'} / P ${response.polymarket_price != null ? (response.polymarket_price * 100).toFixed(0) + '¢' : '?'} — nothing was submitted`
+            : `Arbitrage succeeded! Kalshi: ${response.kalshi?.success ? '✓' : '✗'}, Poly: ${response.polymarket?.success ? '✓' : '✗'}`,
           elapsed_ms: (response.kalshi?.elapsed_ms || 0) + (response.polymarket?.elapsed_ms || 0),
         });
         onOrderPlaced?.();

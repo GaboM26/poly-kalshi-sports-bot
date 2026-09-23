@@ -20,7 +20,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
   
   // Execution state.
   const [executingKey, setExecutingKey] = useState<string | null>(null);
-  const [lastResult, setLastResult] = useState<{ key: string; success: boolean; message: string } | null>(null);
+  const [lastResult, setLastResult] = useState<{ key: string; success: boolean; dryRun: boolean; message: string } | null>(null);
   
   // Excluded market state.
   const [excludedMarkets, setExcludedMarkets] = useState<Set<string>>(new Set());
@@ -98,16 +98,16 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
   const handleExecute = async (market: MatchedMarketData, executionKey: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!market.has_opportunity || !apiBaseUrl) return;
-    
+
     setExecutingKey(executionKey);
     setLastResult(null);
-    
+
     try {
       // Determine the strategy type.
       // K↑ P↓ = Kalshi Yes + Polymarket No
       // K↓ P↑ = Kalshi No + Polymarket Yes
       const isKalshiYes = market.arbitrage_type?.includes('KalshiYes');
-      
+
       const request: ArbitrageExecuteRequest = {
         event_name: market.event_name,
         team_name: market.team_name,
@@ -116,22 +116,33 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
           ? market.polymarket_opponent_name
           : market.team_name,
         contracts: 10,
+        // Live: sizing/pricing is computed against real depth and orders are
+        // actually submitted to both exchanges.
+        dry_run: false,
       };
-      
+
       const result = await executeArbitrage(apiBaseUrl, request);
-      
+      const dryRun = result.status === 'dry_run';
+
       if (result.success) {
-        setLastResult({ key: executionKey, success: true, message: 'Arbitrage executed successfully!' });
+        const message = dryRun
+          ? `DRY RUN: would trade ${result.contracts ?? '?'} contracts @ K ${result.kalshi_price != null ? (result.kalshi_price * 100).toFixed(0) + '¢' : '?'} / P ${result.polymarket_price != null ? (result.polymarket_price * 100).toFixed(0) + '¢' : '?'} (${result.profit_margin?.toFixed(2) ?? '?'}% margin) — nothing was submitted`
+          : 'Arbitrage executed successfully!';
+        setLastResult({ key: executionKey, success: true, dryRun, message });
       } else {
         const errors = [];
         if (result.kalshi && !result.kalshi.success) errors.push(`K: ${result.kalshi.error}`);
         if (result.polymarket && !result.polymarket.success) errors.push(`P: ${result.polymarket.error}`);
-        setLastResult({ key: executionKey, success: false, message: errors.join('; ') || result.error || 'Execution failed' });
+        setLastResult({ key: executionKey, success: false, dryRun, message: errors.join('; ') || result.error || 'Execution failed' });
       }
     } catch (err) {
-      setLastResult({ key: executionKey, success: false, message: err instanceof Error ? err.message : 'Execution failed' });
+      setLastResult({ key: executionKey, success: false, dryRun: false, message: err instanceof Error ? err.message : 'Execution failed' });
     } finally {
       setExecutingKey(null);
+      // Keep the reason visible for a while instead of clearing it instantly on the next render.
+      setTimeout(() => {
+        setLastResult((current) => (current?.key === executionKey ? null : current));
+      }, 8000);
     }
   };
 
@@ -257,7 +268,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
               <th className="py-1 px-2 text-center font-medium text-[--text-secondary]">Polymarket</th>
               <th className="py-1 px-2 text-center font-medium text-[--text-secondary]">Str.</th>
               <th className="py-1 px-2 text-right font-medium text-[--text-secondary]">Profit</th>
-              <th className="py-1 px-2 text-center w-12 font-medium text-[--text-secondary]">Act</th>
+              <th className="py-1 px-2 text-center w-24 font-medium text-[--text-secondary]">Act</th>
             </tr>
           </thead>
           <tbody>
@@ -347,21 +358,37 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                   <td className="text-center py-1 px-2">
                     <div className="flex items-center justify-center gap-1">
                       {market.has_opportunity ? (
-                        <div className="flex flex-col items-center gap-0.5">
+                        <div className="flex flex-col items-center gap-0.5 max-w-[110px]">
                           <button
                             onClick={(e) => handleExecute(market, marketKey, e)}
                             disabled={executingKey === marketKey || !apiBaseUrl}
-                            className={`px-1.5 py-0.5 text-[9px] font-medium rounded transition-colors ${
+                            title={lastResult?.key === marketKey ? lastResult.message : 'Execute this paired arbitrage'}
+                            className={`w-full px-2 py-1 text-[10px] font-semibold rounded-md border transition-colors ${
                               executingKey === marketKey
-                                ? 'bg-gray-500/30 text-gray-400 cursor-wait'
-                                : 'bg-[--accent-green]/20 text-[--accent-green] hover:bg-[--accent-green]/30'
+                                ? 'bg-gray-500/20 text-gray-400 border-gray-500/30 cursor-wait'
+                                : lastResult?.key === marketKey
+                                  ? lastResult.dryRun
+                                    ? 'bg-blue-500/20 text-blue-400 border-blue-500/40 hover:bg-blue-500/30'
+                                    : lastResult.success
+                                      ? 'bg-green-500/20 text-green-400 border-green-500/40 hover:bg-green-500/30'
+                                      : 'bg-red-500/20 text-red-400 border-red-500/40 hover:bg-red-500/30'
+                                  : 'bg-[--accent-green]/20 text-[--accent-green] border-[--accent-green]/40 hover:bg-[--accent-green]/30'
                             }`}
                           >
-                            {executingKey === marketKey ? '...' : 'Execute'}
+                            {executingKey === marketKey
+                              ? '⏳ Sending…'
+                              : lastResult?.key === marketKey
+                                ? lastResult.dryRun ? '🧪 Dry Run' : lastResult.success ? '✓ Sent' : '✗ Blocked'
+                                : '▶ Execute'}
                           </button>
                           {lastResult?.key === marketKey && (
-                            <span className={`text-[9px] leading-none ${lastResult.success ? 'text-green-400' : 'text-red-400'}`}>
-                              {lastResult.success ? '✓' : '✗'}
+                            <span
+                              className={`text-[9px] leading-tight text-center ${
+                                lastResult.dryRun ? 'text-blue-400' : lastResult.success ? 'text-green-400' : 'text-red-400'
+                              }`}
+                              title={lastResult.message}
+                            >
+                              {lastResult.message}
                             </span>
                           )}
                         </div>

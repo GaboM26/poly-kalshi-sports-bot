@@ -31,8 +31,15 @@ pub use auto_trade_repo::{AutoTradeExecutionRecord, AutoTradeState};
 /// Storage command for async queue
 pub enum StorageCommand {
     TrackStart(ArbitrageTrackingRecord),
-    TrackUpdate { id: String, profit_margin: f64 },
-    TrackDepth { id: String, poly_ask_depth: f64, poly_ask_size: f64 },
+    TrackUpdate {
+        id: String,
+        profit_margin: f64,
+    },
+    TrackDepth {
+        id: String,
+        poly_ask_depth: f64,
+        poly_ask_size: f64,
+    },
     TrackEnd(String),
 }
 

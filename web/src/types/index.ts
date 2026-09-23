@@ -331,17 +331,26 @@ export interface ArbitrageExecuteRequest {
   kalshi_side: 'yes' | 'no';
   polymarket_competitor: string;
   contracts: number;
+  /** When true, sizing/pricing is computed against real depth but nothing is submitted to either exchange. */
+  dry_run: boolean;
 }
 
 // Arbitrage execution response
 export interface ArbitrageExecuteResponse {
   success: boolean;
+  status?: string;
   error?: string;
+  contracts?: number;
+  kalshi_price?: number;
+  polymarket_price?: number;
+  profit_margin?: number;
   kalshi?: {
     success: boolean;
     order?: Record<string, unknown>;
     elapsed_ms?: number;
     count?: number;
+    order_id?: string;
+    filled_contracts?: number;
     error?: string;
   };
   polymarket?: {
@@ -350,6 +359,7 @@ export interface ArbitrageExecuteResponse {
     status?: string;
     elapsed_ms?: number;
     amount?: number;
+    filled_contracts?: number;
     error?: string;
   };
 }

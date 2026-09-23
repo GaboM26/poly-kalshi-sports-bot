@@ -145,6 +145,11 @@ impl WebSocketManager {
         )
     }
 
+    /// Whether a market key has been excluded from automated/paired trading.
+    pub fn is_market_excluded(&self, key: &str) -> bool {
+        self.excluded_markets.read().contains(&key.to_uppercase())
+    }
+
     /// Load excluded markets from database on startup
     pub fn load_excluded_markets(&self) {
         match self.storage.get_excluded_markets() {

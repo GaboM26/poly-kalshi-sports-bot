@@ -2,11 +2,21 @@
 //!
 //! Handles tracking of high-profit arbitrage opportunities.
 
+use std::time::{Duration, Instant};
+
 use chrono::Utc;
 use tracing::{debug, info};
 
 use super::WebSocketManager;
 use crate::models::{ArbitrageOpportunity, ArbitrageTrackingRecord, PolymarketUsExecution};
+
+/// A market flapping in and out of tracking (profit margin oscillating near
+/// the threshold) must not re-hit Polymarket's real book endpoint on every
+/// restart — that is what triggered a Cloudflare IP rate limit (error 1015)
+/// that then starved out the endpoint the real execution path depends on.
+/// One live snapshot per market within this window is enough for the
+/// Advanced Search "depth at tracking start" display.
+const POLY_DEPTH_SNAPSHOT_COOLDOWN: Duration = Duration::from_secs(600);
 
 impl WebSocketManager {
     /// Track a high-profit opportunity
@@ -62,25 +72,35 @@ impl WebSocketManager {
             // One real CLOB depth snapshot per tracked opportunity, for
             // Advanced Search visibility only — never used for execution
             // sizing, and never a substitute for the fresh book fetched
-            // immediately before an order in the auto-trade path.
-            if let (Some(exec), Some(client)) =
-                (poly_execution, self.polymarket_client.clone())
-            {
-                let storage = self.storage.clone();
-                tokio::spawn(async move {
-                    match client.get_market_book(&exec.market_slug).await {
-                        Ok(book) => {
-                            let (usd, size) = book.buy_depth(exec.position_side);
-                            storage.track_depth(&key, usd, size);
+            // immediately before an order in the auto-trade path. Skip it
+            // if this market was snapshotted recently, so a market flapping
+            // in and out of tracking can't repeatedly hit Polymarket's real
+            // gateway (see POLY_DEPTH_SNAPSHOT_COOLDOWN).
+            let recently_snapshotted = self
+                .poly_depth_snapshot_cooldown
+                .read()
+                .get(&key)
+                .is_some_and(|last| last.elapsed() < POLY_DEPTH_SNAPSHOT_COOLDOWN);
+
+            if !recently_snapshotted {
+                if let (Some(exec), Some(client)) = (poly_execution, self.polymarket_client.clone())
+                {
+                    self.poly_depth_snapshot_cooldown
+                        .write()
+                        .insert(key.clone(), Instant::now());
+                    let storage = self.storage.clone();
+                    tokio::spawn(async move {
+                        match client.get_market_book(&exec.market_slug).await {
+                            Ok(book) => {
+                                let (usd, size) = book.buy_depth(exec.position_side);
+                                storage.track_depth(&key, usd, size);
+                            }
+                            Err(error) => {
+                                debug!("Tracking depth snapshot failed for {}: {}", key, error);
+                            }
                         }
-                        Err(error) => {
-                            debug!(
-                                "Tracking depth snapshot failed for {}: {}",
-                                key, error
-                            );
-                        }
-                    }
-                });
+                    });
+                }
             }
         }
     }

@@ -548,9 +548,20 @@ impl PolymarketClient {
             .await
             .context("Failed to retrieve Polymarket US market book")?;
         if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            // FastAPI's HTTPException wraps the real cause (e.g. an upstream
+            // Polymarket rate-limit) in {"detail": "..."}; surface that
+            // instead of just the generic status line, or callers only ever
+            // see "HTTP 502 Bad Gateway" with no way to tell why.
+            let detail = serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|v| v.get("detail").and_then(|d| d.as_str()).map(str::to_string))
+                .unwrap_or(body);
             anyhow::bail!(
-                "Polymarket US market book service returned HTTP {}",
-                response.status()
+                "Polymarket US market book service returned HTTP {}: {}",
+                status,
+                detail
             );
         }
         let book: PolymarketMarketBook = response.json().await?;

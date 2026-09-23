@@ -9,12 +9,14 @@
 
 pub mod arbitrage;
 pub mod metrics;
+pub mod paired_execution;
 pub mod storage;
 pub mod telegram;
 pub mod websocket_manager;
 
 pub use arbitrage::ArbitrageService;
 pub use metrics::{Operation, PerformanceMetrics};
+pub use paired_execution::PairedOrderParams;
 pub use storage::{ArbitrageStorage, AutoTradeExecutionRecord};
 pub use telegram::TelegramClient;
 pub use websocket_manager::WebSocketManager;
