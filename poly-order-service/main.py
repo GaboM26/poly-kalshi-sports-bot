@@ -13,6 +13,7 @@ import toml
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 from polymarket_us import PolymarketUS
+from polymarket_us.errors import RateLimitError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +28,14 @@ balance_lock = asyncio.Lock()
 positions_lock = asyncio.Lock()
 
 CACHE_TTL_SECONDS = 30
+
+# minimumTradeQty / orderPriceMinTickSize are static per-market validation
+# constraints, not live pricing data - cache them well past a single trading
+# session so we don't add a second live API call (and more rate-limit risk)
+# to every depth check and order attempt.
+MARKET_CONSTRAINTS_CACHE_TTL_SECONDS = 3600
+market_constraints_cache: dict[str, tuple[float, Optional[float], Optional[float]]] = {}
+market_constraints_lock = asyncio.Lock()
 
 TIF_MAP = {
     "GTC": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
@@ -128,6 +137,13 @@ class MarketBookResponse(BaseModel):
     fetched_at_ms: int
     bids: list[BookLevel]
     offers: list[BookLevel]
+    # Per-market order validation constraints (docs.polymarket.us/api-reference/orders/overview):
+    # "constraints are market-dependent - retrieve minimumTradeQty and
+    # orderPriceMinTickSize from each market's data before order submission."
+    # None only if the market detail lookup itself failed; callers must not
+    # treat a missing value as "no minimum".
+    minimum_trade_qty: Optional[float] = None
+    price_tick_size: Optional[float] = None
     error: Optional[str] = None
 
 
@@ -181,6 +197,33 @@ def order_status(order: dict[str, Any]) -> Optional[str]:
     return order.get("state") or order.get("status")
 
 
+RATE_LIMIT_MAX_RETRIES = 3
+
+
+async def call_with_backoff(func, *args, **kwargs) -> Any:
+    """Run a synchronous SDK call, retrying on 429s per Polymarket US's own
+    guidance (docs.polymarket.us/api-reference/rate-limits): stop
+    immediately, wait at least 1 second, then retry with exponential
+    backoff. Their example is 1s/2s/4s across up to 3 retries, which this
+    mirrors exactly. Only RateLimitError is retried - any other exception
+    (including a real order rejection) propagates immediately.
+    """
+    for attempt in range(RATE_LIMIT_MAX_RETRIES):
+        try:
+            return await asyncio.to_thread(func, *args, **kwargs)
+        except RateLimitError:
+            if attempt == RATE_LIMIT_MAX_RETRIES - 1:
+                raise
+            delay = 2**attempt
+            logger.warning(
+                "Polymarket US rate limit hit, retrying in %ss (attempt %d/%d)",
+                delay,
+                attempt + 1,
+                RATE_LIMIT_MAX_RETRIES,
+            )
+            await asyncio.sleep(delay)
+
+
 def amount_value(value: Any) -> Optional[float]:
     """Read the numeric value from the SDK's Amount object."""
     if isinstance(value, dict):
@@ -228,6 +271,16 @@ def order_result(
     filled_contracts = amount_value(order.get("cumQuantity")) or 0.0
     status = order_status(order)
     if filled_contracts > 0:
+        avg_price = amount_value(order.get("avgPx"))
+        logger.info(
+            "Polymarket US order FILLED: order_id=%s market=%s status=%s filled=%s avg_price=%s latency_ms=%d",
+            order.get("id"),
+            order.get("marketSlug"),
+            status,
+            filled_contracts,
+            avg_price,
+            latency_ms,
+        )
         return OrderResponse(
             success=True,
             order_id=order.get("id"),
@@ -351,7 +404,7 @@ async def cached_balances() -> tuple[float, list[dict[str, Any]]]:
         if balance_cache is not None and now - balance_cache[0] < CACHE_TTL_SECONDS:
             return balance_cache[1], balance_cache[2]
 
-        response = await asyncio.to_thread(get_client().account.balances)
+        response = await call_with_backoff(get_client().account.balances)
         balances = response.get("balances")
         if not isinstance(balances, list):
             raise ValueError("Polymarket US balances response did not contain a balance list")
@@ -378,10 +431,35 @@ async def cached_positions() -> list[dict[str, Any]]:
         if positions_cache is not None and now - positions_cache[0] < CACHE_TTL_SECONDS:
             return positions_cache[1]
 
-        response = await asyncio.to_thread(get_client().portfolio.positions)
+        response = await call_with_backoff(get_client().portfolio.positions)
         positions = normalize_positions(response)
         positions_cache = (now, positions)
         return positions
+
+
+async def cached_market_constraints(market_slug: str) -> tuple[Optional[float], Optional[float]]:
+    """Fetch (minimumTradeQty, orderPriceMinTickSize) for a market, cached.
+
+    These are per-market order validation constraints, not documented as a
+    fixed global minimum - the exchange rejects any order that doesn't
+    respect them, so sizing/pricing must check the real per-market values
+    rather than a guessed constant.
+    """
+    global market_constraints_cache
+    async with market_constraints_lock:
+        now = time.monotonic()
+        cached = market_constraints_cache.get(market_slug)
+        if cached is not None and now - cached[0] < MARKET_CONSTRAINTS_CACHE_TTL_SECONDS:
+            return cached[1], cached[2]
+
+        response = await call_with_backoff(get_client().markets.retrieve_by_slug, market_slug)
+        market = response.get("market") if isinstance(response, dict) else None
+        min_qty = amount_value(market.get("minimumTradeQty")) if isinstance(market, dict) else None
+        tick_size = (
+            amount_value(market.get("orderPriceMinTickSize")) if isinstance(market, dict) else None
+        )
+        market_constraints_cache[market_slug] = (now, min_qty, tick_size)
+        return min_qty, tick_size
 
 
 def market_order_params(request: MarketOrderRequest) -> dict[str, Any]:
@@ -398,7 +476,11 @@ def market_order_params(request: MarketOrderRequest) -> dict[str, Any]:
     if request.side == "buy":
         params["cashOrderQty"] = {"value": str(request.amount), "currency": "USD"}
     else:
-        params["quantity"] = request.amount
+        if not float(request.amount).is_integer():
+            raise ValueError(
+                "Polymarket US market sell quantity must be a whole number of contracts"
+            )
+        params["quantity"] = int(request.amount)
     if request.price is not None:
         params["slippageTolerance"] = {
             "currentPrice": {"value": str(request.price), "currency": "USD"},
@@ -408,12 +490,22 @@ def market_order_params(request: MarketOrderRequest) -> dict[str, Any]:
 
 
 def limit_order_params(request: LimitOrderRequest) -> dict[str, Any]:
+    # The SDK's own type stubs (polymarket_us/types/orders.py) declare
+    # `quantity: int` on CreateOrderParams/Order - sending a JSON float
+    # (e.g. 5.0 instead of 5) doesn't match that contract even though every
+    # other numeric field here does (Amount-wrapped price, `maxBlockTime`
+    # sent as a string). Reject non-whole sizes instead of silently
+    # truncating a real contract count.
+    if not float(request.size).is_integer():
+        raise ValueError(
+            "Polymarket US limit order quantity must be a whole number of contracts"
+        )
     return {
         "marketSlug": request.market_slug,
         "intent": order_intent(request.position_side, request.side),
         "type": "ORDER_TYPE_LIMIT",
         "price": {"value": str(request.price), "currency": "USD"},
-        "quantity": request.size,
+        "quantity": int(request.size),
         "tif": TIF_MAP.get(request.order_type.upper(), TIF_MAP["GTC"]),
         "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_MANUAL",
         "synchronousExecution": True,
@@ -460,12 +552,28 @@ async def get_market_book(
 ) -> MarketBookResponse:
     """Fetch a fresh executable book using only the official Polymarket US SDK."""
     try:
-        response = await asyncio.to_thread(get_client().markets.book, market_slug)
-        return normalize_market_book(response, market_slug)
+        response = await call_with_backoff(get_client().markets.book, market_slug)
+        book = normalize_market_book(response, market_slug)
     except Exception as exc:
         error = concise_api_error(exc)
         logger.error("Polymarket US market book lookup failed for %s: %s", market_slug, error)
         raise HTTPException(status_code=502, detail=error) from exc
+
+    # Cached after the first lookup, so this normally costs nothing extra.
+    # A failure here must not silently look like "no minimum" - leave both
+    # fields None and let the caller refuse to size an order against them.
+    try:
+        min_qty, tick_size = await cached_market_constraints(market_slug)
+        book.minimum_trade_qty = min_qty
+        book.price_tick_size = tick_size
+    except Exception as exc:
+        logger.error(
+            "Polymarket US market constraint lookup failed for %s: %s",
+            market_slug,
+            concise_api_error(exc),
+        )
+
+    return book
 
 
 @app.post("/order/market", response_model=OrderResponse)
@@ -473,7 +581,7 @@ async def place_market_order(request: MarketOrderRequest) -> OrderResponse:
     client = get_client()
     started = asyncio.get_running_loop().time()
     try:
-        response = await asyncio.to_thread(client.orders.create, market_order_params(request))
+        response = await call_with_backoff(client.orders.create, market_order_params(request))
     except Exception as exc:
         error = concise_api_error(exc)
         logger.error("Polymarket US market order failed: %s", error)
@@ -487,7 +595,7 @@ async def place_limit_order(request: LimitOrderRequest) -> OrderResponse:
     client = get_client()
     started = asyncio.get_running_loop().time()
     try:
-        response = await asyncio.to_thread(client.orders.create, limit_order_params(request))
+        response = await call_with_backoff(client.orders.create, limit_order_params(request))
     except Exception as exc:
         error = concise_api_error(exc)
         logger.error("Polymarket US limit order failed: %s", error)
@@ -503,11 +611,11 @@ async def cancel_order(request: CancelOrderRequest) -> OrderResponse:
     try:
         market_slug = request.market_slug
         if market_slug is None:
-            order = await asyncio.to_thread(client.orders.retrieve, request.order_id)
+            order = await call_with_backoff(client.orders.retrieve, request.order_id)
             market_slug = order.get("marketSlug")
         if not market_slug:
             raise ValueError("Polymarket US did not return a marketSlug for this order")
-        response = await asyncio.to_thread(
+        response = await call_with_backoff(
             client.orders.cancel,
             request.order_id,
             {"marketSlug": market_slug},
@@ -529,7 +637,7 @@ async def cancel_order(request: CancelOrderRequest) -> OrderResponse:
 @app.get("/orders")
 async def get_orders() -> dict[str, Any]:
     try:
-        response = await asyncio.to_thread(get_client().orders.list)
+        response = await call_with_backoff(get_client().orders.list)
         return {"success": True, "orders": response.get("orders", [])}
     except Exception as exc:
         error = concise_api_error(exc)
@@ -553,7 +661,7 @@ async def account_snapshot() -> dict[str, Any]:
         (buying_power, balances), positions, orders = await asyncio.gather(
             cached_balances(),
             cached_positions(),
-            asyncio.to_thread(get_client().orders.list),
+            call_with_backoff(get_client().orders.list),
         )
         return {
             "success": True,

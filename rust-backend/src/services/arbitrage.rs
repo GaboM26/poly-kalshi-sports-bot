@@ -19,7 +19,7 @@ use crate::models::{
 };
 use crate::services::{ArbitrageStorage, Operation, PerformanceMetrics, WebSocketManager};
 
-const MIN_REST_QUOTE_REFRESH_SECS: u64 = 5;
+const MIN_REST_QUOTE_REFRESH_SECS: u64 = 3;
 
 /// Arbitrage service
 pub struct ArbitrageService {

@@ -107,6 +107,15 @@ pub struct PolymarketMarketBook {
     pub fetched_at_ms: i64,
     pub bids: Vec<PolymarketBookLevel>,
     pub offers: Vec<PolymarketBookLevel>,
+    /// Per-market minimum tradeable quantity (contracts). None means the
+    /// order service could not look it up - callers must treat that as
+    /// "unknown minimum", never as "no minimum".
+    #[serde(default)]
+    pub minimum_trade_qty: Option<f64>,
+    /// Per-market required price increment. None means unknown, same
+    /// caveat as `minimum_trade_qty`.
+    #[serde(default)]
+    pub price_tick_size: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -981,6 +990,8 @@ mod tests {
                 .into_iter()
                 .map(|(price, quantity)| PolymarketBookLevel { price, quantity })
                 .collect(),
+            minimum_trade_qty: None,
+            price_tick_size: None,
         }
     }
 

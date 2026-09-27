@@ -30,9 +30,85 @@ interface HeaderProps {
   username?: string | null;
 }
 
+const AUTO_REFRESH_STORAGE_KEY = 'polytaoli_auto_refresh';
+const MIN_AUTO_REFRESH_SECONDS = 5;
+
 export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastUpdateTime, updateCount, dataCoverage, metrics, apiBaseUrl, onLogout, username }: HeaderProps) {
   const [isFlashing, setIsFlashing] = useState(false);
   const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null);
+
+  // Auto-refresh: reload the whole page on a user-configurable interval.
+  // Persisted to localStorage since a page reload wipes React state.
+  const [refreshSecondsInput, setRefreshSecondsInput] = useState('30');
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
+  const [refreshCountdown, setRefreshCountdown] = useState<number | null>(null);
+
+  // Load the saved auto-refresh preference once on mount.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(AUTO_REFRESH_STORAGE_KEY);
+      if (!saved) return;
+      const parsed = JSON.parse(saved);
+      if (typeof parsed.seconds === 'number' && parsed.seconds >= MIN_AUTO_REFRESH_SECONDS) {
+        setRefreshSecondsInput(String(parsed.seconds));
+      }
+      if (parsed.enabled) {
+        setAutoRefreshEnabled(true);
+      }
+    } catch {
+      // Private browsing or blocked storage - auto-refresh just stays off.
+    }
+  }, []);
+
+  // Persist the preference whenever it changes.
+  useEffect(() => {
+    try {
+      const seconds = parseInt(refreshSecondsInput);
+      localStorage.setItem(
+        AUTO_REFRESH_STORAGE_KEY,
+        JSON.stringify({
+          enabled: autoRefreshEnabled,
+          seconds: isNaN(seconds) ? 30 : seconds,
+        })
+      );
+    } catch {
+      // Ignore - not critical if the preference doesn't persist.
+    }
+  }, [autoRefreshEnabled, refreshSecondsInput]);
+
+  // Drive the countdown and trigger the reload when it hits zero.
+  useEffect(() => {
+    if (!autoRefreshEnabled) {
+      setRefreshCountdown(null);
+      return;
+    }
+    const seconds = parseInt(refreshSecondsInput);
+    if (isNaN(seconds) || seconds < MIN_AUTO_REFRESH_SECONDS) {
+      return;
+    }
+    setRefreshCountdown(seconds);
+    const tick = setInterval(() => {
+      setRefreshCountdown((prev) => {
+        if (prev === null) return null;
+        if (prev <= 1) {
+          window.location.reload();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(tick);
+  }, [autoRefreshEnabled, refreshSecondsInput]);
+
+  const handleManualRefresh = () => window.location.reload();
+
+  const handleToggleAutoRefresh = () => {
+    const seconds = parseInt(refreshSecondsInput);
+    if (!autoRefreshEnabled && (isNaN(seconds) || seconds < MIN_AUTO_REFRESH_SECONDS)) {
+      return;
+    }
+    setAutoRefreshEnabled((prev) => !prev);
+  };
   
   // Automated trading state
   const [autoTradeStatus, setAutoTradeStatus] = useState<AutoTradeStatus | null>(null);
@@ -56,16 +132,25 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
   const [editDefaultBet, setEditDefaultBet] = useState('10');
   const [editTrackingThreshold, setEditTrackingThreshold] = useState('2.0');
 
-  // Fetch automated trading status.
+  // Fetch automated trading status. This runs on a 2s poll for the live
+  // read-only display (autoTradeStatus.*) - it must not also overwrite the
+  // editable input fields below on every tick, or a poll landing mid-edit
+  // silently reverts whatever the user is typing before they can submit it.
+  // Only seed the inputs from the server on the very first load; after that,
+  // an input only changes when the user edits it or a save round-trips.
   const fetchAutoTradeStatus = useCallback(async () => {
     try {
       const data = await getAutoTradeStatus(apiBaseUrl);
-      setAutoTradeStatus(data);
-      setDurationInput(String(data.min_duration_ms));
-      setMaxTradeCountInput(String(data.max_trade_count));
-      setMaxContractsInput(String(data.max_contracts));
-      setMinContractsInput(String(data.min_contracts));
-      setNeutralizationLossInput(String(data.neutralization_max_loss_cents));
+      setAutoTradeStatus((prev) => {
+        if (prev === null) {
+          setDurationInput(String(data.min_duration_ms));
+          setMaxTradeCountInput(String(data.max_trade_count));
+          setMaxContractsInput(String(data.max_contracts));
+          setMinContractsInput(String(data.min_contracts));
+          setNeutralizationLossInput(String(data.neutralization_max_loss_cents));
+        }
+        return data;
+      });
     } catch (error) {
       console.error('Failed to fetch automated trading status:', error);
     }
@@ -451,6 +536,38 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
             <span className={`text-[10px] ${isConnected ? 'text-green-400' : 'text-red-400'}`}>
               {isConnected ? '● Live' : 'Offline'}
             </span>
+          </div>
+
+          <div className="h-3 w-px bg-[--border-color]" />
+
+          {/* Page refresh controls */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleManualRefresh}
+              className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-gray-500/20 text-gray-300 hover:bg-gray-500/30 transition-colors"
+              title="Refresh the page now"
+            >
+              🔄
+            </button>
+            <input
+              type="number"
+              value={refreshSecondsInput}
+              onChange={(e) => setRefreshSecondsInput(e.target.value)}
+              min={MIN_AUTO_REFRESH_SECONDS}
+              className="w-12 text-[10px] px-1 py-0.5 rounded bg-[--bg-tertiary] border border-[--border-color] text-[--text-primary] text-center focus:outline-none focus:border-blue-500"
+              title={`Auto-refresh interval in seconds (min ${MIN_AUTO_REFRESH_SECONDS})`}
+            />
+            <button
+              onClick={handleToggleAutoRefresh}
+              className={`px-1.5 py-0.5 rounded text-[10px] font-semibold font-mono transition-colors ${
+                autoRefreshEnabled
+                  ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                  : 'bg-gray-500/20 text-gray-400 hover:bg-gray-500/30'
+              }`}
+              title={autoRefreshEnabled ? 'Auto-refresh is on — click to stop' : 'Click to reload the page automatically on this interval'}
+            >
+              {autoRefreshEnabled ? `⏱ ${refreshCountdown ?? refreshSecondsInput}s` : 'Auto: Off'}
+            </button>
           </div>
 
           <div className="h-3 w-px bg-[--border-color]" />

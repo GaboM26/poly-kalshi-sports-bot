@@ -9,7 +9,7 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use tracing::error;
+use tracing::{error, info};
 
 use crate::api::AppState;
 use crate::models::PolymarketPositionSide;
@@ -73,12 +73,18 @@ pub async fn place_kalshi_order(
         .place_order(&req.ticker, &req.action, &req.side, req.count, price)
         .await
     {
-        Ok(response) => Json(serde_json::json!({
-            "success": true,
-            "order": response,
-            "data": response
-        }))
-        .into_response(),
+        Ok(response) => {
+            info!(
+                "Manual Kalshi order placed: ticker={} side={} action={} count={} price={}c response={:?}",
+                req.ticker, req.side, req.action, req.count, price, response
+            );
+            Json(serde_json::json!({
+                "success": true,
+                "order": response,
+                "data": response
+            }))
+            .into_response()
+        }
         Err(e) => {
             error!("Failed to place Kalshi order: {}", e);
             (
@@ -136,15 +142,27 @@ pub async fn place_polymarket_order(
         )
         .await
     {
-        Ok(response) => Json(serde_json::json!({
-            "success": true,
-            "order_id": response.get("order_id"),
-            "status": response.get("status"),
-            "filled_contracts": response.get("filled_contracts"),
-            "elapsed_ms": response.get("latency_ms"),
-            "data": response.get("data")
-        }))
-        .into_response(),
+        Ok(response) => {
+            info!(
+                "Manual Polymarket order placed: market_slug={} side={} contracts={} price={} order_id={:?} status={:?} filled_contracts={:?}",
+                req.market_slug,
+                req.side,
+                req.contracts,
+                req.price,
+                response.get("order_id"),
+                response.get("status"),
+                response.get("filled_contracts"),
+            );
+            Json(serde_json::json!({
+                "success": true,
+                "order_id": response.get("order_id"),
+                "status": response.get("status"),
+                "filled_contracts": response.get("filled_contracts"),
+                "elapsed_ms": response.get("latency_ms"),
+                "data": response.get("data")
+            }))
+            .into_response()
+        }
         Err(e) => {
             error!("Failed to place Polymarket order: {}", e);
             (
@@ -356,17 +374,23 @@ pub async fn execute_arbitrage(
             size_cap,
             1,
             auto_state.max_amount,
+            poly_book.minimum_trade_qty,
             &kalshi_levels,
             &poly_levels,
         )
     else {
+        let reason = if poly_book.minimum_trade_qty.is_none() {
+            "Polymarket US market minimum trade quantity is unavailable"
+        } else {
+            "No profitable size remains after fees, worst-case prices, Polymarket's minimum trade quantity, available depth, and the configured max trade amount"
+        };
         return reject_with_skip(
             &service,
             &market_key,
             &req,
             &kalshi_market_id,
             &execution.market_slug,
-            "No profitable size remains after fees, worst-case prices, available depth, and the configured max trade amount",
+            reason,
         );
     };
 

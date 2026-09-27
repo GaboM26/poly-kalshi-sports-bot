@@ -674,12 +674,17 @@ async fn execute_single_auto_trade(
             size_cap,
             auto_state.min_contracts,
             auto_state.max_amount,
+            poly_book.minimum_trade_qty,
             &kalshi_levels,
             &poly_levels,
         )
     else {
-        save_auto_trade_skip(service, key, &record, &opportunity, size_cap, duration_ms,
-            "No fresh executable size remains profitable after fees, worst-case prices, and amount limit");
+        let reason = if poly_book.minimum_trade_qty.is_none() {
+            "Polymarket US market minimum trade quantity is unavailable"
+        } else {
+            "No fresh executable size remains profitable after fees, worst-case prices, Polymarket's minimum trade quantity, and amount limit"
+        };
+        save_auto_trade_skip(service, key, &record, &opportunity, size_cap, duration_ms, reason);
         return;
     };
 

@@ -27,7 +27,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            refresh_interval: 5,
+            refresh_interval: 3,
             min_profit_margin: 1.0,
             default_bet_amount: 10.0,
             tracking_threshold: 2.0,

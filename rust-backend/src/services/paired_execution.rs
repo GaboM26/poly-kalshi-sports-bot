@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tracing::error;
+use tracing::{error, info};
 
 use crate::clients::{
     KalshiOrderResult, PolymarketBookLevel, PolymarketMarketBook, PolymarketOrderResult,
@@ -18,13 +18,26 @@ use crate::clients::{
 use crate::models::PolymarketPositionSide;
 use crate::services::{ArbitrageService, AutoTradeExecutionRecord, TelegramClient};
 
-/// A cached websocket book may only drive an automatic order while it is this
-/// recent. The Python endpoint is requested synchronously, so its response is
-/// inherently a fresh Polymarket US book.
-pub const EXECUTABLE_BOOK_MAX_AGE: Duration = Duration::from_secs(2);
-/// Polymarket US rejects marketable orders below this total notional value
-/// (contracts * price) with ORD_REJECT_REASON_EXCHANGE_OPTION. Kalshi has no
-/// equivalent floor, so this only bounds the Polymarket leg's size search.
+/// For Kalshi: a connection-liveness backstop, checked against the last
+/// WebSocket message received on *any* subscribed ticker (see
+/// `KalshiClient::get_fresh_orderbook`) - not "this ticker changed
+/// recently," which Kalshi only signals on a real book change and would
+/// wrongly reject an accurate but quiet market. This just needs to be loose
+/// enough to never fire during normal operation and tight enough to catch a
+/// genuinely hung connection promptly. The actual per-book correctness
+/// check is the connection epoch, not this duration.
+/// For Polymarket: the Python endpoint is requested synchronously, so its
+/// response is inherently a fresh book: this just bounds total round trip.
+pub const EXECUTABLE_BOOK_MAX_AGE: Duration = Duration::from_secs(30);
+/// A conservative floor on Polymarket leg notional (contracts * price), kept
+/// as an extra safety margin. This is NOT the actual cause of
+/// ORD_REJECT_REASON_EXCHANGE_OPTION rejections - real rejected orders have
+/// had notional from $3.80-$9.50, well above this floor. That reject reason
+/// is a generic exchange catch-all (see docs.polymarket.us) that, per
+/// official docs, is most likely explained by each market's own
+/// `minimumTradeQty` (see `PolymarketMarketBook::minimum_trade_qty`), not a
+/// fixed dollar amount. Kalshi has no equivalent floor, so this only bounds
+/// the Polymarket leg's size search.
 pub const POLYMARKET_MIN_NOTIONAL_USD: f64 = 1.0;
 
 #[derive(Debug)]
@@ -224,16 +237,31 @@ pub fn calculate_contracts_to_trade(
     Some(contracts.min(max_contracts))
 }
 
+/// `poly_min_trade_qty` is the Polymarket market's own minimum tradeable
+/// quantity (docs.polymarket.us/api-reference/orders/overview: "constraints
+/// are market-dependent - retrieve minimumTradeQty ... before order
+/// submission"). Every order below it is rejected by the exchange
+/// (ORD_REJECT_REASON_EXCHANGE_OPTION). `None` means the order service could
+/// not look it up and must block sizing entirely, not be treated as zero.
 pub fn find_profitable_contract_size(
     size_cap: i32,
     min_contracts: i32,
     max_amount: f64,
+    poly_min_trade_qty: Option<f64>,
     kalshi_levels: &[(i32, i32)],
     poly_levels: &[(f64, i32)],
 ) -> Option<(i32, i32, f64, f64, f64)> {
     if !max_amount.is_finite() || max_amount <= 0.0 {
         return None;
     }
+    let Some(poly_min_trade_qty) = poly_min_trade_qty else {
+        return None;
+    };
+    let min_contracts = if poly_min_trade_qty.is_finite() && poly_min_trade_qty > 0.0 {
+        min_contracts.max(poly_min_trade_qty.ceil() as i32)
+    } else {
+        min_contracts
+    };
     for contracts in (min_contracts..=size_cap).rev() {
         let kalshi_price_cents = worst_price(kalshi_levels, contracts)?;
         let poly_price = worst_price(poly_levels, contracts)?;
@@ -711,6 +739,28 @@ pub async fn submit_paired_order(
         error!("Failed to finalize paired execution: {}", reason);
     }
 
+    // Every attempt that put real money on either exchange gets an explicit
+    // success/outcome log line here, independent of the DB record, so fills
+    // can be grepped and cross-checked against the exchanges directly.
+    if kalshi_result.filled_contracts > 0 || poly_result.filled_contracts > 0 {
+        info!(
+            "Paired order {}: {} {} | kalshi order_id={:?} filled={}/{} @ {}c | polymarket order_id={:?} filled={}/{} @ {:.4} | neutralization={:?} residual={}",
+            status,
+            params.event_name,
+            params.team_name,
+            kalshi_result.order_id,
+            kalshi_result.filled_contracts,
+            params.contracts,
+            params.kalshi_price_cents,
+            poly_result.order_id,
+            poly_result.filled_contracts,
+            params.contracts,
+            params.poly_price,
+            neutralization_success,
+            residual_contracts,
+        );
+    }
+
     if unsafe_fill_quantity || residual_contracts > 0 {
         // The recovery bound was unavailable or could not be met. Stop future
         // automated submissions and notify through the configured alert path,
@@ -777,6 +827,8 @@ mod tests {
                     quantity: 3.0,
                 },
             ],
+            minimum_trade_qty: None,
+            price_tick_size: None,
         }
     }
 
@@ -791,14 +843,14 @@ mod tests {
     fn rejects_size_when_worst_case_fee_removes_profit() {
         let kalshi = vec![(50, 10)];
         let poly = vec![(0.50, 10)];
-        assert!(find_profitable_contract_size(10, 1, 100.0, &kalshi, &poly).is_none());
+        assert!(find_profitable_contract_size(10, 1, 100.0, Some(1.0), &kalshi, &poly).is_none());
     }
 
     #[test]
     fn uses_worst_level_and_respects_total_amount_limit() {
         let kalshi = vec![(40, 2), (42, 3)];
         let poly = vec![(0.45, 2), (0.47, 3)];
-        let result = find_profitable_contract_size(5, 1, 5.0, &kalshi, &poly).unwrap();
+        let result = find_profitable_contract_size(5, 1, 5.0, Some(1.0), &kalshi, &poly).unwrap();
         assert_eq!(result.0, 5);
         assert_eq!(result.1, 42);
         assert_eq!(result.2, 0.47);
@@ -806,11 +858,11 @@ mod tests {
 
     #[test]
     fn rejects_size_below_polymarket_minimum_notional() {
-        // 1 contract at $0.22 is $0.22 notional; Polymarket US rejects any
-        // marketable order below $1 total notional with EXCHANGE_OPTION.
+        // 1 contract at $0.22 is $0.22 notional, below our conservative
+        // $1 notional floor (POLYMARKET_MIN_NOTIONAL_USD).
         let kalshi = vec![(63, 10)];
         let poly = vec![(0.22, 10)];
-        assert!(find_profitable_contract_size(1, 1, 100.0, &kalshi, &poly).is_none());
+        assert!(find_profitable_contract_size(1, 1, 100.0, Some(1.0), &kalshi, &poly).is_none());
     }
 
     #[test]
@@ -818,7 +870,35 @@ mod tests {
         let kalshi = vec![(40, 10)];
         let poly = vec![(0.22, 10)];
         // 5 contracts * $0.22 = $1.10, clears the $1 floor.
-        let result = find_profitable_contract_size(10, 5, 100.0, &kalshi, &poly).unwrap();
+        let result = find_profitable_contract_size(10, 5, 100.0, Some(1.0), &kalshi, &poly).unwrap();
+        assert_eq!(result.0, 10);
+    }
+
+    #[test]
+    fn blocks_sizing_when_polymarket_minimum_trade_qty_is_unknown() {
+        // The exchange rejects any order below its own per-market minimum
+        // (ORD_REJECT_REASON_EXCHANGE_OPTION). If the order service couldn't
+        // look that minimum up, we must not guess it's zero.
+        let kalshi = vec![(50, 10)];
+        let poly = vec![(0.50, 10)];
+        assert!(find_profitable_contract_size(10, 1, 100.0, None, &kalshi, &poly).is_none());
+    }
+
+    #[test]
+    fn rejects_size_below_polymarket_minimum_trade_qty() {
+        let kalshi = vec![(50, 5)];
+        let poly = vec![(0.50, 5)];
+        // Only 5 contracts of depth are available, but the market requires
+        // at least 8 per order - no size can ever clear both constraints.
+        assert!(find_profitable_contract_size(5, 1, 100.0, Some(8.0), &kalshi, &poly).is_none());
+    }
+
+    #[test]
+    fn accepts_size_at_polymarket_minimum_trade_qty() {
+        let kalshi = vec![(40, 10)];
+        let poly = vec![(0.45, 10)];
+        let result =
+            find_profitable_contract_size(10, 1, 100.0, Some(8.0), &kalshi, &poly).unwrap();
         assert_eq!(result.0, 10);
     }
 

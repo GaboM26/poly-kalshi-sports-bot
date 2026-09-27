@@ -34,7 +34,7 @@ order_service_url = "http://127.0.0.1:8001"
 
 [settings]
 # Data refresh interval (seconds)
-refresh_interval = 5
+refresh_interval = 3
 # Minimum profit margin (%) for displaying arbitrage opportunities
 min_profit_margin = 1.0
 # Default amount (USD) used for arbitrage calculations

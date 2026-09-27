@@ -7,6 +7,7 @@
 //! - Order placement
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -33,6 +34,7 @@ use crate::models::{KalshiEvent, KalshiMarket, Platform, PriceUpdate};
 
 const KALSHI_WS_URL: &str = "wss://external-api-ws.kalshi.com/trade-api/ws/v2";
 const KALSHI_MARKET_QUOTE_BATCH_SIZE: usize = 100;
+const KALSHI_GET_MAX_RETRIES: u32 = 3;
 
 // Kalshi's explicitly supported head-to-head match-winner series. Keep this
 // allowlist narrow: it intentionally excludes sets, games, totals, props,
@@ -63,6 +65,22 @@ pub struct KalshiClient {
     orderbook_cache: Arc<RwLock<HashMap<String, OrderBook>>>,
     /// Channel sender for dynamic subscriptions/unsubscriptions
     command_tx: Arc<RwLock<Option<mpsc::Sender<KalshiWsCommand>>>>,
+    /// Incremented every time a new WebSocket connection is established.
+    /// Kalshi only pushes `orderbook_delta` on real book changes, not on a
+    /// heartbeat, so "time since last delta" is the wrong staleness signal
+    /// for a quiet market - it would reject an accurate book just because
+    /// nothing traded recently. A book is trustworthy iff it was built
+    /// entirely under the currently-active, unbroken connection; tagging
+    /// each book with the epoch it was last written under (see
+    /// `OrderBook::epoch`) makes that checkable without any elapsed-time
+    /// guess, and a reconnect still correctly invalidates every book until
+    /// fresh snapshots arrive under the new epoch.
+    connection_epoch: Arc<AtomicU64>,
+    /// Set on every WebSocket message received, regardless of ticker - a
+    /// connection-level liveness signal, separate from any one book's
+    /// staleness. Backstops the epoch check against a connection that's
+    /// gone silent without erroring (e.g. a hung read).
+    last_message_at: Arc<RwLock<Option<Instant>>>,
 }
 
 /// Order book structure
@@ -71,6 +89,10 @@ pub struct OrderBook {
     pub yes: Vec<(i32, i32)>, // (price_cents, quantity)
     pub no: Vec<(i32, i32)>,
     updated_at: Option<Instant>,
+    /// The WebSocket connection epoch this book was last written under. 0
+    /// (the Default) never matches a real connection's epoch (which starts
+    /// at 1), so a book that was never epoch-tagged is correctly untrusted.
+    epoch: u64,
 }
 
 /// Authoritative price-only quote from Kalshi's REST market endpoint.
@@ -161,6 +183,8 @@ impl KalshiClient {
             signing_key,
             orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
             command_tx: Arc::new(RwLock::new(None)),
+            connection_epoch: Arc::new(AtomicU64::new(0)),
+            last_message_at: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -185,22 +209,46 @@ impl KalshiClient {
             .as_millis() as i64
     }
 
-    /// Make an authenticated GET request
+    /// Make an authenticated GET request. A transport-level failure (a
+    /// connection timeout, reset, or DNS error before any response arrives)
+    /// is retried with exponential backoff (1s/2s, 3 attempts total) since a
+    /// GET can never have caused a side effect on Kalshi's side - unlike
+    /// `post()`, which places orders and must never be blindly retried. A
+    /// real Kalshi API error (a non-success HTTP status) is not retried.
     async fn get(&self, path: &str) -> Result<Value> {
-        let timestamp = Self::get_timestamp_ms();
-        let sign_path = Self::signing_path(path);
-        let signature = self.sign_request(timestamp, "GET", &sign_path);
+        let mut attempt = 0u32;
+        let response = loop {
+            let timestamp = Self::get_timestamp_ms();
+            let sign_path = Self::signing_path(path);
+            let signature = self.sign_request(timestamp, "GET", &sign_path);
+            let url = format!("{}{}", self.config.base_url, path);
 
-        let url = format!("{}{}", self.config.base_url, path);
-
-        let response = self
-            .http
-            .get(&url)
-            .header("KALSHI-ACCESS-KEY", &self.config.api_key)
-            .header("KALSHI-ACCESS-SIGNATURE", &signature)
-            .header("KALSHI-ACCESS-TIMESTAMP", timestamp.to_string())
-            .send()
-            .await?;
+            match self
+                .http
+                .get(&url)
+                .header("KALSHI-ACCESS-KEY", &self.config.api_key)
+                .header("KALSHI-ACCESS-SIGNATURE", &signature)
+                .header("KALSHI-ACCESS-TIMESTAMP", timestamp.to_string())
+                .send()
+                .await
+            {
+                Ok(response) => break response,
+                Err(err) if attempt + 1 < KALSHI_GET_MAX_RETRIES => {
+                    let delay = Duration::from_secs(2u64.pow(attempt));
+                    warn!(
+                        "Kalshi GET {} failed ({}), retrying in {:?} (attempt {}/{})",
+                        path,
+                        err,
+                        delay,
+                        attempt + 1,
+                        KALSHI_GET_MAX_RETRIES
+                    );
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                }
+                Err(err) => return Err(err.into()),
+            }
+        };
 
         let status = response.status();
         let body = response.text().await?;
@@ -256,13 +304,29 @@ impl KalshiClient {
         self.orderbook_cache.read().get(ticker).cloned()
     }
 
-    /// Return only a recent websocket book. REST quotes are intentionally not
-    /// used for executable depth or automatic execution.
+    /// Return only a websocket book we can vouch for. REST quotes are
+    /// intentionally not used for executable depth or automatic execution.
+    ///
+    /// "Fresh" means: this book was last written under the *currently
+    /// active* connection (a reconnect bumps the epoch and invalidates
+    /// every book until it's resnapshotted), not merely "changed recently" -
+    /// Kalshi only sends a delta on a real book change, so a quiet market
+    /// can go untouched for a while while still being perfectly accurate.
+    /// `max_age` backstops that against a connection that's gone silent
+    /// without erroring (e.g. a hung read): it's checked against the last
+    /// message received on *any* ticker, not this one, since a quiet book
+    /// isn't evidence of a dead connection.
     pub fn get_fresh_orderbook(&self, ticker: &str, max_age: Duration) -> Option<OrderBook> {
-        self.get_orderbook(ticker).filter(|book| {
-            book.updated_at
-                .is_some_and(|updated| updated.elapsed() <= max_age)
-        })
+        let current_epoch = self.connection_epoch.load(Ordering::SeqCst);
+        let connection_alive = self
+            .last_message_at
+            .read()
+            .is_some_and(|last| last.elapsed() <= max_age);
+        if !connection_alive {
+            return None;
+        }
+        self.get_orderbook(ticker)
+            .filter(|book| book.epoch == current_epoch)
     }
 
     /// Fetch authoritative current ask quotes for the requested market tickers.
@@ -555,6 +619,12 @@ impl KalshiClient {
             .await
             .with_context(|| "连接 Kalshi WebSocket 失败")?;
 
+        // A fresh connection means no book we've cached so far can be
+        // vouched for until it's rewritten under this epoch - see
+        // `get_fresh_orderbook`.
+        let current_epoch = self.connection_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        *self.last_message_at.write() = Some(Instant::now());
+
         let (mut write, mut read) = ws_stream.split();
         let mut pending_subscription_ids = HashMap::new();
         let mut subscription_ids = HashMap::new();
@@ -591,12 +661,13 @@ impl KalshiClient {
                 msg = read.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
+                            *self.last_message_at.write() = Some(Instant::now());
                             Self::record_subscription(
                                 &text,
                                 &mut pending_subscription_ids,
                                 &mut subscription_ids,
                             );
-                            if let Some(update) = Self::parse_ws_message(&text, &orderbook_cache) {
+                            if let Some(update) = Self::parse_ws_message(&text, &orderbook_cache, current_epoch) {
                                 if price_tx.send(update).await.is_err() {
                                     warn!("Price update channel has closed");
                                     break;
@@ -615,7 +686,11 @@ impl KalshiClient {
                             info!("Kalshi WebSocket stream ended");
                             break;
                         }
-                        _ => {}
+                        Some(Ok(_)) => {
+                            // Ping/Pong/Binary frames still confirm the
+                            // connection is alive.
+                            *self.last_message_at.write() = Some(Instant::now());
+                        }
                     }
                 }
                 // Handle dynamic subscription/unsubscription requests
@@ -715,10 +790,14 @@ impl KalshiClient {
         }
     }
 
-    /// Parse WebSocket message
+    /// Parse WebSocket message. `epoch` is the current connection's epoch
+    /// (see `KalshiClient::connection_epoch`) and is stamped onto any book
+    /// this message writes, so `get_fresh_orderbook` can tell it was built
+    /// under the connection that's still active.
     fn parse_ws_message(
         text: &str,
         orderbook_cache: &Arc<RwLock<HashMap<String, OrderBook>>>,
+        epoch: u64,
     ) -> Option<PriceUpdate> {
         let data: Value = serde_json::from_str(text).ok()?;
         let msg_type = data.get("type")?.as_str()?;
@@ -736,6 +815,7 @@ impl KalshiClient {
                 book.yes.sort_by_key(|(p, _)| *p);
                 book.no.sort_by_key(|(p, _)| *p);
                 book.updated_at = Some(Instant::now());
+                book.epoch = epoch;
 
                 orderbook_cache
                     .write()
@@ -783,6 +863,12 @@ impl KalshiClient {
                 // Apply delta
                 let mut cache = orderbook_cache.write();
                 let book = cache.get_mut(ticker)?;
+                // Never build on a book left over from a previous connection
+                // - wait for the fresh snapshot this epoch's subscribe will
+                // bring instead of layering a delta on a stale base.
+                if book.epoch != epoch {
+                    return None;
+                }
 
                 let book_side = if side == "yes" {
                     &mut book.yes
@@ -803,6 +889,7 @@ impl KalshiClient {
                     book_side.sort_by_key(|(p, _)| *p);
                 }
                 book.updated_at = Some(Instant::now());
+                book.epoch = epoch;
 
                 // Recalculate prices
                 let yes_bid = book.yes.last().map(|(p, _)| *p as f64 / 100.0);
