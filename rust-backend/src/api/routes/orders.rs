@@ -86,7 +86,7 @@ pub async fn place_kalshi_order(
             .into_response()
         }
         Err(e) => {
-            error!("Failed to place Kalshi order: {}", e);
+            error!("Failed to place Kalshi order: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -164,7 +164,7 @@ pub async fn place_polymarket_order(
             .into_response()
         }
         Err(e) => {
-            error!("Failed to place Polymarket order: {}", e);
+            error!("Failed to place Polymarket order: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -233,7 +233,7 @@ fn reject_with_skip(
                 reason,
             )
         {
-            error!("Failed to save skipped manual-execute record: {}", error);
+            error!("Failed to save skipped manual-execute record: {:#}", error);
         }
     }
     (
@@ -410,6 +410,7 @@ pub async fn execute_arbitrage(
             kalshi_fee: fee,
             profit_margin,
             duration_ms: 0,
+            poly_book_fetched_at_ms: poly_book.fetched_at_ms,
             neutralization_max_loss_cents: auto_state.neutralization_max_loss_cents,
             dry_run: req.dry_run,
         },
@@ -419,7 +420,7 @@ pub async fn execute_arbitrage(
     if outcome.status == "executed" {
         if let Err(reason) = service.ws_manager.increment_trade_count() {
             error!(
-                "Failed to increment trade count after manual execution: {}",
+                "Failed to increment trade count after manual execution: {:#}",
                 reason
             );
         }
@@ -496,7 +497,7 @@ pub async fn get_kalshi_orders(
         }))
         .into_response(),
         Err(e) => {
-            error!("Failed to get Kalshi orders: {}", e);
+            error!("Failed to get Kalshi orders: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -519,7 +520,7 @@ pub async fn get_polymarket_orders(State(state): State<Arc<AppState>>) -> impl I
         }))
         .into_response(),
         Err(e) => {
-            error!("Failed to get Polymarket orders: {}", e);
+            error!("Failed to get Polymarket orders: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -545,7 +546,7 @@ pub async fn cancel_kalshi_order(
         }))
         .into_response(),
         Err(e) => {
-            error!("Failed to cancel Kalshi order: {}", e);
+            error!("Failed to cancel Kalshi order: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -571,7 +572,7 @@ pub async fn cancel_polymarket_order(
         }))
         .into_response(),
         Err(e) => {
-            error!("Failed to cancel Polymarket order: {}", e);
+            error!("Failed to cancel Polymarket order: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({

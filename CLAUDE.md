@@ -20,13 +20,12 @@ confidence. Priorities when helping:
 - Treat any bug in this path as potentially money-losing. Confirm fixes
   against the invariants below rather than assuming a plausible-looking
   change is correct.
-- There is currently an in-progress uncommitted diff across the Rust
-  backend, order service, and docs (`git status` shows modified files in
-  `api/` (incl. `api/routes/orders.rs`), `clients/kalshi.rs`,
-  `clients/polymarket.rs`, `services/paired_execution.rs`,
-  `services/storage/auto_trade_repo.rs`, `services/websocket_manager/`, and
-  `poly-order-service/main.py`). Assume this is active work-in-progress, not
-  junk — read the diff before reasoning about "current" behavior.
+- As of 2026-09-29, the `ORD_REJECT_REASON_EXCHANGE_OPTION` blocker that
+  prevented every order from ever filling is resolved and confirmed against
+  a real live fill (see that session log below) — read it before assuming
+  order submission is still broken. Check `git status` before reasoning
+  about "current" behavior generally; this file's session logs describe
+  work as it happened, not necessarily what's still uncommitted now.
 
 ## Session log (2026-09-24) — read this before continuing
 
@@ -231,6 +230,134 @@ the exchange," which shouldn't both be true for one opportunity at once
 unless the two views are reading different data (e.g. a stale/cached
 opportunity record vs. a fresh live sizing attempt).
 
+## Session log (2026-09-28) — EXCHANGE_OPTION: new theory + instrumentation added
+
+**Read the full logs first, not just the code comments.** Grepped every
+retained log file (`rust-backend/logs/polytaoli.log.2026-07-29` through
+`.2026-09-27`, ~50MB, 14 files): there are **zero** `"order FILLED"` /
+`ORDER_STATE_FILLED` lines anywhere. Every real order attempt on record (11
+total, all in `.2026-09-27`) was rejected with
+`ORD_REJECT_REASON_EXCHANGE_OPTION`. So there is no successful-order example
+in these logs to diff a rejected payload against — that approach the
+2026-09-27 log entry suggested is a dead end until a fill actually happens.
+
+**What the rejections actually look like:** every one goes through exactly
+two executions, `EXECUTION_TYPE_NEW` (`cumQuantity: 0`) immediately followed
+by `EXECUTION_TYPE_EXPIRED` (`cumQuantity: 0`, `leavesQuantity: 0`). That is
+an IOC order the exchange *accepted syntactically* and then expired with no
+match — not an immediate hard validation rejection. Request payloads were
+clean and consistent (whole-number `quantity`, valid `price.value` strings),
+so the float/int theory from 2026-09-26 is not the explanation here.
+
+**What `EXCHANGE_OPTION` means, per
+`docs.polymarket.us/institutional/fix-api/fix-reject-reasons`:** it's FIX
+`OrdRejReason` tag 103, code 0 — a **generic catch-all**, not a specific
+error. Covers price/quantity/notional bounds, insufficient buying power,
+self-match prevention, and (most relevant given the NEW→EXPIRED pattern)
+liquidity-derivation/insufficient-liquidity-for-fill scenarios. Stop treating
+it as one identifiable bug to find — it may legitimately mean "no match,"
+in which case the fix is pricing/timing, not a payload field.
+
+**New leading theory:** `find_profitable_contract_size`
+(`services/paired_execution.rs`) prices the Polymarket leg at
+`worst_price(poly_levels, contracts)` — the exact boundary price needed to
+fill the full requested size, with **zero slippage buffer**. Between that
+book snapshot (`get_market_book`) and the order reaching
+`api.polymarket.us` there's a DB persist (`save_auto_trade_execution`) plus
+a full network round trip. On a moving sports market that's enough time for
+the book to tick past a price with no headroom, which would explain a
+zero-fill IOC on every single attempt with no exceptions. The create-order
+API documents a `slippageTolerance` field (`currentPrice` + bips/ticks
+tolerance) that this code has never set — worth using once the theory is
+confirmed.
+
+**Not yet ruled in or out:** every rejection's response echoes
+`order.manualOrderIndicator: MANUAL_ORDER_INDICATOR_AUTOMATIC` even though
+the request sends `MANUAL_ORDER_INDICATOR_MANUAL` — consistent across all
+11 samples. "Account type or customer order capacity validation failures"
+is on the EXCHANGE_OPTION list, so this is a real secondary lead, but could
+equally be normal exchange-side reclassification of any synchronous/IOC API
+order. Don't chase this before the staleness theory is tested — it's the
+weaker signal.
+
+**Instrumentation added this session (no execution-logic change, builds and
+`cargo test --lib paired_execution` pass):** `PairedOrderParams` gained
+`poly_book_fetched_at_ms` (both callers — `api/routes/orders.rs`'s
+`execute_arbitrage` and `api/mod.rs`'s auto-trade handler — now pass
+`poly_book.fetched_at_ms`). `submit_paired_order`
+(`services/paired_execution.rs`) now logs `book_age_ms` at `info!` right
+before every Polymarket submission, and on any zero-fill result, does a
+**read-only, diagnostic-only** re-fetch of the market book afterward and
+logs `current_best_buy_price` vs. the price we submitted plus
+`market_moved_past_our_price: bool`. This adds no risk to the execution
+path (fires only after the order already resolved) and makes no order
+decisions from the re-fetch. Purpose: the *next* real
+`ORD_REJECT_REASON_EXCHANGE_OPTION` in the logs will directly confirm or
+refute the staleness theory instead of guessing again.
+
+**Next step:** run the bot until the next live rejection (or next intended
+test order, per this file's own live-order rule — don't fire one
+speculatively), then grep the new `warn!` line
+(`"post-rejection book check for"`) and read `market_moved_past_our_price`.
+If true, implement a slippage buffer (`slippageTolerance` field, or a small
+cushion added to `worst_price` before submission) as the actual fix. If
+false on multiple occurrences, the staleness theory is wrong and the
+`manualOrderIndicator` mismatch (or a real Polymarket-side account issue)
+becomes the next thing to check, likely requiring Polymarket support
+contact since it isn't something log-reading alone can resolve.
+
+## Session log (2026-09-29) — ROOT CAUSE FOUND: `manualOrderIndicator` must be `AUTOMATIC`
+
+**Resolved.** The 2026-09-28 staleness instrumentation immediately paid off:
+the first real rejection it caught showed `book_age_ms_at_submit=19` and
+`market_moved_past_our_price=false` — the order was fresh and marketable and
+still got rejected, ruling out staleness entirely. A follow-up manual test
+order at an aggressive, obviously-marketable price (buying at 90¢ against a
+~72¢ market, 1 contract, tiny notional, clean `BUY_LONG` with no
+`action`/`side` contradiction) was *still* rejected with
+`ORD_REJECT_REASON_EXCHANGE_OPTION` — ruling out price, size, and balance.
+The user confirmed manual orders on Polymarket's own website work fine on
+this same account, ruling out account status/KYC.
+
+The one field consistent across every single rejection, long and short
+alike: we sent `manualOrderIndicator: MANUAL_ORDER_INDICATOR_MANUAL`, and
+the response always echoed back `MANUAL_ORDER_INDICATOR_AUTOMATIC` — the
+exchange was silently reclassifying every order regardless of what we sent.
+Git history showed the original Python `poly-order-service/main.py` sent
+`AUTOMATIC` originally; commit `575eb5b` ("fix: correcting positions with
+new UI requirements", 2026-09-11) flipped it to `MANUAL` with no explanation
+in the commit message, and the Rust rewrite just carried that value forward.
+
+**Fix:** `clients/polymarket.rs::submit_limit_order` now sends
+`manualOrderIndicator: MANUAL_ORDER_INDICATOR_AUTOMATIC`. First test order
+after the fix (`aec-atp-jaumun-alekov-2026-09-28`, 1 contract, limit 75¢)
+**filled** at `avg_price=0.59` — order id `CSE6Z40H6YC3`, the first
+successful fill this bot has ever recorded via the API in the full log
+history checked (back to 2026-07-29). Confirmed against live data, not
+inference.
+
+**Secondary bug found and fixed along the way:** while chasing a *different*
+failure (a stale market slug that had closed for trading), the actual cause
+was invisible because nearly every `error!(...)` call across the codebase
+logged an `anyhow::Error` with `{}` instead of `{:#}`, which silently
+truncates to the outermost context and hides the real cause (HTTP status,
+transport failure, etc.). Fixed every such call site (grep `error!(` to
+verify none remain using bare `{}` on an error/reason variable). This isn't
+specific to Polymarket — it was hiding root causes in Kalshi, storage,
+auto-trade, and WebSocket error paths too.
+
+**Cleanup done this session:** `poly-order-service/` deleted entirely (no
+longer referenced anywhere; confirmed nothing in the Rust runtime or start
+scripts calls it, and the Rust-only path is now proven with a real fill).
+`.github/copilot-instructions.md` and the startup scripts updated to remove
+stale references to the Python service, its port, and its test suite.
+
+**Not yet investigated:** the frontend price-pairing question raised this
+session (Kalshi showing ~50%/52%/52% for a live match) checked out fine on
+a live query immediately after — most likely just live in-play odds
+movement between screenshots, not a bug. Revisit only if it recurs with
+static (non-moving) numbers.
+
 ## Architecture
 
 Two services, started together via `./start_rust_stack.sh`:
@@ -255,9 +382,11 @@ Two services, started together via `./start_rust_stack.sh`:
   opportunities, order forms, position/history views, WebSocket client
   (`hooks/useWebSocket.ts`).
 
-`poly-order-service/` (FastAPI wrapper around the official `polymarket-us`
-SDK) still exists in the repo but is no longer started or called by
-anything — see the 2026-09-27 session log above for the migration off it.
+`poly-order-service/` (the old FastAPI wrapper around the official
+`polymarket-us` SDK) has been deleted from the repo — see the 2026-09-27
+session log above for the migration off it, and the 2026-09-29 log for its
+removal once the Rust path was proven working end-to-end (first confirmed
+live fill).
 
 ## Critical invariants (do not weaken without explicit user sign-off)
 
@@ -268,8 +397,8 @@ summary.
 - **Kalshi signing**: sign the path only, exclude query params.
 - **Polymarket order responses**: read fills from `executions[].order`
   (e.g. `.avgPx`), never from the top-level response envelope.
-- **Polymarket depth**: only from the SDK's `markets.book(market_slug)`
-  (normalized by `poly-order-service`) — never gateway display quotes,
+- **Polymarket depth**: only from `/v1/markets/{market_slug}/book`
+  (`clients/polymarket.rs::get_market_book`) — never gateway display quotes,
   account caches, or the non-US CLOB API.
 - **Kalshi depth**: only from a fresh Kalshi WebSocket book at execution
   time. Kalshi size is fixed-point — floor when converting to whole
@@ -295,17 +424,13 @@ summary.
 
 - Rust: `cargo test` from `rust-backend/`.
 - Frontend: `npm run lint && npm run build` from `web/`.
-- `poly-order-service/` is no longer part of the runtime (see the
-  2026-09-27 session log); its tests are kept for reference only and don't
-  need to pass for a change to be considered validated.
 - `rust-backend/examples/verify_polymarket_direct.rs` (`cargo run --example
   verify_polymarket_direct` from `rust-backend/`) hits the live Polymarket
   US API's read-only endpoints (balance, positions, open orders, a market
   book) using real credentials from `config.toml` — useful for confirming
   Ed25519 signing/parsing still works after touching `clients/polymarket.rs`
-  or `clients/polymarket_auth.rs`. Like `poly-order-service/test_service.py`
-  before it, do not run it as part of routine/automatic validation — it's a
-  manual check, and it never places an order.
+  or `clients/polymarket_auth.rs`. Do not run it as part of routine/automatic
+  validation — it's a manual check, and it never places an order.
 - **Never enable automatic trading or submit live/test orders** as part of
   routine development or debugging. Config default is `auto_trade.enabled =
   false`; keep it that way unless the user explicitly asks to test live.

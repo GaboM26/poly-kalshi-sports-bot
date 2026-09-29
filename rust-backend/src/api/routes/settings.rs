@@ -37,7 +37,7 @@ pub async fn get_app_settings(State(state): State<Arc<AppState>>) -> impl IntoRe
         })
         .into_response(),
         Err(e) => {
-            error!("获取应用设置失败: {}", e);
+            error!("获取应用设置失败: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -81,7 +81,7 @@ pub async fn update_app_settings(
         }))
         .into_response(),
         Err(e) => {
-            error!("更新应用设置失败: {}", e);
+            error!("更新应用设置失败: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({

@@ -1,9 +1,8 @@
 #!/bin/bash
 
-# There is no separate Python order service anymore: the Rust backend calls
-# the Polymarket US API directly (Ed25519-signed), the same way it already
-# calls Kalshi. poly-order-service/ remains in this bundle for reference
-# only and is not started here.
+# The Rust backend calls the Polymarket US API directly (Ed25519-signed),
+# the same way it already calls Kalshi. There is no separate order-
+# submission process for either exchange.
 
 # Store all process IDs.
 PIDS=""

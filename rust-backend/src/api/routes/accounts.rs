@@ -21,7 +21,7 @@ pub async fn get_kalshi_balance(State(state): State<Arc<AppState>>) -> impl Into
         }))
         .into_response(),
         Err(e) => {
-            error!("Failed to get Kalshi balance: {}", e);
+            error!("Failed to get Kalshi balance: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -45,7 +45,7 @@ pub async fn get_polymarket_balance(State(state): State<Arc<AppState>>) -> impl 
         }))
         .into_response(),
         Err(e) => {
-            error!("Failed to get Polymarket balance: {}", e);
+            error!("Failed to get Polymarket balance: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -109,7 +109,7 @@ pub async fn get_kalshi_positions(State(state): State<Arc<AppState>>) -> impl In
         }))
         .into_response(),
         Err(e) => {
-            error!("Failed to get Kalshi positions: {}", e);
+            error!("Failed to get Kalshi positions: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -132,7 +132,7 @@ pub async fn get_polymarket_positions(State(state): State<Arc<AppState>>) -> imp
         }))
         .into_response(),
         Err(e) => {
-            error!("Failed to get Polymarket positions: {}", e);
+            error!("Failed to get Polymarket positions: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -207,7 +207,7 @@ pub async fn login(
     ) {
         Ok(t) => t,
         Err(e) => {
-            error!("Failed to generate JWT: {}", e);
+            error!("Failed to generate JWT: {:#}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({

@@ -161,7 +161,7 @@ impl WebSocketManager {
                 }
             }
             Err(e) => {
-                tracing::error!("Failed to load excluded markets list: {}", e);
+                tracing::error!("Failed to load excluded markets list: {:#}", e);
             }
         }
     }
@@ -186,7 +186,7 @@ impl WebSocketManager {
                 inserted
             }
             Err(e) => {
-                tracing::error!("Failed to save excluded market to the database: {}", e);
+                tracing::error!("Failed to save excluded market to the database: {:#}", e);
                 false
             }
         }
@@ -212,7 +212,7 @@ impl WebSocketManager {
                 removed
             }
             Err(e) => {
-                tracing::error!("Failed to remove excluded market from the database: {}", e);
+                tracing::error!("Failed to remove excluded market from the database: {:#}", e);
                 false
             }
         }

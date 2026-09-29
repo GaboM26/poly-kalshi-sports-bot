@@ -2,27 +2,25 @@
 
 ## Repository Layout
 
-- `rust-backend/` is the Axum/Tokio API, arbitrage engine, exchange clients, SQLite storage, and WebSocket server.
+- `rust-backend/` is the Axum/Tokio API, arbitrage engine, exchange clients, SQLite storage, and WebSocket server. It calls both Kalshi and Polymarket US directly (RSA-PSS and Ed25519-signed requests respectively) — there is no separate order-submission process for either exchange.
 - `web/` is the Vite, React, and TypeScript user interface.
-- `poly-order-service/` is the FastAPI service that submits Polymarket US orders through `polymarket-us`.
-- Root scripts start the development stack and build deployment packages. Keep the service ports aligned with the configuration: frontend `5173`, Rust API `8000`, and Python order service `8001`.
+- Root scripts start the development stack and build deployment packages. Keep the service ports aligned with the configuration: frontend `5173`, Rust API `8000`.
 
 ## Change Guidelines
 
 - Treat all price, order, and position data as financial data. Preserve decimal precision, validate external inputs, and do not weaken order-size, profit-margin, duration, or execution-count safeguards.
 - Keep secrets out of source control. Use `rust-backend/config.example.toml` for new configuration defaults and document required configuration in `README.md`; never add real credentials.
 - Keep Rust API models, route handlers, frontend types, and API client calls consistent when an endpoint or payload changes.
-- Keep the Python order-service request and response contracts compatible with the Rust Polymarket client before changing either service.
 - Follow existing error-handling patterns. Surface exchange, signing, storage, and network failures rather than hiding them with fallback data.
 - Preserve WebSocket message compatibility for the React client when changing the Rust WebSocket manager or opportunity models.
 
 ## Exchange Integration Status
 
 - Kalshi uses the v2 API. Sign authenticated requests with the path only; exclude query parameters from the signed payload.
-- The pinned `polymarket-us==0.1.2` SDK returns an order creation envelope with `executions[].order`; do not read an order ID, state, or fills from the top-level response.
-- Polymarket US executable depth comes from the official SDK's
-  `markets.book(market_slug)` endpoint, normalized by the local Python order
-  service. The payload is a `marketData` envelope containing timestamped
+- Polymarket US order submission (`POST /v1/orders`) returns an execution envelope with `executions[].order`; do not read an order ID, state, or fills from the top-level response. `manualOrderIndicator` must be `MANUAL_ORDER_INDICATOR_AUTOMATIC` for API-submitted orders — sending `MANUAL` produced a 100% `ORD_REJECT_REASON_EXCHANGE_OPTION` rejection rate (see CLAUDE.md 2026-09-28/29 session log).
+- Polymarket US executable depth comes directly from the gateway's
+  `/v1/markets/{market_slug}/book` endpoint (`clients/polymarket.rs::get_market_book`).
+  The payload is a `marketData` envelope containing timestamped
   `bids` and `offers` with USD price and quantity. Do not substitute gateway
   display quotes, account caches, or the non-US CLOB API.
 - Polymarket US portfolio positions are returned as a market-keyed map. Normalize them into the frontend's position array before rendering.
@@ -34,7 +32,7 @@
 
 - Automatic execution must preflight fresh executable books from both venues.
   Kalshi depth may only come from its fresh WebSocket book; Polymarket US depth
-  must come from `markets.book(market_slug)`. Size against the worst level
+  must come from `/v1/markets/{market_slug}/book`. Size against the worst level
   needed, not a displayed quote or aggregate dashboard liquidity.
 - Preserve contract, profit-margin, duration, duplicate-trade, maximum amount,
   and execution-count limits. Kalshi depth is fixed-point: floor it when
@@ -59,7 +57,4 @@
 
 - For Rust changes, run `cargo test` from `rust-backend/`.
 - For frontend changes, run `npm run lint` and `npm run build` from `web/`.
-- For Python order-service changes, run the offline
-  `python3 -m pytest -q test_market_book.py`. Do not run `test_service.py` as
-  routine validation; it can access live account data and order endpoints.
 - Do not enable automatic trading or submit test orders as part of routine development validation.

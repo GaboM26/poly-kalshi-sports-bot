@@ -181,7 +181,7 @@ impl ArbitrageService {
                     .await
                 {
                     error!(
-                        "Kalshi WebSocket error: {}. Reconnecting in 5 seconds...",
+                        "Kalshi WebSocket error: {:#}. Reconnecting in 5 seconds...",
                         e
                     );
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -263,7 +263,7 @@ impl ArbitrageService {
                         }
                     }
                     Err(e) => {
-                        error!("❌ Polymarket US REST quote refresh failed: {}", e);
+                        error!("❌ Polymarket US REST quote refresh failed: {:#}", e);
                     }
                 }
             }
@@ -319,7 +319,7 @@ impl ArbitrageService {
                         }
                     }
                     Err(error) => {
-                        error!("❌ Kalshi REST quote refresh failed: {}", error);
+                        error!("❌ Kalshi REST quote refresh failed: {:#}", error);
                     }
                 }
             }
@@ -406,7 +406,7 @@ impl ArbitrageService {
             match self.kalshi_client.get_supported_events_and_markets().await {
                 Ok(data) => data,
                 Err(e) => {
-                    error!("❌ Failed to fetch Kalshi market data: {}", e);
+                    error!("❌ Failed to fetch Kalshi market data: {:#}", e);
                     return Ok((Vec::new(), SubscriptionInfo::empty()));
                 }
             };
@@ -418,7 +418,7 @@ impl ArbitrageService {
         {
             Ok(data) => data,
             Err(e) => {
-                error!("❌ Failed to fetch Polymarket market data: {}", e);
+                error!("❌ Failed to fetch Polymarket market data: {:#}", e);
                 return Ok((Vec::new(), SubscriptionInfo::empty()));
             }
         };

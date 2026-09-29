@@ -60,7 +60,7 @@ impl TelegramClient {
         );
 
         if let Err(e) = self.send_message(&message).await {
-            error!("Telegram 通知发送失败: {}", e);
+            error!("Telegram 通知发送失败: {:#}", e);
         }
     }
 

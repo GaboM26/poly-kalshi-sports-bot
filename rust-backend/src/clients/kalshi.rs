@@ -679,7 +679,7 @@ impl KalshiClient {
                             break;
                         }
                         Some(Err(e)) => {
-                            error!("Kalshi WebSocket error: {}", e);
+                            error!("Kalshi WebSocket error: {:#}", e);
                             break;
                         }
                         None => {
@@ -711,7 +711,7 @@ impl KalshiClient {
                                 next_msg_id += 1;
 
                                 if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
-                                    error!("❌ [Kalshi] Hot subscription send failed: {}", e);
+                                    error!("❌ [Kalshi] Hot subscription send failed: {:#}", e);
                                 }
                             }
                             info!("✅ [Kalshi] Hot subscription completed for {} markets", new_tickers.len());
@@ -741,7 +741,7 @@ impl KalshiClient {
                                 next_msg_id += 1;
 
                                 if let Err(e) = write.send(Message::Text(unsubscribe_msg.to_string())).await {
-                                    error!("❌ [Kalshi] Unsubscribe send failed: {}", e);
+                                    error!("❌ [Kalshi] Unsubscribe send failed: {:#}", e);
                                 }
                             }
                             for ticker in tickers_to_unsub {

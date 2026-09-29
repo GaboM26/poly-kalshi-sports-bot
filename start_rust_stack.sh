@@ -2,11 +2,10 @@
 
 # Startup script for the Polytaoli Rust backend and frontend.
 #
-# There is no separate Python order service anymore: the Rust backend calls
-# the Polymarket US API directly (Ed25519-signed requests in
-# rust-backend/src/clients/polymarket.rs), the same way it already does for
-# Kalshi. poly-order-service/ remains in the repo for reference only and is
-# not started here.
+# The Rust backend calls the Polymarket US API directly (Ed25519-signed
+# requests in rust-backend/src/clients/polymarket.rs), the same way it
+# already does for Kalshi. There is no separate order-submission process
+# for either exchange.
 
 echo "🚀 Starting Polytaoli (Rust backend version)"
 echo "=================================="

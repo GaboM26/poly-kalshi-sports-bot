@@ -10,7 +10,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tracing::{error, info};
+use chrono::Utc;
+use tracing::{error, info, warn};
 
 use crate::clients::{
     KalshiOrderResult, PolymarketBookLevel, PolymarketMarketBook, PolymarketOrderResult,
@@ -368,6 +369,12 @@ pub struct PairedOrderParams {
     pub kalshi_fee: f64,
     pub profit_margin: f64,
     pub duration_ms: i64,
+    /// `PolymarketMarketBook::fetched_at_ms` of the book `poly_price` was
+    /// computed from. Diagnostic only - lets us log how stale that book was
+    /// by the time the order actually reached the exchange, to confirm or
+    /// rule out a market-moved-between-snapshot-and-submission explanation
+    /// for `ORD_REJECT_REASON_EXCHANGE_OPTION` (see CLAUDE.md session log).
+    pub poly_book_fetched_at_ms: i64,
     pub neutralization_max_loss_cents: i32,
     /// When true, no order is submitted to either exchange and nothing is
     /// persisted as a real attempt; the returned outcome carries the
@@ -482,7 +489,7 @@ pub async fn submit_paired_order(
         Ok(id) => id,
         Err(reason) => {
             error!(
-                "Refusing paired order submission because durable intent persistence failed: {}",
+                "Refusing paired order submission because durable intent persistence failed: {:#}",
                 reason
             );
             let mut record = dry_run_record(&params);
@@ -500,6 +507,11 @@ pub async fn submit_paired_order(
     // the caller. Both native orders are IOC/FAK; an acknowledgement with
     // zero fill is failure.
     let poly_started = Instant::now();
+    let book_age_at_submit_ms = Utc::now().timestamp_millis() - params.poly_book_fetched_at_ms;
+    info!(
+        "Polymarket leg submitting: market_slug={} price={:.4} contracts={} book_age_ms={}",
+        params.polymarket_market_slug, params.poly_price, params.contracts, book_age_at_submit_ms
+    );
     let poly_result = match service
         .polymarket_client
         .submit_limit_order(
@@ -517,6 +529,42 @@ pub async fn submit_paired_order(
     let poly_latency = poly_result
         .latency_ms
         .or(Some(poly_started.elapsed().as_millis() as i64));
+
+    // Diagnostic only, fires after the order already resolved: re-fetch the
+    // book to see whether the market had already moved past our submitted
+    // price by the time we placed it. `poly_price` was computed as the exact
+    // worst-case boundary price for `contracts` (find_profitable_contract_size),
+    // with no slippage buffer, so any movement between that snapshot and
+    // submission is a plausible explanation for a zero-fill IOC rejection
+    // independent of payload format (see CLAUDE.md session log).
+    if poly_result.filled_contracts <= 0 {
+        match service
+            .polymarket_client
+            .get_market_book(&params.polymarket_market_slug)
+            .await
+        {
+            Ok(post_book) => {
+                let post_levels = polymarket_buy_levels(&post_book, params.polymarket_position_side);
+                let current_best_price = post_levels.first().map(|(price, _)| *price);
+                let market_moved_past_our_price =
+                    current_best_price.is_some_and(|price| price > params.poly_price);
+                warn!(
+                    "Polymarket leg rejected: post-rejection book check for {} — submitted_price={:.4} book_age_ms_at_submit={} current_best_buy_price={:?} market_moved_past_our_price={}",
+                    params.polymarket_market_slug,
+                    params.poly_price,
+                    book_age_at_submit_ms,
+                    current_best_price,
+                    market_moved_past_our_price
+                );
+            }
+            Err(error) => {
+                warn!(
+                    "Polymarket leg rejected: post-rejection book check failed for {}: {}",
+                    params.polymarket_market_slug, error
+                );
+            }
+        }
+    }
     if let Err(reason) = service.ws_manager.get_storage().update_auto_trade_leg(
         lifecycle_id,
         "polymarket",
@@ -528,12 +576,12 @@ pub async fn submit_paired_order(
         poly_latency,
     ) {
         error!(
-            "Halting auto-trading because Polymarket acknowledgement could not be persisted: {}",
+            "Halting auto-trading because Polymarket acknowledgement could not be persisted: {:#}",
             reason
         );
         if let Err(disable_reason) = service.ws_manager.disable_auto_trade() {
             error!(
-                "Failed to halt auto-trading after persistence failure: {}",
+                "Failed to halt auto-trading after persistence failure: {:#}",
                 disable_reason
             );
         }
@@ -589,12 +637,12 @@ pub async fn submit_paired_order(
         kalshi_latency,
     ) {
         error!(
-            "Halting auto-trading because Kalshi acknowledgement could not be persisted: {}",
+            "Halting auto-trading because Kalshi acknowledgement could not be persisted: {:#}",
             reason
         );
         if let Err(disable_reason) = service.ws_manager.disable_auto_trade() {
             error!(
-                "Failed to halt auto-trading after persistence failure: {}",
+                "Failed to halt auto-trading after persistence failure: {:#}",
                 disable_reason
             );
         }
@@ -736,7 +784,7 @@ pub async fn submit_paired_order(
         .get_storage()
         .finish_auto_trade_execution(lifecycle_id, &execution_record)
     {
-        error!("Failed to finalize paired execution: {}", reason);
+        error!("Failed to finalize paired execution: {:#}", reason);
     }
 
     // Every attempt that put real money on either exchange gets an explicit
@@ -767,7 +815,7 @@ pub async fn submit_paired_order(
         // regardless of whether this attempt was auto-triggered or manual.
         if let Err(reason) = service.ws_manager.disable_auto_trade() {
             error!(
-                "Failed to halt auto-trading after residual exposure: {}",
+                "Failed to halt auto-trading after residual exposure: {:#}",
                 reason
             );
         }

@@ -17,8 +17,8 @@ use axum::{
 use chrono::Utc;
 use tokio::sync::{mpsc, RwLock};
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::trace::TraceLayer;
-use tracing::{error, info, warn};
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tracing::{error, info, warn, Level};
 
 use crate::config::Config;
 use crate::models::PriceUpdate;
@@ -177,7 +177,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
                                 {
                                     Ok(success) => success,
                                     Err(e) => {
-                                        error!("❌ Kalshi hot-subscription failed: {}", e);
+                                        error!("❌ Kalshi hot-subscription failed: {:#}", e);
                                         false
                                     }
                                 }
@@ -207,7 +207,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
                     }
                 }
                 Err(e) => {
-                    error!("❌ Market scan failed: {}", e);
+                    error!("❌ Market scan failed: {:#}", e);
                 }
             }
         }
@@ -396,7 +396,16 @@ pub async fn create_app(config: Config) -> Result<Router> {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
-        .layer(TraceLayer::new_for_http())
+        // At minimum, every request against the UI's API gets a one-line
+        // terminal/log entry on completion (method, path, status, latency) -
+        // previously this only fired for failures (on_failure defaults to
+        // ERROR), because a successful response's default trace level is
+        // DEBUG and main.rs filters tower_http down to `warn`.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        )
         // Static files - must be last!
         .fallback(static_files::static_handler);
 
@@ -468,7 +477,7 @@ fn save_auto_trade_skip(
                 reason,
             )
         {
-            error!("Failed to save skipped auto-trade record: {}", error);
+            error!("Failed to save skipped auto-trade record: {:#}", error);
         }
     }
 }
@@ -704,6 +713,7 @@ async fn execute_single_auto_trade(
             kalshi_fee,
             profit_margin,
             duration_ms,
+            poly_book_fetched_at_ms: poly_book.fetched_at_ms,
             neutralization_max_loss_cents: auto_state.neutralization_max_loss_cents,
             dry_run: false,
         },
@@ -721,7 +731,7 @@ async fn execute_single_auto_trade(
         "executed" => {
             service.ws_manager.mark_as_auto_traded(key);
             if let Err(reason) = service.ws_manager.increment_trade_count() {
-                error!("Failed to increment auto-trade count: {}", reason);
+                error!("Failed to increment auto-trade count: {:#}", reason);
             }
         }
         _ => {
@@ -776,7 +786,7 @@ async fn cleanup_ended_markets(state: &Arc<AppState>) {
                 }
             }
             Err(e) => {
-                error!("❌ [Cleanup] Kalshi unsubscribe failed: {}", e);
+                error!("❌ [Cleanup] Kalshi unsubscribe failed: {:#}", e);
             }
         }
     }

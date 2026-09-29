@@ -64,7 +64,7 @@ pub async fn enable_auto_trade(State(state): State<Arc<AppState>>) -> impl IntoR
         }))
         .into_response(),
         Err(e) => {
-            error!("开启自动下单失败: {}", e);
+            error!("开启自动下单失败: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -88,7 +88,7 @@ pub async fn disable_auto_trade(State(state): State<Arc<AppState>>) -> impl Into
         }))
         .into_response(),
         Err(e) => {
-            error!("关闭自动下单失败: {}", e);
+            error!("关闭自动下单失败: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -112,7 +112,7 @@ pub async fn reset_auto_trade(State(state): State<Arc<AppState>>) -> impl IntoRe
         }))
         .into_response(),
         Err(e) => {
-            error!("重置下单次数失败: {}", e);
+            error!("重置下单次数失败: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -175,7 +175,7 @@ pub async fn update_auto_trade_settings(
         }))
         .into_response(),
         Err(e) => {
-            error!("更新自动下单设置失败: {}", e);
+            error!("更新自动下单设置失败: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -210,7 +210,7 @@ pub async fn get_auto_trade_history(
         }))
         .into_response(),
         Err(e) => {
-            error!("获取自动下单历史失败: {}", e);
+            error!("获取自动下单历史失败: {:#}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({

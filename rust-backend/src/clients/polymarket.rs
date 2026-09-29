@@ -129,7 +129,7 @@ pub struct PolymarketClient {
 }
 
 /// Read Polymarket US API credentials, env vars first, falling back to
-/// config file values - same precedence `poly-order-service` used.
+/// config file values.
 fn resolve_credentials(config: &PolymarketConfig) -> Result<(String, String)> {
     let key_id = std::env::var("POLYMARKET_KEY_ID")
         .ok()
@@ -518,7 +518,7 @@ impl PolymarketClient {
             "price": {"value": price.to_string(), "currency": "USD"},
             "quantity": contracts,
             "tif": "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL",
-            "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_MANUAL",
+            "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
             "synchronousExecution": true,
             "maxBlockTime": "5",
         });
@@ -657,8 +657,7 @@ impl PolymarketClient {
 }
 
 /// Build and validate a `PolymarketMarketBook` straight from the gateway's
-/// raw `{marketData: {...}}` envelope - this replaces validation that used
-/// to live in `poly-order-service/main.py::normalize_market_book`.
+/// raw `{marketData: {...}}` envelope.
 fn build_market_book(response: &Value, requested_slug: &str) -> Result<PolymarketMarketBook> {
     let market_data = response
         .get("marketData")
@@ -784,8 +783,8 @@ fn concise_api_error(status: StatusCode, body_text: &str) -> String {
 }
 
 /// Convert the raw `/v1/orders` execution envelope into an explicit order
-/// result, mirroring `poly-order-service/main.py::order_result()`. Unlike
-/// the old Python hop, a non-fill logs the full outgoing request and raw
+/// result. Unlike the old Python order-service hop this replaced, a non-fill
+/// logs the full outgoing request and raw
 /// response at `warn!` - previously only a fill was logged anywhere, which
 /// left rejections like `ORD_REJECT_REASON_EXCHANGE_OPTION` with no trace
 /// of what was actually sent.

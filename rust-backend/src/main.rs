@@ -28,12 +28,13 @@ async fn main() -> Result<()> {
     let file_appender = tracing_appender::rolling::daily("logs", "polytaoli.log");
     let (non_blocking_file, _guard) = tracing_appender::non_blocking(file_appender);
 
-    // Console log layer - show only info and higher.
+    // Console log layer - show only info and higher. tower_http=info (not
+    // warn) so every completed HTTP request logs a line, not just failures.
     let console_layer = fmt::layer()
         .with_target(false)
         .with_thread_ids(false)
         .with_thread_names(false)
-        .with_filter(EnvFilter::new("polytaoli=info,tower_http=warn"));
+        .with_filter(EnvFilter::new("polytaoli=info,tower_http=info"));
 
     // File log layer - record info and higher.
     let file_layer = fmt::layer()
@@ -42,7 +43,7 @@ async fn main() -> Result<()> {
         .with_target(true)
         .with_thread_ids(true)
         .with_line_number(true)
-        .with_filter(EnvFilter::new("polytaoli=info,tower_http=warn"));
+        .with_filter(EnvFilter::new("polytaoli=info,tower_http=info"));
 
     // Combine log layers.
     tracing_subscriber::registry()

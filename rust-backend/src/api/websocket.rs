@@ -176,7 +176,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                     break;
                 }
                 Err(e) => {
-                    error!("WebSocket error: {}", e);
+                    error!("WebSocket error: {:#}", e);
                     break;
                 }
                 _ => {}
