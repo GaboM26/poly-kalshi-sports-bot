@@ -9,6 +9,7 @@ import {
   PolymarketOrderResponse,
   PolymarketOrdersResponse,
   PolymarketPosition,
+  UnifiedPositionsResponse,
   ArbitrageExecuteRequest,
   ArbitrageExecuteResponse
 } from '../types';
@@ -174,6 +175,19 @@ export async function getPolymarketPositions(
   baseUrl: string
 ): Promise<{ positions: PolymarketPosition[]; error?: string }> {
   const response = await fetch(`${baseUrl}/api/positions/polymarket`);
+  return response.json();
+}
+
+/**
+ * Gets positions grouped into hedged pairs and standalone legs.
+ */
+export async function getUnifiedPositions(
+  baseUrl: string
+): Promise<UnifiedPositionsResponse> {
+  const response = await fetch(`${baseUrl}/api/positions/unified`);
+  if (!response.ok) {
+    throw new Error(`Positions request failed (${response.status})`);
+  }
   return response.json();
 }
 

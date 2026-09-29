@@ -10,6 +10,7 @@
 pub mod arbitrage;
 pub mod metrics;
 pub mod paired_execution;
+pub mod positions;
 pub mod storage;
 pub mod telegram;
 pub mod websocket_manager;

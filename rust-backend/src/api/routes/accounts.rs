@@ -227,3 +227,83 @@ pub async fn login(
     })
     .into_response()
 }
+
+/// Unified positions: Kalshi and Polymarket legs grouped into hedged pairs
+/// (matched against this bot's trade history) and standalone leftovers.
+/// Each exchange fails independently; its error is reported alongside
+/// whatever the other side returned.
+pub async fn get_unified_positions(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    use crate::services::positions::{kalshi_leg, pair_positions, polymarket_leg};
+    use serde_json::Value;
+
+    let service = state.service.read().await;
+    let mut errors: Vec<String> = Vec::new();
+
+    let mut kalshi_raw: Vec<Value> = Vec::new();
+    match service.kalshi_client.get_positions().await {
+        Ok(v) => {
+            kalshi_raw = v
+                .get("market_positions")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+        }
+        Err(e) => {
+            error!("Failed to get Kalshi positions: {:#}", e);
+            errors.push(format!("Kalshi: {}", e));
+        }
+    }
+    kalshi_raw.retain(|p| kalshi_leg(p, None).is_some());
+
+    // Live marks: liquidation value = complement of the opposite side's ask.
+    let tickers: Vec<String> = kalshi_raw
+        .iter()
+        .filter_map(|p| p.get("ticker").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let quotes = if tickers.is_empty() {
+        Vec::new()
+    } else {
+        service
+            .kalshi_client
+            .get_market_quotes(&tickers)
+            .await
+            .unwrap_or_else(|e| {
+                error!("Failed to get Kalshi quotes for positions: {:#}", e);
+                errors.push("Kalshi: live prices unavailable".to_string());
+                Vec::new()
+            })
+    };
+    let kalshi_legs: Vec<_> = kalshi_raw
+        .iter()
+        .filter_map(|p| {
+            let ticker = p.get("ticker").and_then(Value::as_str)?;
+            let is_yes = kalshi_leg(p, None)?.side == "yes";
+            let mark = quotes.iter().find(|q| q.market_id == ticker).map(|q| {
+                1.0 - if is_yes { q.no_ask } else { q.yes_ask }
+            });
+            kalshi_leg(p, mark)
+        })
+        .collect();
+
+    let poly_legs: Vec<_> = match service.polymarket_client.get_positions().await {
+        Ok(Value::Array(items)) => items.iter().filter_map(polymarket_leg).collect(),
+        Ok(_) => Vec::new(),
+        Err(e) => {
+            error!("Failed to get Polymarket positions: {:#}", e);
+            errors.push(format!("Polymarket: {}", e));
+            Vec::new()
+        }
+    };
+
+    let history = match service.ws_manager.get_storage().get_auto_trade_history(500) {
+        Ok(h) => h,
+        Err(e) => {
+            error!("Failed to load trade history for position pairing: {:#}", e);
+            errors.push("Trade history unavailable: nothing can be shown as paired".to_string());
+            Vec::new()
+        }
+    };
+
+    let cards = pair_positions(kalshi_legs, poly_legs, &history);
+    Json(serde_json::json!({ "cards": cards, "errors": errors }))
+}

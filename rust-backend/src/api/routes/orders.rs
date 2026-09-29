@@ -9,7 +9,7 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::api::AppState;
 use crate::models::PolymarketPositionSide;
@@ -52,21 +52,42 @@ pub async fn place_kalshi_order(
             .into_response();
     }
 
-    let price = match kalshi_client
+    // The WebSocket book only covers tickers the scanner is currently
+    // tracking/subscribed to. A held position's market can fall out of that
+    // set (e.g. the match ended and it was unsubscribed) while still being
+    // perfectly sellable on the exchange, so a manual order - already a
+    // known, user-specified quantity, not something auto-trade sizes off of
+    // depth - falls back to a fresh REST quote rather than failing outright.
+    let ws_price = kalshi_client
         .get_orderbook(&req.ticker)
-        .and_then(|book| book.limit_price_for_order(&req.side, &req.action))
-    {
-        Some(price) if (1..=99).contains(&price) => price,
-        _ => {
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({
-                    "success": false,
-                    "error": "No executable Kalshi quote is available for this order"
-                })),
-            )
-                .into_response();
-        }
+        .and_then(|book| book.limit_price_for_order(&req.side, &req.action));
+
+    let price = match ws_price {
+        Some(price) if (1..=99).contains(&price) => Some(price),
+        _ => match kalshi_client.get_market_quotes(&[req.ticker.clone()]).await {
+            Ok(quotes) => quotes
+                .iter()
+                .find(|quote| quote.market_id == req.ticker)
+                .and_then(|quote| quote.limit_price_for_order(&req.side, &req.action)),
+            Err(e) => {
+                warn!(
+                    "REST quote fallback failed for manual Kalshi order on {}: {:#}",
+                    req.ticker, e
+                );
+                None
+            }
+        },
+    };
+
+    let Some(price) = price.filter(|price| (1..=99).contains(price)) else {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "No executable Kalshi quote is available for this order"
+            })),
+        )
+            .into_response();
     };
 
     match kalshi_client

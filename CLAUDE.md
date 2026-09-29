@@ -358,6 +358,152 @@ a live query immediately after — most likely just live in-play odds
 movement between screenshots, not a bug. Revisit only if it recurs with
 static (non-moving) numbers.
 
+## Session log (2026-09-29, continued) — log noise, stale closed markets, broken manual Sell
+
+**Log noise:** `📥 Retrieved N Polymarket {category} events` (`clients/polymarket.rs`,
+fired once per sport code per scan — 8x per cycle) demoted from `info!` to
+`debug!`. It was drowning out the signal the user actually wants visible in
+the terminal: scan start/end, matched-market discovery, and REST quote
+refresh summaries, all of which already log at `info!` and were left alone
+(`services/arbitrage.rs`'s `🔄 Starting scan for new markets`,
+`✅ Kalshi/Polymarket REST quote refresh updated N markets`, etc.).
+
+**Every UI API call now logs a line on completion**, not just failures.
+`TraceLayer` in `api/mod.rs` previously only surfaced failures (`on_failure`
+defaults to ERROR; a successful response's default trace level is DEBUG,
+and `main.rs` filtered `tower_http` down to `warn`). Now
+`.make_span_with(...)`/`.on_response(...)` are both pinned to `Level::INFO`
+and the filter raised to `tower_http=info`, so method/path/status/latency
+prints for every request. This is verbose (the frontend polls routinely) —
+revisit if it's too noisy in practice.
+
+**Stale closed markets stayed visible indefinitely (e.g. a Kalshi market at
+84¢ that had already closed).** Root cause: `market_lifecycle.rs`'s cleanup
+only ever inferred "ended" from *extreme* prices (Kalshi ≥99¢/≤2¢, Poly
+≥100¢/0¢) sustained 20+ minutes — it never checked either exchange's actual
+closed/settled status, so a market that simply stops trading at a normal
+price was invisible to it forever. Fixed at the source, in the existing
+periodic REST quote-refresh functions (`services/websocket_manager/mod.rs`):
+- **Kalshi**: `KalshiMarketQuote` now carries the raw `status` field
+  (`unopened`/`open`/`paused`/`closed`/`settled` — confirmed via Kalshi's
+  public API docs). `update_kalshi_rest_quotes` treats `closed`/`settled` as
+  immediate, undebounced confirmation (Kalshi's own status field doesn't
+  flicker) and skips the price update entirely for that cycle.
+- **Polymarket**: `update_polymarket_rest_quotes` is already driven by the
+  same `active=true&closed=false` feed discovery uses, fetched atomically
+  per cycle. A previously-matched market missing from that list is now
+  tracked via `poly_missing_streak` and confirmed ended after
+  `POLY_MISSING_CONFIRM_STREAK` (2) consecutive misses — debounced, unlike
+  Kalshi's status field, because absence-from-a-filtered-list is an
+  inference, not an explicit per-market field.
+- Both paths feed the *existing* `confirmed_ended_markets` set, so all the
+  existing removal plumbing (unsubscribe, cache cleanup, opportunity/
+  tracking removal) in `remove_ended_markets()` is reused unchanged.
+- 5 new tests in `services/websocket_manager/mod.rs::tests` cover: closed/
+  settled status triggers immediate removal at a non-extreme price (the
+  exact reported bug), open status at a non-extreme price does *not* get
+  marked ended, the Polymarket miss-streak requires 2 consecutive misses,
+  and a single reappearance resets the streak rather than decrementing it.
+
+**Manual Sell button was broken for any position whose market had fallen
+out of active WebSocket tracking**, failing with "No executable Kalshi
+quote is available for this order." Root cause: `place_kalshi_order`
+(`api/routes/orders.rs`) sourced its price *exclusively* from
+`kalshi_client.get_orderbook()`, which only has data for tickers the
+scanner currently has WebSocket-subscribed — a scope tied to "currently
+matched by the arbitrage scanner," not "any market I hold a position in."
+A held position whose market rolled out of that tracking (including,
+notably, via the closed-market fix directly above — closing now actively
+unsubscribes) could no longer be sold through the UI, at all, even though
+the position itself might still be genuinely closeable on the exchange.
+Fixed: `place_kalshi_order` now falls back to a fresh REST quote
+(`kalshi_client.get_market_quotes`, already used elsewhere, works for any
+ticker regardless of subscription state) when the WebSocket book has
+nothing. New `KalshiMarketQuote::limit_price_for_order` mirrors
+`OrderBook::limit_price_for_order`'s sign convention (REST only has asks,
+so a sell price is the complement of the *opposite* side's ask — same
+yes/no complement identity used throughout this codebase). This is a
+price-only fallback for one manual, already-known-quantity order; it must
+never be wired into auto-trade sizing or depth, which stays exclusively on
+the fresh WebSocket book. 3 new unit tests in `clients/kalshi.rs::tests`
+cover buy/sell price derivation and rejection of an unrecognized side or
+action.
+
+All three fixes: `cargo build --release` and `cargo test --lib` both clean
+(57 passing).
+
+## Positions tab — design decision (2026-09-29)
+
+**Status: implemented 2026-09-29** (`cargo test --lib` 68 passing incl. 11 new
+in `services/positions.rs`; `npm run build` clean; `npm run lint` is broken
+independent of this change — `--ext` flag unsupported by the flat eslint
+config). **Not yet verified against live data:** the Kalshi NO-leg
+`market_exposure_dollars` sign risk below, and Polymarket `cost`/`cashValue`
+sign/units on a real short position. Kalshi mark = complement of the opposite
+side's ask (liquidation value), not a bid. Original design follows.
+
+**Why:** the Positions panel (`web/src/components/OrderPanel.tsx`) shows a
+flat, unrelated list of raw exchange positions. Kalshi legs show no entry
+price, no live price, and no unrealized P&L at all (only exposure $ and
+*realized* P&L, which is ~always $0 for an open position). Polymarket legs
+reference `avgPrice`/`curPrice`/`pnlPercent` in the TS type, but
+`normalize_positions` (`clients/polymarket.rs`) never actually populates
+them — a pre-existing bug, not by design. Most importantly for a hedged
+arbitrage bot: there is no indication that a Kalshi leg and a Polymarket leg
+were opened together as one trade, nor any way to tell a properly hedged
+position from a naked, one-sided residual (e.g. from a failed
+neutralization) at a glance.
+
+**The fix requires no new external API calls.** Polymarket's
+`/v1/portfolio/positions` response already includes a `cost` field (total
+cost basis) that `normalize_positions` silently discards today — combined
+with the `cashValue` it already reads, that's avg entry price, current
+mark, and unrealized P&L for free. Kalshi needs one additional call to the
+REST quote endpoint already used elsewhere
+(`clients/kalshi.rs::get_market_quotes`) for a live mark; entry price is
+`market_exposure_dollars / abs(position_fp)`.
+
+**Pairing decision:** match on the full tuple `(kalshi_market_id,
+kalshi_side, polymarket_market_id, polymarket_side)` against this bot's own
+trade history (`ArbitrageStorage::get_auto_trade_history`, already exists —
+no new endpoint needed for the history read itself), using only the most
+recent history row with status `executed`/`neutralized`/`partial_paired`
+for each currently-held leg. Market ID alone is insufficient — the same
+Kalshi+Polymarket market pair can appear on opposite sides across different
+trades over time, and only the side-aware match prevents cross-pairing.
+Both legs must currently be held (nonzero size) to render as a paired card;
+otherwise each renders standalone. New `/api/positions/unified` endpoint
+does this server-side (one implementation, not duplicated Rust/TS pairing
+logic) and returns already-grouped cards; the frontend becomes a pure
+renderer.
+
+**Fees:** Kalshi has `fees_paid_dollars`, ships as planned. Polymarket has
+**no fee field anywhere in its API** (positions or trade-history
+endpoints) — confirmed via docs.polymarket.us, not an oversight to fix
+later trivially. Render "n/a" for a Polymarket leg's fee, never a fake
+$0.00. Capturing Polymarket fees going forward (from
+`commissionNotionalCollected` on the order-submission response, already
+parsed and currently discarded in `parse_polymarket_order_result`) is
+explicitly out of scope for this change and cannot backfill fees for
+positions already open today.
+
+**Open risk, verify before trusting displayed P&L on Kalshi NO legs:**
+`market_exposure_dollars`'s sign is not documented by Kalshi for a NO
+position specifically (only `position_fp`'s sign is documented — positive
+= YES, negative = NO). The plan uses `abs(market_exposure_dollars)` as cost
+basis, which is safe regardless of sign, but check a real held NO
+position's raw JSON against this assumption before shipping.
+
+**UI:** paired cards get a 🔗 badge, combined cost/value/P&L, and both legs
+shown underneath; standalone/unhedged cards get a ⚠ amber badge so a naked
+residual position is impossible to miss. New files: `services/positions.rs`
+(pure economics + pairing functions, unit-tested — ~10 test cases covering
+unmatched legs, stale opposite-side history rows, rejected trades not
+counting as pairs, no double-counting a leg into two cards). Modified:
+`clients/polymarket.rs` (`normalize_positions`), `api/routes/accounts.rs`
+(new handler), `api/mod.rs` (route registration), `web/src/types/index.ts`,
+`web/src/utils/api.ts`, `web/src/components/OrderPanel.tsx`.
+
 ## Architecture
 
 Two services, started together via `./start_rust_stack.sh`:

@@ -13,7 +13,7 @@ use reqwest::{Client, Method, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::Mutex as AsyncMutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::clients::polymarket_auth;
 use crate::config::PolymarketConfig;
@@ -420,7 +420,7 @@ impl PolymarketClient {
             .and_then(Value::as_array)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Polymarket US events response is missing events"))?;
-        info!(
+        debug!(
             "📥 Retrieved {} Polymarket {} events",
             api_events.len(),
             category
@@ -754,6 +754,9 @@ fn normalize_positions(response: &Value) -> Result<Value> {
             "title": title,
             "size": position.get("netPosition").cloned().unwrap_or_else(|| json!("0")),
             "value": position.get("cashValue").and_then(amount_as_f64),
+            // Total cost basis; with `cashValue` it yields avg entry, mark
+            // and unrealized P&L without any extra API call.
+            "cost": position.get("cost").and_then(amount_as_f64),
             "pnl": position.get("realized").and_then(amount_as_f64),
             "outcome": metadata.and_then(|m| m.get("outcome")).cloned().unwrap_or(Value::Null),
         }));

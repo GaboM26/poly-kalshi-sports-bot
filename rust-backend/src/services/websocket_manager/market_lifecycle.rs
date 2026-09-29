@@ -198,6 +198,13 @@ impl WebSocketManager {
             }
         }
 
+        {
+            let mut streaks = self.poly_missing_streak.write();
+            for key in &market_keys_to_remove {
+                streaks.remove(key);
+            }
+        }
+
         kalshi_to_unsub.sort();
         kalshi_to_unsub.dedup();
 

@@ -26,7 +26,7 @@ use tracing::{error, info};
 use crate::models::ArbitrageTrackingRecord;
 
 // Re-export types from sub-modules
-pub use auto_trade_repo::{AutoTradeExecutionRecord, AutoTradeState};
+pub use auto_trade_repo::{AutoTradeExecutionRecord, AutoTradeRecord, AutoTradeState};
 
 /// Storage command for async queue
 pub enum StorageCommand {

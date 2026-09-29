@@ -306,6 +306,38 @@ export interface UnifiedPosition {
   pnlPercent?: number;   // Profit and loss percentage
 }
 
+// Unified positions endpoint (/api/positions/unified)
+export interface PositionLeg {
+  platform: 'kalshi' | 'polymarket';
+  market_id: string;
+  title: string;
+  /** Kalshi: yes/no. Polymarket: long/short. */
+  side: string;
+  contracts: number;
+  entry_price: number | null;
+  current_price: number | null;
+  cost: number;
+  value: number | null;
+  unrealized_pnl: number | null;
+  /** null = unknown (Polymarket exposes no fee field). */
+  fees: number | null;
+}
+
+export interface PositionCard {
+  kind: 'paired' | 'standalone';
+  event_name: string | null;
+  legs: PositionLeg[];
+  total_cost: number;
+  total_value: number | null;
+  total_pnl: number | null;
+  contracts_mismatch: boolean;
+}
+
+export interface UnifiedPositionsResponse {
+  cards: PositionCard[];
+  errors: string[];
+}
+
 // Orders list response
 export interface OrdersResponse {
   orders: KalshiOrder[];

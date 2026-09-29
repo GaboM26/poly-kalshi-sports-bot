@@ -42,6 +42,11 @@ pub(crate) const EXTREME_PRICE_THRESHOLD_POLY_HIGH: f64 = 1.00;
 pub(crate) const EXTREME_PRICE_THRESHOLD_POLY_LOW: f64 = 0.00;
 /// Duration in minutes for extreme price to be considered ended
 pub(crate) const ENDED_DETECTION_DURATION_MINS: i64 = 20;
+/// Consecutive Polymarket REST refresh cycles a matched market must be
+/// absent from the active=true&closed=false feed before treating that
+/// absence as confirmed closure, so a single transient gap in the feed
+/// doesn't remove a market that is still genuinely open.
+pub(crate) const POLY_MISSING_CONFIRM_STREAK: u32 = 2;
 
 /// A Polymarket US quote received from the gateway REST feed.
 ///
@@ -124,6 +129,12 @@ pub struct WebSocketManager {
     pub(crate) ended_market_detection: Arc<RwLock<HashMap<String, DateTime<Utc>>>>,
     /// Set of market keys that have been confirmed as ended
     pub(crate) confirmed_ended_markets: Arc<RwLock<std::collections::HashSet<String>>>,
+    /// Consecutive Polymarket REST refresh cycles in which a still-matched
+    /// market's polymarket_market_id was absent from the fresh
+    /// active=true&closed=false feed. Debounced (see
+    /// `POLY_MISSING_CONFIRM_STREAK`) so one transient gap in that feed
+    /// doesn't remove a market that is still genuinely open.
+    pub(crate) poly_missing_streak: Arc<RwLock<HashMap<String, u32>>>,
     /// Set of recorded skip reasons: "market_key:simplified_reason" -> prevent duplicate skip records
     pub(crate) recorded_skip_reasons: Arc<RwLock<std::collections::HashSet<String>>>,
     /// Set of market keys excluded from auto-trade (user-defined)
@@ -183,6 +194,7 @@ impl WebSocketManager {
             auto_traded_opportunities: Arc::new(RwLock::new(std::collections::HashSet::new())),
             ended_market_detection: Arc::new(RwLock::new(HashMap::new())),
             confirmed_ended_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            poly_missing_streak: Arc::new(RwLock::new(HashMap::new())),
             recorded_skip_reasons: Arc::new(RwLock::new(std::collections::HashSet::new())),
             excluded_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
             poly_depth_snapshot_cooldown: Arc::new(RwLock::new(HashMap::new())),
@@ -278,6 +290,7 @@ impl WebSocketManager {
         let received_at = Instant::now();
         let mut updated_indices = Vec::new();
         let mut quotes_to_cache = HashMap::new();
+        let mut newly_ended_keys = Vec::new();
 
         {
             let mut matched_markets = self.matched_markets.write();
@@ -287,6 +300,17 @@ impl WebSocketManager {
                 else {
                     continue;
                 };
+
+                // Kalshi's own market status is authoritative and doesn't
+                // flicker - trust "closed"/"settled" immediately rather than
+                // waiting on the extreme-price heuristic in
+                // market_lifecycle.rs, which can miss a market that closes
+                // while its price is nowhere near an extreme value (e.g. the
+                // market simply closed for trading at 84c, not 99c/2c).
+                if matches!(quote.status.as_str(), "closed" | "settled") {
+                    newly_ended_keys.push(matched.market_key());
+                    continue;
+                }
 
                 // The REST ask is the buy cost shown in the UI and used by
                 // arbitrage calculations; bids are intentionally ignored.
@@ -300,6 +324,15 @@ impl WebSocketManager {
                         no_ask: quote.no_ask,
                         received_at,
                     });
+            }
+        }
+
+        if !newly_ended_keys.is_empty() {
+            let mut confirmed = self.confirmed_ended_markets.write();
+            for key in &newly_ended_keys {
+                if confirmed.insert(key.clone()) {
+                    info!("🏁 Kalshi market status confirms closure: {}", key);
+                }
             }
         }
 
@@ -331,6 +364,8 @@ impl WebSocketManager {
         let received_at = Instant::now();
         let mut updated_indices = Vec::new();
         let mut quotes_to_cache = HashMap::new();
+        let mut newly_ended_keys = Vec::new();
+        let mut present_keys = std::collections::HashSet::new();
 
         {
             let mut matched_markets = self.matched_markets.write();
@@ -339,8 +374,23 @@ impl WebSocketManager {
                 let Some(quote) =
                     quotes_by_market.get(matched.polymarket_market.market_id.as_str())
                 else {
+                    // This scan is the same active=true&closed=false feed
+                    // discovery uses, fetched atomically (the caller only
+                    // reaches here on a fully successful fetch) - a matched
+                    // market missing from it means Polymarket itself no
+                    // longer lists the market as active. Debounced via
+                    // poly_missing_streak so one transient gap doesn't
+                    // remove a market that is still genuinely open.
+                    let market_key = matched.market_key();
+                    let mut streaks = self.poly_missing_streak.write();
+                    let streak = streaks.entry(market_key.clone()).or_insert(0);
+                    *streak += 1;
+                    if *streak >= POLY_MISSING_CONFIRM_STREAK {
+                        newly_ended_keys.push(market_key);
+                    }
                     continue;
                 };
+                present_keys.insert(matched.market_key());
                 let Ok((yes_price, no_price)) = quote.get_price_for_team(&matched.team_name) else {
                     continue;
                 };
@@ -359,6 +409,29 @@ impl WebSocketManager {
                         price_b: quote.price_b,
                         received_at,
                     });
+            }
+        }
+
+        // Clear the miss streak for anything seen this cycle so non-
+        // consecutive gaps (flicker) never accumulate toward the threshold.
+        {
+            let mut streaks = self.poly_missing_streak.write();
+            for key in &present_keys {
+                streaks.remove(key);
+            }
+        }
+
+        if !newly_ended_keys.is_empty() {
+            let mut confirmed = self.confirmed_ended_markets.write();
+            let mut streaks = self.poly_missing_streak.write();
+            for key in &newly_ended_keys {
+                streaks.remove(key);
+                if confirmed.insert(key.clone()) {
+                    info!(
+                        "🏁 Polymarket no longer lists market as active: {}",
+                        key
+                    );
+                }
             }
         }
 
@@ -999,6 +1072,7 @@ mod tests {
                 market_id: "KXLAL".to_string(),
                 yes_ask: 0.26,
                 no_ask: 0.75,
+                status: "open".to_string(),
             }]),
             1
         );
@@ -1039,5 +1113,114 @@ mod tests {
                 .unwrap()
                 .kalshi_ready
         );
+    }
+
+    #[tokio::test]
+    async fn kalshi_closed_or_settled_status_confirms_ended_immediately() {
+        let storage = Arc::new(ArbitrageStorage::new(":memory:").unwrap());
+        let manager = WebSocketManager::new(
+            1.0,
+            10.0,
+            1.0,
+            storage,
+            Arc::new(PerformanceMetrics::new()),
+            Duration::from_secs(10),
+        );
+        manager.set_matched_markets(vec![matched_market()]);
+
+        // A market status of "closed" must be trusted immediately, even
+        // though the price (84c) is nowhere near the extreme-price
+        // heuristic's thresholds (99c/2c) - this is the exact bug pattern
+        // reported live: a market closes for trading at a normal price.
+        let updated = manager.update_kalshi_rest_quotes(&[KalshiMarketQuote {
+            market_id: "KXLAL".to_string(),
+            yes_ask: 0.84,
+            no_ask: 0.16,
+            status: "closed".to_string(),
+        }]);
+        assert_eq!(updated, 0, "a closed market must not be price-updated");
+        assert!(manager
+            .confirmed_ended_markets
+            .read()
+            .contains(&matched_market().market_key()));
+        // Price fields must remain untouched, not overwritten with the
+        // closing quote.
+        assert_eq!(manager.matched_markets.read()[0].kalshi_market.yes_price, 0.5);
+    }
+
+    #[tokio::test]
+    async fn kalshi_open_status_at_a_non_extreme_price_is_not_marked_ended() {
+        let storage = Arc::new(ArbitrageStorage::new(":memory:").unwrap());
+        let manager = WebSocketManager::new(
+            1.0,
+            10.0,
+            1.0,
+            storage,
+            Arc::new(PerformanceMetrics::new()),
+            Duration::from_secs(10),
+        );
+        manager.set_matched_markets(vec![matched_market()]);
+
+        let updated = manager.update_kalshi_rest_quotes(&[KalshiMarketQuote {
+            market_id: "KXLAL".to_string(),
+            yes_ask: 0.84,
+            no_ask: 0.16,
+            status: "open".to_string(),
+        }]);
+        assert_eq!(updated, 1);
+        assert!(manager.confirmed_ended_markets.read().is_empty());
+    }
+
+    #[tokio::test]
+    async fn polymarket_missing_from_active_feed_is_debounced_then_confirmed_ended() {
+        let storage = Arc::new(ArbitrageStorage::new(":memory:").unwrap());
+        let manager = WebSocketManager::new(
+            1.0,
+            10.0,
+            1.0,
+            storage,
+            Arc::new(PerformanceMetrics::new()),
+            Duration::from_secs(10),
+        );
+        manager.set_matched_markets(vec![matched_market()]);
+        let key = matched_market().market_key();
+
+        // First absence: below POLY_MISSING_CONFIRM_STREAK, not yet ended.
+        manager.update_polymarket_rest_quotes(&[]);
+        assert!(!manager.confirmed_ended_markets.read().contains(&key));
+        assert_eq!(*manager.poly_missing_streak.read().get(&key).unwrap(), 1);
+
+        // Second consecutive absence reaches the threshold.
+        manager.update_polymarket_rest_quotes(&[]);
+        assert!(manager.confirmed_ended_markets.read().contains(&key));
+        // The streak entry is cleared once confirmed.
+        assert!(!manager.poly_missing_streak.read().contains_key(&key));
+    }
+
+    #[tokio::test]
+    async fn polymarket_reappearing_resets_the_missing_streak() {
+        let storage = Arc::new(ArbitrageStorage::new(":memory:").unwrap());
+        let manager = WebSocketManager::new(
+            1.0,
+            10.0,
+            1.0,
+            storage,
+            Arc::new(PerformanceMetrics::new()),
+            Duration::from_secs(10),
+        );
+        manager.set_matched_markets(vec![matched_market()]);
+        let key = matched_market().market_key();
+
+        manager.update_polymarket_rest_quotes(&[]);
+        assert_eq!(*manager.poly_missing_streak.read().get(&key).unwrap(), 1);
+
+        // A single reappearance in the feed must clear the streak, not just
+        // decrement it - flicker should never accumulate toward removal.
+        manager.update_polymarket_rest_quotes(&[matched_market().polymarket_market]);
+        assert!(!manager.poly_missing_streak.read().contains_key(&key));
+
+        manager.update_polymarket_rest_quotes(&[]);
+        assert!(!manager.confirmed_ended_markets.read().contains(&key));
+        assert_eq!(*manager.poly_missing_streak.read().get(&key).unwrap(), 1);
     }
 }

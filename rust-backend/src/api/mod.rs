@@ -352,6 +352,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
             "/api/positions/polymarket",
             get(routes::get_polymarket_positions),
         )
+        .route("/api/positions/unified", get(routes::get_unified_positions))
         // Tracking
         .route("/api/tracking", get(routes::get_tracking))
         // History search
