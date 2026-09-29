@@ -55,13 +55,9 @@ if [ -f rust-backend/config.toml ]; then
     cp rust-backend/config.toml deploy/config.toml.sample
 fi
 
-# Copy the Python order service.
-echo -e "${BLUE}📦 Packaging Python order service...${NC}"
-mkdir -p deploy/poly-order-service
-cp poly-order-service/main.py deploy/poly-order-service/
-cp poly-order-service/requirements.txt deploy/poly-order-service/
-cp poly-order-service/config.toml deploy/poly-order-service/config.toml.sample
-echo -e "${GREEN}✅ Python service packaged${NC}"
+# There is no separate Python order service anymore: the Rust backend calls
+# the Polymarket US API directly (Ed25519-signed), the same way it already
+# calls Kalshi (RSA-PSS-signed). Nothing to package for it.
 
 # Create the startup script.
 cat > deploy/start.sh << 'EOF'
@@ -86,40 +82,6 @@ fi
 # Create the log directory.
 mkdir -p logs
 
-# Start the Python order service.
-echo "🐍 Starting Python order service (port 8001)..."
-cd poly-order-service
-
-# Check the Python configuration.
-if [ ! -f config.toml ]; then
-    echo "⚠️  Warning: poly-order-service/config.toml does not exist"
-    if [ -f config.toml.sample ]; then
-        echo "Copy config.toml.sample to config.toml and configure it"
-    fi
-    echo "The Python order service cannot start"
-else
-    # Check the Python virtual environment.
-    if [ ! -d ".venv" ]; then
-        echo "📦 Creating Python virtual environment..."
-        python3 -m venv .venv
-        source .venv/bin/activate
-        pip install -r requirements.txt
-    else
-        source .venv/bin/activate
-    fi
-    
-    # Start the Python service.
-    python main.py &
-    PYTHON_PID=$!
-    PIDS="$PYTHON_PID"
-    echo "✅ Python order service started (PID: $PYTHON_PID)"
-    
-    # Wait for the Python service to start.
-    sleep 3
-fi
-
-cd ..
-
 # Start the Rust backend.
 echo "🚀 Starting Rust backend (port 8000)..."
 ./polytaoli &
@@ -131,7 +93,6 @@ echo ""
 echo "=================================="
 echo "✅ Startup complete!"
 echo ""
-echo "🐍 Python order service: http://localhost:8001"
 echo "📊 Rust backend: http://localhost:8000"
 echo ""
 echo "Press Ctrl+C to stop all services"
@@ -151,19 +112,18 @@ Polytaoli - Prediction Market Arbitrage Scanner
 Deployment steps:
 1. Copy config.example.toml to config.toml.
 2. Edit config.toml and enter your Kalshi API credentials.
-3. Copy poly-order-service/config.toml.sample to poly-order-service/config.toml.
-4. Edit config.toml and set polymarket.key_id and polymarket.secret_key, generated at https://polymarket.us/developer.
-5. Run: ./start.sh
+3. Edit config.toml and set polymarket.key_id and polymarket.secret_key, generated at https://polymarket.us/developer.
+4. Run: ./start.sh
 
 Configuration:
 - Rust backend port: 8000
-- Python order service port: 8001
 - Logs: stored in the logs/ directory
 - Frontend: visit http://your-server:8000
 
 Service architecture:
-- Rust backend: handles arbitrage scanning, WebSockets, and the API
-- Python service: handles Polymarket orders (using the official SDK)
+- Rust backend: handles arbitrage scanning, WebSockets, the API, and both
+  exchanges' order placement (Kalshi RSA-PSS-signed, Polymarket US
+  Ed25519-signed) - there is no separate Python order service.
 
 Stop the application: Ctrl+C or kill the process.
 EOF

@@ -1,6 +1,12 @@
 #!/bin/bash
 
-# Startup script for the Polytaoli Rust backend, Python order service, and frontend
+# Startup script for the Polytaoli Rust backend and frontend.
+#
+# There is no separate Python order service anymore: the Rust backend calls
+# the Polymarket US API directly (Ed25519-signed requests in
+# rust-backend/src/clients/polymarket.rs), the same way it already does for
+# Kalshi. poly-order-service/ remains in the repo for reference only and is
+# not started here.
 
 echo "🚀 Starting Polytaoli (Rust backend version)"
 echo "=================================="
@@ -13,46 +19,6 @@ fi
 
 # Store all process IDs.
 PIDS=""
-
-# Start the Python Polymarket order service.
-echo ""
-echo "🐍 Starting Python order service (port 8001)..."
-cd poly-order-service
-
-# Check Python dependencies.
-if [ ! -f ".venv/bin/python" ]; then
-    echo "📦 Creating Python virtual environment..."
-    python3 -m venv .venv
-    source .venv/bin/activate
-    pip install -r requirements.txt
-else
-    source .venv/bin/activate
-fi
-
-# Start the Python service.
-python main.py > ../logs/poly-order-service.log 2>&1 &
-PYTHON_PID=$!
-PIDS="$PYTHON_PID"
-echo "✅ Python order service started (PID: $PYTHON_PID)"
-
-# Wait for the Python service to start and retry health checks.
-echo "⏳ Waiting for the Python service to start..."
-PYTHON_HEALTH_ATTEMPTS=10
-for i in $(seq 1 $PYTHON_HEALTH_ATTEMPTS); do
-    if curl -s http://localhost:8001/health > /dev/null 2>&1; then
-        echo "✅ Python order service is healthy"
-        break
-    fi
-    if [ $i -lt $PYTHON_HEALTH_ATTEMPTS ]; then
-        sleep 2
-    fi
-done
-
-if ! curl -s http://localhost:8001/health > /dev/null 2>&1; then
-    echo "⚠️ Warning: the Python order service may still be starting or failed to initialize; check logs at logs/poly-order-service.log"
-fi
-
-cd ..
 
 # Start the Rust backend.
 echo ""
@@ -135,7 +101,6 @@ echo ""
 echo "=================================="
 echo "✅ Startup complete!"
 echo ""
-echo "🐍 Python order service: http://localhost:8001"
 echo "📊 Rust backend: http://localhost:8000"
 echo "🌐 Frontend: http://localhost:5173"
 echo ""

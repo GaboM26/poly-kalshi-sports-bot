@@ -3,10 +3,11 @@
 //! These clients handle:
 //! - REST API interactions
 //! - WebSocket connections for real-time price updates
-//! - Authentication (RSA for Kalshi, EIP-712/HMAC for Polymarket)
+//! - Authentication (RSA-PSS for Kalshi, Ed25519 for Polymarket US)
 
 pub mod kalshi;
 pub mod polymarket;
+mod polymarket_auth;
 
 pub use kalshi::{KalshiClient, KalshiMarketQuote, KalshiOrderResult};
 pub use polymarket::{

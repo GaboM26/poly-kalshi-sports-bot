@@ -22,26 +22,37 @@ fn default_kalshi_base_url() -> String {
 
 /// Polymarket US API configuration.
 ///
-/// Order placement is handled by a separate Python service using the official
-/// `polymarket-us` SDK. API credentials belong in `POLYMARKET_KEY_ID` and
-/// `POLYMARKET_SECRET_KEY`, which that service reads at startup.
+/// `base_url` is the public gateway (unauthenticated: events, sports, market
+/// book/detail). `api_base_url` is the authenticated API (orders, account,
+/// portfolio), signed with Ed25519 per request in `clients/polymarket.rs`.
+/// Credentials are preferably supplied via `POLYMARKET_KEY_ID` /
+/// `POLYMARKET_SECRET_KEY` env vars, falling back to `key_id`/`secret_key`
+/// below.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PolymarketConfig {
-    /// Gamma API base URL
+    /// Public gateway base URL
     #[serde(default = "default_poly_base_url")]
     pub base_url: String,
 
-    /// Python order service URL (handles all order placement)
-    #[serde(default = "default_order_service_url")]
-    pub order_service_url: String,
+    /// Authenticated API base URL
+    #[serde(default = "default_poly_api_base_url")]
+    pub api_base_url: String,
+
+    /// Polymarket US API key ID (UUID). Prefer the POLYMARKET_KEY_ID env var.
+    #[serde(default)]
+    pub key_id: String,
+
+    /// Base64-encoded Ed25519 secret key. Prefer the POLYMARKET_SECRET_KEY env var.
+    #[serde(default)]
+    pub secret_key: String,
 }
 
 fn default_poly_base_url() -> String {
     "https://gateway.polymarket.us".to_string()
 }
 
-fn default_order_service_url() -> String {
-    "http://127.0.0.1:8001".to_string()
+fn default_poly_api_base_url() -> String {
+    "https://api.polymarket.us".to_string()
 }
 
 /// Application settings

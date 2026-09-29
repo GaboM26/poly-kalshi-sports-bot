@@ -31,21 +31,17 @@ A high-performance, real-time prediction market arbitrage opportunity monitoring
 |  | - ArbitrageCalculator: profit-margin calculation      |  |
 |  | - Storage: SQLite persistence                         |  |
 |  +-------------------------------------------------------+  |
-|  +------------------+          +-----------------------+  |
-|  | Kalshi client    |          | Polymarket client     |  |
-|  | - REST API       |          | - REST API            |  |
-|  | - WebSocket      |          | - WebSocket           |  |
-|  | - RSA signing    |          | - US API client       |  |
-|  +------------------+          +-----------------------+  |
-+--------------------+----------------------------------------+
-                     | HTTP API
-+--------------------+----------------------------------------+
-|             Python Order Service (FastAPI)                  |
-|                  http://localhost:8001                      |
-|  - Uses the official polymarket-us SDK                      |
-|  - Handles Polymarket US API order submission               |
+|  +------------------+          +------------------------+ |
+|  | Kalshi client    |          | Polymarket US client   | |
+|  | - REST API       |          | - REST API             | |
+|  | - WebSocket      |          | - Ed25519 signing      | |
+|  | - RSA-PSS signing|          |                        | |
+|  +------------------+          +------------------------+ |
 +-------------------------------------------------------------+
 ```
+
+Both exchanges are called directly from the Rust backend, each with its own
+signed request path - there is no separate order-service process.
 
 ### Technology Stack
 
@@ -64,18 +60,12 @@ A high-performance, real-time prediction market arbitrage opportunity monitoring
 - Tailwind CSS - styling
 - Recharts - data visualization
 
-**Order Service (Python)**
-
-- FastAPI - web framework
-- polymarket-us - official Polymarket US SDK
-
 ## Quick Start
 
 ### 1. Prerequisites
 
 - Rust 1.70+
 - Node.js 16+
-- Python 3.10+
 
 ### 2. Configuration
 
@@ -98,8 +88,6 @@ YOUR_PRIVATE_KEY_HERE
 # This local config.toml file is ignored by Git.
 key_id = "your-polymarket-us-key-id"
 secret_key = "your-polymarket-us-secret-key"
-# Python order service URL
-order_service_url = "http://127.0.0.1:8001"
 
 [auth]
 username = "admin"
@@ -135,7 +123,6 @@ chat_id = "YOUR_CHAT_ID"
 
 The script starts:
 
-- The Python order service on port 8001
 - The Rust backend on port 8000
 - The React frontend on port 5173
 
@@ -183,8 +170,8 @@ cp config.example.toml config.toml
 
 ### Automated Trading
 
-- Uses a fresh executable Kalshi WebSocket order book and the official
-  `polymarket-us` SDK's US market-book endpoint immediately before submission.
+- Uses a fresh executable Kalshi WebSocket order book and a freshly-fetched
+  Polymarket US market-book endpoint immediately before submission.
 - Sizes only whole contracts supported by both books, using worst-case fill
   prices, Kalshi fees, the configured maximum amount, and the required profit
   margin.

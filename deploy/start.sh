@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# There is no separate Python order service anymore: the Rust backend calls
+# the Polymarket US API directly (Ed25519-signed), the same way it already
+# calls Kalshi. poly-order-service/ remains in this bundle for reference
+# only and is not started here.
+
 # Store all process IDs.
 PIDS=""
 
@@ -19,40 +24,6 @@ fi
 # Create the log directory.
 mkdir -p logs
 
-# Start the Python order service.
-echo "🐍 Starting Python order service (port 8001)..."
-cd poly-order-service
-
-# Check the Python configuration.
-if [ ! -f config.toml ]; then
-    echo "⚠️  Warning: poly-order-service/config.toml does not exist"
-    if [ -f config.toml.sample ]; then
-        echo "Copy config.toml.sample to config.toml and configure it"
-    fi
-    echo "The Python order service cannot start"
-else
-    # Check the Python virtual environment.
-    if [ ! -d ".venv" ]; then
-        echo "📦 Creating Python virtual environment..."
-        python3 -m venv .venv
-        source .venv/bin/activate
-        pip install -r requirements.txt
-    else
-        source .venv/bin/activate
-    fi
-    
-    # Start the Python service.
-    python main.py &
-    PYTHON_PID=$!
-    PIDS="$PYTHON_PID"
-    echo "✅ Python order service started (PID: $PYTHON_PID)"
-    
-    # Wait for the Python service to start.
-    sleep 3
-fi
-
-cd ..
-
 # Start the Rust backend.
 echo "🚀 Starting Rust backend (port 8000)..."
 ./polytaoli &
@@ -64,7 +35,6 @@ echo ""
 echo "=================================="
 echo "✅ Startup complete!"
 echo ""
-echo "🐍 Python order service: http://localhost:8001"
 echo "📊 Rust backend: http://localhost:8000"
 echo ""
 echo "Press Ctrl+C to stop all services"

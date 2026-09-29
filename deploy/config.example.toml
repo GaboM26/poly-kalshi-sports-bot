@@ -21,12 +21,12 @@ base_url = "https://external-api.kalshi.com/trade-api/v2"
 key_id = ""
 secret_key = ""
 
-# Polymarket US public API base URL (used to retrieve market data)
+# Polymarket US public gateway base URL (unauthenticated: events, sports, market book/detail)
 base_url = "https://gateway.polymarket.us"
 
-# Python order service URL (orders are submitted through this service)
-# Orders are handled by the Python service using the official polymarket-us SDK.
-order_service_url = "http://127.0.0.1:8001"
+# Polymarket US authenticated API base URL (orders, account, portfolio)
+# Requests are signed directly by the Rust backend (Ed25519) - no separate order service.
+api_base_url = "https://api.polymarket.us"
 
 # The [settings] and [auto_trade] configuration has moved to the database.
 # It can be changed in real time through the frontend without restarting the service.

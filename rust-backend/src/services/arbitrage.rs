@@ -43,14 +43,11 @@ impl ArbitrageService {
         // Initialize performance metrics
         let metrics = Arc::new(PerformanceMetrics::new());
 
-        // Initialize clients
+        // Initialize clients. Polymarket US credentials are validated here
+        // (PolymarketClient::new fails fast if they're missing) - there's no
+        // separate order service to health-check anymore.
         let kalshi_client = KalshiClient::new(config.kalshi.clone())?;
-        let mut polymarket_client = PolymarketClient::new(config.polymarket.clone())?;
-
-        // Check the official Polymarket US order service for manual orders.
-        if let Err(e) = polymarket_client.init_order_service().await {
-            info!("Polymarket US order service initialization skipped: {}", e);
-        }
+        let polymarket_client = PolymarketClient::new(config.polymarket.clone())?;
 
         // Create matcher
         let matcher = EventMatcher::new(24);

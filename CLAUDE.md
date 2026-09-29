@@ -142,17 +142,109 @@ JSON type mismatches like the one above) but is a real rewrite of the
 order-submission and market-book paths for live-money code — treat it as
 its own careful, incremental migration, not a quick swap.
 
+## Session log (2026-09-27) — Polymarket US direct-API migration
+
+Done this session (full cutover, requested by the user after hitting the
+still-unresolved `K: Kalshi leg was not submitted because Polymarket did not
+fill a positive contract quantity; P: ORD_REJECT_REASON_EXCHANGE_OPTION`
+error live): the previously-deferred migration above. `poly-order-service`
+(the Python/FastAPI process wrapping the official `polymarket-us` SDK) is no
+longer started or called. `clients/polymarket.rs` now calls
+`gateway.polymarket.us` (market book, market constraints, events/sports —
+unauthenticated, unchanged) and `api.polymarket.us` (balances, positions,
+orders list/create/cancel — Ed25519-signed) directly, mirroring how
+`clients/kalshi.rs` already signs and calls Kalshi directly. New
+`clients/polymarket_auth.rs` replicates `polymarket_us/auth.py` exactly:
+sign `{timestamp}{METHOD}{path}` only (never body or query), base64-decode
+the secret key, use only its first 32 bytes as the Ed25519 seed if 64 bytes
+were provided. `PolymarketConfig` gained `api_base_url` and
+`key_id`/`secret_key` fields (env vars `POLYMARKET_KEY_ID`/
+`POLYMARKET_SECRET_KEY` still take precedence, matching the old service's
+precedence); `order_service_url` is gone. `start_rust_stack.sh`,
+`deploy/start.sh`, and `build_linux.sh`'s packaging step no longer
+start/bundle the Python process. `poly-order-service/` itself is left in
+the repo for reference only — not part of the runtime.
+
+429 retry (1s/2s/4s, 3 attempts, matching docs.polymarket.us/api-reference/
+rate-limits) and the balance/positions (30s) and market-constraints (1h)
+caches were preserved from the Python service. On any order response with
+zero fill (a rejection, not just a transport error), the full outgoing
+request JSON and raw response JSON are now logged at `warn!` in
+`clients/polymarket.rs::parse_polymarket_order_result` — previously nothing
+logged this, so a rejection like `ORD_REJECT_REASON_EXCHANGE_OPTION` left no
+record of what was actually sent.
+
+**Important: this migration is not expected to fix
+`ORD_REJECT_REASON_EXCHANGE_OPTION` by itself.** That string arrives inside
+a normal HTTP 200 (`executions[].orderRejectReason`) — Polymarket accepts
+the request and rejects the *order* on some exchange-side check — so
+sending the same JSON body from Rust instead of Python changes nothing
+about whether the exchange accepts it. The migration was done because it
+was already overdue (removes the IPC hop, the extra process/port that can
+fail to start, and the class of Python/JSON type-marshaling bugs already
+found once) and because it adds the request/response logging above. If
+`ORD_REJECT_REASON_EXCHANGE_OPTION` recurs, the next step is to read that
+new `warn!` line for the exact payload Polymarket rejected and compare it
+field-by-field against a market where an order succeeds.
+
+Read-only endpoints (balance, market book, positions, open orders) were
+validated against the live API before this was considered done; order
+submission was not live/test-fired as part of this work (per this file's
+own rule below) and still needs to be confirmed against a real order.
+`cargo build`/`cargo test` pass; `paired_execution.rs` and `polymarket.rs`
+unit tests (pure functions) were unchanged and still pass.
+
+**Next steps (not yet started, user wants to pick this up later):** after
+running with the direct-API path live, the user is still seeing
+`Polymarket US limit order did not fill: ORD_REJECT_REASON_EXCHANGE_OPTION:`
+— confirms the prediction above that the migration alone would not fix this;
+the new `warn!` request/response logging in `parse_polymarket_order_result`
+(`clients/polymarket.rs`) should now have the exact rejected payload the
+next time this fires, so start there instead of re-guessing at a cause.
+Separately, the user also reported something "seems to disconnect every few
+seconds" — not yet triaged, unclear if this is the Kalshi WebSocket
+(`clients/kalshi.rs`, reconnect/epoch logic), the frontend's WebSocket
+client (`web/src/hooks/useWebSocket.ts`), or something else entirely (e.g.
+the backend itself restarting). Needs reproduction and log correlation
+before assuming which layer it's in.
+
+User's further observation (2026-09-27, still deferred): the frontend shows
+two different messages for what may be the same underlying opportunity —
+the opportunity list (left panel) shows what the user describes as "the
+typical ORD_QUANTITY exception," while that same opportunity's detail page
+(the manual arbitrage-execution view) shows "No profitable size remains
+after fees, worst-case prices, Polymarket's minimum trade quantity,
+available depth, and the configured max trade amount" (the `reject_with_skip`
+message from `find_profitable_contract_size` returning `None` in
+`api/routes/orders.rs::execute_arbitrage` — a sizing failure that never
+reaches order submission at all). It's not yet established whether "the
+typical ORD_QUANTITY exception" is literally a distinct Polymarket reject
+reason (i.e. not `ORD_REJECT_REASON_EXCHANGE_OPTION`) or just the user's
+shorthand for the same rejection described differently — check the actual
+list-panel string against backend logs before assuming either way. If it is
+genuinely a different, more specific reject reason than
+`ORD_REJECT_REASON_EXCHANGE_OPTION`, that's a stronger lead than anything
+found so far. Also worth checking directly: why the list and detail views
+would disagree at all for the same opportunity — one implies "never
+attempted" (sizing failed) and the other implies "attempted and rejected by
+the exchange," which shouldn't both be true for one opportunity at once
+unless the two views are reading different data (e.g. a stale/cached
+opportunity record vs. a fresh live sizing attempt).
+
 ## Architecture
 
-Three services, started together via `./start_rust_stack.sh`:
+Two services, started together via `./start_rust_stack.sh`:
 
 - **`rust-backend/`** (Axum + Tokio, port `8000`) — the core engine.
   - `core/`: `matcher.rs` (event/market matching between exchanges, incl.
     NBA-specific logic in `nba_teams.rs`/`competitors.rs`), `calculator.rs`
     (profit-margin math).
-  - `clients/`: `kalshi.rs` (REST + WebSocket, RSA-signed requests),
-    `polymarket.rs` (REST + WebSocket, calls out to the Python order
-    service for order submission).
+  - `clients/`: `kalshi.rs` (REST + WebSocket, RSA-PSS-signed requests
+    against `external-api.kalshi.com`), `polymarket.rs` (REST against
+    `gateway.polymarket.us` for market data and `api.polymarket.us` for
+    orders/account/portfolio, Ed25519-signed via `polymarket_auth.rs`) —
+    both exchanges are called directly, with no separate order-service
+    process for either.
   - `services/`: `arbitrage.rs` (opportunity detection/control),
     `websocket_manager/` (live delivery to frontend, `auto_trade.rs` for
     automated paired execution, `market_lifecycle.rs`), `storage/`
@@ -162,10 +254,10 @@ Three services, started together via `./start_rust_stack.sh`:
 - **`web/`** (Vite + React + TS, port `5173`) — dashboard: live
   opportunities, order forms, position/history views, WebSocket client
   (`hooks/useWebSocket.ts`).
-- **`poly-order-service/`** (FastAPI, port `8001`) — thin wrapper around the
-  official `polymarket-us` SDK (pinned `0.1.2`) for order submission and
-  market-book depth; the Rust backend calls this instead of hitting
-  Polymarket directly for order execution.
+
+`poly-order-service/` (FastAPI wrapper around the official `polymarket-us`
+SDK) still exists in the repo but is no longer started or called by
+anything — see the 2026-09-27 session log above for the migration off it.
 
 ## Critical invariants (do not weaken without explicit user sign-off)
 
@@ -203,9 +295,17 @@ summary.
 
 - Rust: `cargo test` from `rust-backend/`.
 - Frontend: `npm run lint && npm run build` from `web/`.
-- Python: `python3 -m pytest -q test_market_book.py` from
-  `poly-order-service/` (offline-safe). **Do not run `test_service.py`** —
-  it hits live account/order endpoints.
+- `poly-order-service/` is no longer part of the runtime (see the
+  2026-09-27 session log); its tests are kept for reference only and don't
+  need to pass for a change to be considered validated.
+- `rust-backend/examples/verify_polymarket_direct.rs` (`cargo run --example
+  verify_polymarket_direct` from `rust-backend/`) hits the live Polymarket
+  US API's read-only endpoints (balance, positions, open orders, a market
+  book) using real credentials from `config.toml` — useful for confirming
+  Ed25519 signing/parsing still works after touching `clients/polymarket.rs`
+  or `clients/polymarket_auth.rs`. Like `poly-order-service/test_service.py`
+  before it, do not run it as part of routine/automatic validation — it's a
+  manual check, and it never places an order.
 - **Never enable automatic trading or submit live/test orders** as part of
   routine development or debugging. Config default is `auto_trade.enabled =
   false`; keep it that way unless the user explicitly asks to test live.
@@ -215,5 +315,5 @@ summary.
 - `rust-backend/config.toml` is gitignored and holds real Kalshi/Polymarket
   credentials — never read it back into chat output or commit it.
   `config.example.toml` is the template to update when adding new settings.
-- Default dev ports: frontend `5173`, Rust API `8000`, Python order service
-  `8001`. Keep these aligned across services if changed.
+- Default dev ports: frontend `5173`, Rust API `8000`. Keep these aligned
+  across services if changed.

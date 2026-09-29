@@ -1,7 +1,0 @@
-# Polymarket US order service configuration
-#
-# Prefer setting POLYMARKET_KEY_ID and POLYMARKET_SECRET_KEY in the environment.
-# Generate the API key pair at https://polymarket.us/developer.
-[polymarket]
-key_id = ""
-secret_key = ""
