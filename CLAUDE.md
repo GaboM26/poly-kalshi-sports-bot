@@ -614,3 +614,30 @@ detection in the app's own logs), and `min_duration_ms` (500) is untouched.
 Kalshi-side detection is still REST-polled; using the Kalshi WS book to
 trigger detection is the remaining lever.
 `examples/probe_polymarket_ws.rs` is a read-only WS-vs-REST comparison.
+
+**Kalshi WebSocket-driven detection (same day, follow-up):** Kalshi's WS book
+already produced `yes_ask`/`no_ask` per update (`clients/kalshi.rs::
+parse_ws_message`) but `on_kalshi_price_update` only stored them.
+`WebSocketManager::apply_kalshi_ws_quote` now writes them into the quote
+cache and calls `calculate_and_notify` only when the best prices changed
+(deeper-level deltas just re-stamp freshness). Same REST-can't-overwrite-
+newer-WS rule as Polymarket (`update_kalshi_rest_quotes_at`); REST still
+applies closed/settled status and self-heals any WS drift within one cycle.
+Price-only: execution depth still comes exclusively from the fresh WS book.
+80 lib tests pass. Not yet observed live in the app's logs.
+
+**Polymarket depth on the detail page + tracking (same day):** the detail
+page's Polymarket ×size/$ was blank because `/api/orderbook/depth` hardcoded
+`polymarket: None` and `calculate_and_notify` forced `poly_ask_depth/size` to
+0. The WS client now also subscribes `SUBSCRIPTION_TYPE_MARKET_DATA` (full
+book; each message is a full snapshot, verified identical to REST
+`/book` on 3/3 markets) and stores it in `poly_live_books`. The depth
+endpoint serves best-level price/size for the tracked competitor (Yes) and
+its opponent (No) from that book, falling back to one REST `get_market_book`
+call if no WS book has arrived yet. Opportunities' `poly_ask_depth/size` now
+come from the same book. **These are display/tracking values only — order
+sizing still fetches its own fresh REST book (critical invariant
+unchanged).** Also fixed along the way: tracking's depth snapshot used the
+tracked team's own native side regardless of Kalshi side; the Polymarket leg
+actually buys the *opponent* when Kalshi is YES (see `OpportunityList.tsx`
+`polymarket_competitor`), so it now uses that side. 82 lib tests pass.

@@ -658,7 +658,7 @@ impl PolymarketClient {
 
 /// Build and validate a `PolymarketMarketBook` straight from the gateway's
 /// raw `{marketData: {...}}` envelope.
-fn build_market_book(response: &Value, requested_slug: &str) -> Result<PolymarketMarketBook> {
+pub fn build_market_book(response: &Value, requested_slug: &str) -> Result<PolymarketMarketBook> {
     let market_data = response
         .get("marketData")
         .and_then(Value::as_object)

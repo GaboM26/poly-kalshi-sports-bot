@@ -23,6 +23,7 @@ use parking_lot::RwLock;
 use tokio::sync::broadcast;
 use tracing::{debug, info};
 
+use crate::clients::polymarket::PolymarketMarketBook;
 use crate::clients::{KalshiClient, KalshiMarketQuote, PolymarketClient};
 use crate::core::{ArbitrageCalculator, EventMatcher};
 use crate::models::{
@@ -139,6 +140,13 @@ pub struct WebSocketManager {
     /// REST snapshot fetched *before* that moment can't overwrite it with
     /// older prices.
     pub(crate) poly_ws_quote_at: Arc<RwLock<HashMap<String, Instant>>>,
+    /// ticker -> when the newest Kalshi WebSocket-derived quote arrived;
+    /// same purpose as `poly_ws_quote_at`.
+    pub(crate) kalshi_ws_quote_at: Arc<RwLock<HashMap<String, Instant>>>,
+    /// slug -> latest full Polymarket book pushed over the WebSocket. Used
+    /// for display and tracking depth only; order sizing always fetches its
+    /// own fresh REST book (`get_market_book`).
+    pub(crate) poly_live_books: Arc<RwLock<HashMap<String, PolymarketMarketBook>>>,
     /// Set of recorded skip reasons: "market_key:simplified_reason" -> prevent duplicate skip records
     pub(crate) recorded_skip_reasons: Arc<RwLock<std::collections::HashSet<String>>>,
     /// Set of market keys excluded from auto-trade (user-defined)
@@ -200,6 +208,8 @@ impl WebSocketManager {
             confirmed_ended_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
             poly_missing_streak: Arc::new(RwLock::new(HashMap::new())),
             poly_ws_quote_at: Arc::new(RwLock::new(HashMap::new())),
+            kalshi_ws_quote_at: Arc::new(RwLock::new(HashMap::new())),
+            poly_live_books: Arc::new(RwLock::new(HashMap::new())),
             recorded_skip_reasons: Arc::new(RwLock::new(std::collections::HashSet::new())),
             excluded_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
             poly_depth_snapshot_cooldown: Arc::new(RwLock::new(HashMap::new())),
@@ -288,12 +298,26 @@ impl WebSocketManager {
     /// This price-only cache must never populate or relax WebSocket order-book
     /// depth checks used by manual or automatic trading.
     pub fn update_kalshi_rest_quotes(&self, quotes: &[KalshiMarketQuote]) -> usize {
+        self.update_kalshi_rest_quotes_at(quotes, Instant::now())
+    }
+
+    /// Same as `update_kalshi_rest_quotes`, for a snapshot whose request
+    /// started at `fetched_at`. A ticker that received a WebSocket-derived
+    /// quote after that instant keeps the newer WebSocket prices; the REST
+    /// cycle still applies closed/settled status and refreshes freshness.
+    pub fn update_kalshi_rest_quotes_at(
+        &self,
+        quotes: &[KalshiMarketQuote],
+        fetched_at: Instant,
+    ) -> usize {
+        let ws_quote_at = self.kalshi_ws_quote_at.read().clone();
         let quotes_by_ticker: HashMap<&str, &KalshiMarketQuote> = quotes
             .iter()
             .map(|quote| (quote.market_id.as_str(), quote))
             .collect();
         let received_at = Instant::now();
         let mut updated_indices = Vec::new();
+        let mut kept_ws = 0usize;
         let mut quotes_to_cache = HashMap::new();
         let mut newly_ended_keys = Vec::new();
 
@@ -314,6 +338,22 @@ impl WebSocketManager {
                 // market simply closed for trading at 84c, not 99c/2c).
                 if matches!(quote.status.as_str(), "closed" | "settled") {
                     newly_ended_keys.push(matched.market_key());
+                    continue;
+                }
+
+                if ws_quote_at
+                    .get(&matched.kalshi_market.market_id)
+                    .is_some_and(|at| *at > fetched_at)
+                {
+                    // Keep the newer WebSocket prices; only re-stamp.
+                    kept_ws += 1;
+                    quotes_to_cache
+                        .entry(matched.kalshi_market.market_id.clone())
+                        .or_insert_with(|| KalshiRestQuote {
+                            yes_ask: matched.kalshi_market.yes_price,
+                            no_ask: matched.kalshi_market.no_price,
+                            received_at,
+                        });
                     continue;
                 }
 
@@ -353,7 +393,7 @@ impl WebSocketManager {
             self.calculate_and_notify(*idx);
         }
 
-        updated_indices.len()
+        updated_indices.len() + kept_ws
     }
 
     /// Apply current Polymarket US gateway quotes to already matched markets.
@@ -382,6 +422,7 @@ impl WebSocketManager {
             .collect();
         let received_at = Instant::now();
         let mut updated_indices = Vec::new();
+        let mut kept_ws = 0usize;
         let mut quotes_to_cache = HashMap::new();
         let mut newly_ended_keys = Vec::new();
         let mut present_keys = std::collections::HashSet::new();
@@ -415,6 +456,7 @@ impl WebSocketManager {
                     .is_some_and(|at| *at > fetched_at)
                 {
                     // Keep the newer WebSocket prices; only re-stamp.
+                    kept_ws += 1;
                     quotes_to_cache
                         .entry(matched.polymarket_market.market_id.clone())
                         .or_insert_with(|| PolymarketRestQuote {
@@ -481,7 +523,7 @@ impl WebSocketManager {
             self.calculate_and_notify(*idx);
         }
 
-        updated_indices.len()
+        updated_indices.len() + kept_ws
     }
 
     /// Apply a pushed Polymarket WebSocket quote and re-run detection for
@@ -542,6 +584,27 @@ impl WebSocketManager {
             self.calculate_and_notify(*idx);
         }
         updated_indices.len()
+    }
+
+    /// Store a full Polymarket book snapshot pushed over the WebSocket.
+    pub fn update_polymarket_ws_book(&self, book: PolymarketMarketBook) {
+        self.poly_live_books
+            .write()
+            .insert(book.market_slug.clone(), book);
+    }
+
+    /// Latest WebSocket book for a slug, if one has arrived.
+    pub fn polymarket_live_book(&self, slug: &str) -> Option<PolymarketMarketBook> {
+        self.poly_live_books.read().get(slug).cloned()
+    }
+
+    /// The matched market carrying a Kalshi ticker, if any.
+    pub fn matched_market_for_kalshi_ticker(&self, ticker: &str) -> Option<MatchedMarket> {
+        self.matched_markets
+            .read()
+            .iter()
+            .find(|m| m.kalshi_market.market_id == ticker)
+            .cloned()
     }
 
     /// Unique native slugs of every matched Polymarket market, for the
@@ -704,8 +767,56 @@ impl WebSocketManager {
                 .insert(update.market_id.clone(), (yb, ya, nb, na));
         }
 
+        if let (Some(ya), Some(na)) = (update.yes_ask, update.no_ask) {
+            self.apply_kalshi_ws_quote(&update.market_id, ya, na);
+        }
+
         self.metrics
             .record(Operation::KalshiWsProcess, start.elapsed());
+    }
+
+    /// Apply asks derived from the live Kalshi order book (best ask on one
+    /// side is the complement of the best bid on the other) and re-run
+    /// detection immediately when the best prices changed. Price-only: this
+    /// never touches the depth cache execution relies on. Returns the number
+    /// of matched markets whose prices changed.
+    pub fn apply_kalshi_ws_quote(&self, ticker: &str, yes_ask: f64, no_ask: f64) -> usize {
+        let received_at = Instant::now();
+        let changed = {
+            let mut cache = self.kalshi_rest_quotes.write();
+            let changed = cache.get(ticker).map_or(true, |q| {
+                (q.yes_ask - yes_ask).abs() > 1e-9 || (q.no_ask - no_ask).abs() > 1e-9
+            });
+            // Any book message proves the feed is live, so re-stamp even
+            // when the best prices didn't move (deeper-level deltas).
+            cache.insert(
+                ticker.to_string(),
+                KalshiRestQuote { yes_ask, no_ask, received_at },
+            );
+            changed
+        };
+        self.kalshi_ws_quote_at
+            .write()
+            .insert(ticker.to_string(), received_at);
+        if !changed {
+            return 0;
+        }
+
+        let mut updated_indices = Vec::new();
+        {
+            let mut matched_markets = self.matched_markets.write();
+            for (idx, matched) in matched_markets.iter_mut().enumerate() {
+                if matched.kalshi_market.market_id == ticker {
+                    matched.kalshi_market.yes_price = yes_ask;
+                    matched.kalshi_market.no_price = no_ask;
+                    updated_indices.push(idx);
+                }
+            }
+        }
+        for idx in &updated_indices {
+            self.calculate_and_notify(*idx);
+        }
+        updated_indices.len()
     }
 
     /// Check if a matched market has complete data
@@ -764,19 +875,36 @@ impl WebSocketManager {
         );
 
         let kalshi_ticker = mm.kalshi_market.market_id.clone();
-        let poly_execution = mm
-            .polymarket_market
-            .us_execution_for_competitor(&mm.team_name);
+        // The Polymarket leg buys the competitor opposite the Kalshi side:
+        // Kalshi YES pairs with the opponent, Kalshi NO with the tracked
+        // team. The native side comes from the competitor mapping only.
+        let poly_market = mm.polymarket_market.clone();
+        let team_name = mm.team_name.clone();
 
         drop(markets);
 
         if let Some(mut opp) = opportunity {
-            // Gateway quotes do not include an executable size. Keep these
-            // fields at zero rather than manufacturing CLOB depth; a real
-            // snapshot is fetched separately once tracking starts (see
-            // track_opportunity), for Advanced Search visibility only.
-            opp.poly_ask_depth = 0.0;
-            opp.poly_ask_size = 0.0;
+            let poly_competitor = if opp.kalshi_side == "yes" {
+                poly_market.get_opponent(&team_name).map(str::to_string)
+            } else {
+                Some(team_name.clone())
+            };
+            let poly_execution = poly_competitor
+                .as_deref()
+                .and_then(|c| poly_market.us_execution_for_competitor(c));
+
+            // Depth comes from the live WebSocket book when one has arrived
+            // (display/tracking only - never order sizing); zero otherwise,
+            // rather than manufacturing depth from display quotes.
+            let (poly_usd, poly_size) = poly_execution
+                .as_ref()
+                .and_then(|exec| {
+                    self.polymarket_live_book(&exec.market_slug)
+                        .map(|book| book.buy_depth(exec.position_side))
+                })
+                .unwrap_or((0.0, 0.0));
+            opp.poly_ask_depth = poly_usd;
+            opp.poly_ask_size = poly_size;
             opp.kalshi_ask_depth = self.get_kalshi_ask_depth(&kalshi_ticker, &opp.kalshi_side);
 
             let _ = self.opportunity_tx.send(opp.clone());
@@ -1211,6 +1339,65 @@ mod tests {
         // A REST snapshot fetched after the WS quote does win.
         manager.update_polymarket_rest_quotes_at(&[stale_rest], Instant::now());
         assert_eq!(manager.matched_markets.read()[0].poly_yes_price, 0.50);
+    }
+
+    #[tokio::test]
+    async fn kalshi_ws_quote_updates_prices_and_only_recalculates_on_change() {
+        let manager = test_manager();
+        assert_eq!(manager.apply_kalshi_ws_quote("KXLAL", 0.26, 0.75), 1);
+        assert_eq!(manager.matched_markets.read()[0].kalshi_market.yes_price, 0.26);
+        assert_eq!(manager.matched_markets.read()[0].kalshi_market.no_price, 0.75);
+        // Same best prices (a deeper-level delta): no recalculation.
+        assert_eq!(manager.apply_kalshi_ws_quote("KXLAL", 0.26, 0.75), 0);
+        assert_eq!(manager.apply_kalshi_ws_quote("KXLAL", 0.27, 0.74), 1);
+        assert_eq!(manager.apply_kalshi_ws_quote("UNKNOWN", 0.27, 0.74), 0);
+    }
+
+    #[tokio::test]
+    async fn older_kalshi_rest_snapshot_does_not_overwrite_a_newer_ws_quote() {
+        let manager = test_manager();
+        let fetch_started = Instant::now();
+        std::thread::sleep(Duration::from_millis(5));
+        manager.apply_kalshi_ws_quote("KXLAL", 0.26, 0.75);
+        let rest = KalshiMarketQuote {
+            market_id: "KXLAL".to_string(),
+            yes_ask: 0.40,
+            no_ask: 0.61,
+            status: "open".to_string(),
+        };
+        manager.update_kalshi_rest_quotes_at(&[rest.clone()], fetch_started);
+        let cached = manager.kalshi_rest_quotes.read().get("KXLAL").cloned().unwrap();
+        assert_eq!((cached.yes_ask, cached.no_ask), (0.26, 0.75));
+        assert_eq!(manager.matched_markets.read()[0].kalshi_market.yes_price, 0.26);
+
+        // A snapshot fetched after the WS quote does win (self-heals drift).
+        manager.update_kalshi_rest_quotes_at(&[rest], Instant::now());
+        assert_eq!(manager.matched_markets.read()[0].kalshi_market.yes_price, 0.40);
+    }
+
+    #[tokio::test]
+    async fn opportunity_polymarket_depth_uses_the_side_opposite_kalshi() {
+        use crate::clients::polymarket::PolymarketBookLevel;
+        let manager = test_manager();
+        // Fixture: LAL = Long, MEM = Short. Kalshi YES on LAL pairs with
+        // Polymarket MEM, i.e. the SHORT side, bought against the bids.
+        manager.update_polymarket_ws_book(PolymarketMarketBook {
+            success: true,
+            market_slug: "lal-mem-2026-08-17".to_string(),
+            state: "MARKET_STATE_OPEN".to_string(),
+            transact_time: None,
+            fetched_at_ms: 0,
+            bids: vec![PolymarketBookLevel { price: 0.40, quantity: 10.0 }],
+            offers: vec![PolymarketBookLevel { price: 0.45, quantity: 99.0 }],
+            minimum_trade_qty: None,
+            price_tick_size: None,
+        });
+        manager.apply_kalshi_ws_quote("KXLAL", 0.26, 0.75);
+        manager.update_polymarket_ws_quote("lal-mem-2026-08-17", 0.42, 0.58);
+        let opp = manager.get_opportunities().into_iter().next().expect("opportunity");
+        assert_eq!(opp.kalshi_side, "yes");
+        assert_eq!(opp.poly_ask_size, 10.0);
+        assert!((opp.poly_ask_depth - 10.0 * 0.60).abs() < 1e-9);
     }
 
     #[tokio::test]

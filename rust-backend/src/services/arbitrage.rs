@@ -285,12 +285,17 @@ impl ArbitrageService {
                 key_id,
                 secret_key,
                 move || slug_manager.get_polymarket_slugs(),
-                move |quote| {
-                    ws_manager.update_polymarket_ws_quote(
-                        &quote.slug,
-                        quote.long_quote,
-                        quote.short_quote,
-                    );
+                move |event| match event {
+                    crate::clients::polymarket_ws::PolyWsEvent::Quote(quote) => {
+                        ws_manager.update_polymarket_ws_quote(
+                            &quote.slug,
+                            quote.long_quote,
+                            quote.short_quote,
+                        );
+                    }
+                    crate::clients::polymarket_ws::PolyWsEvent::Book(book) => {
+                        ws_manager.update_polymarket_ws_book(book);
+                    }
                 },
             )
             .await;
@@ -329,9 +334,10 @@ impl ArbitrageService {
                     continue;
                 }
 
+                let fetched_at = Instant::now();
                 match kalshi_client.get_market_quotes(&tickers).await {
                     Ok(quotes) => {
-                        let updated = ws_manager.update_kalshi_rest_quotes(&quotes);
+                        let updated = ws_manager.update_kalshi_rest_quotes_at(&quotes, fetched_at);
                         if updated != tickers.len() {
                             tracing::warn!(
                                 "Kalshi REST quote refresh updated {}/{} matched tickers",

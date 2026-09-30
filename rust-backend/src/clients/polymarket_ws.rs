@@ -20,6 +20,7 @@ use tokio_tungstenite::{
 };
 use tracing::{debug, info, warn};
 
+use super::polymarket::{build_market_book, PolymarketMarketBook};
 use super::polymarket_auth;
 
 const WS_URL: &str = "wss://api.polymarket.us/v1/ws/markets";
@@ -37,6 +38,16 @@ pub struct PolyWsQuote {
     pub slug: String,
     pub long_quote: f64,
     pub short_quote: f64,
+}
+
+/// One decoded stream message.
+#[derive(Debug, Clone)]
+pub enum PolyWsEvent {
+    /// Lightweight per-side quotes (detection prices).
+    Quote(PolyWsQuote),
+    /// Full order book snapshot (display/tracking depth only - execution
+    /// still fetches its own fresh book from REST).
+    Book(PolymarketMarketBook),
 }
 
 fn price(value: &Value) -> Option<f64> {
@@ -66,21 +77,42 @@ pub fn parse_lite_message(text: &str) -> Option<PolyWsQuote> {
     })
 }
 
+/// Parse a full `marketData` book message. Each message is a complete
+/// snapshot (verified live), so the caller replaces its stored book.
+pub fn parse_book_message(text: &str) -> Option<PolymarketMarketBook> {
+    let root: Value = serde_json::from_str(text).ok()?;
+    let data = root.get("marketData")?;
+    let slug = data.get("marketSlug")?.as_str()?;
+    build_market_book(&json!({ "marketData": data }), slug).ok()
+}
+
+fn parse_event(text: &str) -> Option<PolyWsEvent> {
+    parse_lite_message(text)
+        .map(PolyWsEvent::Quote)
+        .or_else(|| parse_book_message(text).map(PolyWsEvent::Book))
+}
+
+const SUBSCRIPTION_TYPES: [(&str, &str); 2] = [
+    ("lite", "SUBSCRIPTION_TYPE_MARKET_DATA_LITE"),
+    ("book", "SUBSCRIPTION_TYPE_MARKET_DATA"),
+];
+
 fn subscribe_messages(slugs: &[String], next_id: &mut u64) -> Vec<Message> {
-    slugs
-        .chunks(MAX_SLUGS_PER_SUBSCRIPTION)
-        .map(|chunk| {
+    let mut messages = Vec::new();
+    for chunk in slugs.chunks(MAX_SLUGS_PER_SUBSCRIPTION) {
+        for (label, subscription_type) in SUBSCRIPTION_TYPES {
             *next_id += 1;
-            Message::Text(
+            messages.push(Message::Text(
                 json!({"subscribe": {
-                    "requestId": format!("lite-{}", next_id),
-                    "subscriptionType": "SUBSCRIPTION_TYPE_MARKET_DATA_LITE",
+                    "requestId": format!("{}-{}", label, next_id),
+                    "subscriptionType": subscription_type,
                     "marketSlugs": chunk,
                 }})
                 .to_string(),
-            )
-        })
-        .collect()
+            ));
+        }
+    }
+    messages
 }
 
 /// One connection attempt. Returns when the socket dies or goes silent.
@@ -92,7 +124,7 @@ async fn run_once<S, Q>(
 ) -> Result<()>
 where
     S: Fn() -> Vec<String>,
-    Q: Fn(PolyWsQuote),
+    Q: Fn(PolyWsEvent),
 {
     let headers = polymarket_auth::sign_request(key_id, secret_key, "GET", WS_PATH)?;
     let mut request = WS_URL.into_client_request()?;
@@ -134,8 +166,8 @@ where
                 let frame = frame.context("Polymarket WS silent for 30s")?;
                 match frame {
                     Some(Ok(Message::Text(text))) => {
-                        if let Some(quote) = parse_lite_message(&text) {
-                            on_quote(quote);
+                        if let Some(event) = parse_event(&text) {
+                            on_quote(event);
                         }
                     }
                     Some(Ok(Message::Close(frame))) => {
@@ -152,11 +184,11 @@ where
 
 /// Run forever, reconnecting with exponential backoff (1s..30s). `slugs`
 /// supplies the current desired subscription set; `on_quote` receives each
-/// valid quote.
+/// decoded quote or book event.
 pub async fn run_markets_stream<S, Q>(key_id: String, secret_key: String, slugs: S, on_quote: Q)
 where
     S: Fn() -> Vec<String>,
-    Q: Fn(PolyWsQuote),
+    Q: Fn(PolyWsEvent),
 {
     let mut backoff = Duration::from_secs(1);
     loop {
@@ -217,7 +249,22 @@ mod tests {
     fn chunks_subscriptions_at_100_slugs() {
         let slugs: Vec<String> = (0..250).map(|i| format!("s{i}")).collect();
         let mut id = 0;
-        assert_eq!(subscribe_messages(&slugs, &mut id).len(), 3);
-        assert_eq!(id, 3);
+        // Two subscription types (lite quotes + full book) per chunk.
+        assert_eq!(subscribe_messages(&slugs, &mut id).len(), 6);
+        assert_eq!(id, 6);
+    }
+
+    #[test]
+    fn parses_a_full_book_snapshot_and_rejects_bad_levels() {
+        let book = r#"{"marketData":{"marketSlug":"s1","bids":[{"px":{"value":"0.10"},"qty":"5"},{"px":{"value":"0.20"},"qty":"3"}],"offers":[{"px":{"value":"0.30"},"qty":"7"}],"state":"MARKET_STATE_OPEN"}}"#;
+        let b = parse_book_message(book).unwrap();
+        assert_eq!(b.market_slug, "s1");
+        assert_eq!(b.bids[0].price, 0.20); // sorted best-first
+        assert_eq!(b.offers[0].quantity, 7.0);
+        // A lite message is not a book, and vice versa.
+        assert!(parse_book_message(OPEN).is_none());
+        assert!(parse_lite_message(book).is_none());
+        let bad = book.replace(r#""qty":"7""#, r#""qty":"0""#);
+        assert!(parse_book_message(&bad).is_none());
     }
 }
