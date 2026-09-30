@@ -130,7 +130,7 @@ pub struct PolymarketClient {
 
 /// Read Polymarket US API credentials, env vars first, falling back to
 /// config file values.
-fn resolve_credentials(config: &PolymarketConfig) -> Result<(String, String)> {
+pub fn resolve_credentials(config: &PolymarketConfig) -> Result<(String, String)> {
     let key_id = std::env::var("POLYMARKET_KEY_ID")
         .ok()
         .filter(|v| !v.trim().is_empty())

@@ -19,7 +19,7 @@ use crate::models::{
 };
 use crate::services::{ArbitrageStorage, Operation, PerformanceMetrics, WebSocketManager};
 
-const MIN_REST_QUOTE_REFRESH_SECS: u64 = 3;
+const MIN_REST_QUOTE_REFRESH_SECS: u64 = 1;
 
 /// Arbitrage service
 pub struct ArbitrageService {
@@ -164,7 +164,7 @@ impl ArbitrageService {
         let kalshi_tickers = self.ws_manager.get_kalshi_subscription_ids();
 
         info!(
-            "📡 Starting WebSocket connections: {} Kalshi markets; Polymarket US uses REST quotes",
+            "📡 Starting WebSocket connections: {} Kalshi markets; Polymarket US quotes use their own WebSocket + REST fallback",
             kalshi_tickers.len()
         );
 
@@ -246,9 +246,11 @@ impl ArbitrageService {
             loop {
                 interval.tick().await;
 
+                let fetched_at = Instant::now();
                 match polymarket_client.get_supported_events_and_markets().await {
                     Ok((_, markets)) => {
-                        let updated = ws_manager.update_polymarket_rest_quotes(&markets);
+                        let updated =
+                            ws_manager.update_polymarket_rest_quotes_at(&markets, fetched_at);
                         let matched_count = ws_manager.matched_markets.read().len();
                         if matched_count > 0 && updated == 0 {
                             tracing::warn!(
@@ -267,6 +269,31 @@ impl ArbitrageService {
                     }
                 }
             }
+        });
+    }
+
+    /// Stream Polymarket US quotes over the markets WebSocket so detection
+    /// reacts to a price change immediately instead of on the next REST
+    /// poll. The REST poll keeps running as the fallback and for
+    /// ended-market detection.
+    pub fn run_polymarket_ws(&self, key_id: String, secret_key: String) {
+        let ws_manager = self.ws_manager.clone();
+        let slug_manager = self.ws_manager.clone();
+        tokio::spawn(async move {
+            info!("📡 Polymarket US WebSocket quote stream starting");
+            crate::clients::polymarket_ws::run_markets_stream(
+                key_id,
+                secret_key,
+                move || slug_manager.get_polymarket_slugs(),
+                move |quote| {
+                    ws_manager.update_polymarket_ws_quote(
+                        &quote.slug,
+                        quote.long_quote,
+                        quote.short_quote,
+                    );
+                },
+            )
+            .await;
         });
     }
 
@@ -476,7 +503,7 @@ impl ArbitrageService {
         let new_sub_info = self.matcher.get_subscription_info(&new_matched_markets);
 
         info!(
-            "   📡 New subscription requirements: Kalshi {} markets; Polymarket US uses REST quotes",
+            "   📡 New subscription requirements: Kalshi {} markets; Polymarket US quotes use their own WebSocket + REST fallback",
             new_sub_info.kalshi_tickers.len()
         );
         info!("============================================================");

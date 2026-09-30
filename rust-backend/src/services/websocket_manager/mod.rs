@@ -135,6 +135,10 @@ pub struct WebSocketManager {
     /// `POLY_MISSING_CONFIRM_STREAK`) so one transient gap in that feed
     /// doesn't remove a market that is still genuinely open.
     pub(crate) poly_missing_streak: Arc<RwLock<HashMap<String, u32>>>,
+    /// market_id -> when the newest WebSocket quote for it arrived, so a
+    /// REST snapshot fetched *before* that moment can't overwrite it with
+    /// older prices.
+    pub(crate) poly_ws_quote_at: Arc<RwLock<HashMap<String, Instant>>>,
     /// Set of recorded skip reasons: "market_key:simplified_reason" -> prevent duplicate skip records
     pub(crate) recorded_skip_reasons: Arc<RwLock<std::collections::HashSet<String>>>,
     /// Set of market keys excluded from auto-trade (user-defined)
@@ -195,6 +199,7 @@ impl WebSocketManager {
             ended_market_detection: Arc::new(RwLock::new(HashMap::new())),
             confirmed_ended_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
             poly_missing_streak: Arc::new(RwLock::new(HashMap::new())),
+            poly_ws_quote_at: Arc::new(RwLock::new(HashMap::new())),
             recorded_skip_reasons: Arc::new(RwLock::new(std::collections::HashSet::new())),
             excluded_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
             poly_depth_snapshot_cooldown: Arc::new(RwLock::new(HashMap::new())),
@@ -357,6 +362,20 @@ impl WebSocketManager {
     /// Only price fields for known matched market IDs are updated; this never
     /// changes subscriptions, token mappings, or order-book state.
     pub fn update_polymarket_rest_quotes(&self, markets: &[PolymarketMarket]) -> usize {
+        self.update_polymarket_rest_quotes_at(markets, Instant::now())
+    }
+
+    /// Same as `update_polymarket_rest_quotes`, for a snapshot whose request
+    /// started at `fetched_at`. A market that received a WebSocket quote
+    /// after that instant keeps the newer WebSocket prices (the snapshot is
+    /// older than what we already hold); the REST cycle still confirms it
+    /// is listed and refreshes its freshness stamp.
+    pub fn update_polymarket_rest_quotes_at(
+        &self,
+        markets: &[PolymarketMarket],
+        fetched_at: Instant,
+    ) -> usize {
+        let ws_quote_at = self.poly_ws_quote_at.read().clone();
         let quotes_by_market: HashMap<&str, &PolymarketMarket> = markets
             .iter()
             .map(|market| (market.market_id.as_str(), market))
@@ -391,6 +410,20 @@ impl WebSocketManager {
                     continue;
                 };
                 present_keys.insert(matched.market_key());
+                if ws_quote_at
+                    .get(&matched.polymarket_market.market_id)
+                    .is_some_and(|at| *at > fetched_at)
+                {
+                    // Keep the newer WebSocket prices; only re-stamp.
+                    quotes_to_cache
+                        .entry(matched.polymarket_market.market_id.clone())
+                        .or_insert_with(|| PolymarketRestQuote {
+                            price_a: matched.polymarket_market.price_a,
+                            price_b: matched.polymarket_market.price_b,
+                            received_at,
+                        });
+                    continue;
+                }
                 let Ok((yes_price, no_price)) = quote.get_price_for_team(&matched.team_name) else {
                     continue;
                 };
@@ -449,6 +482,78 @@ impl WebSocketManager {
         }
 
         updated_indices.len()
+    }
+
+    /// Apply a pushed Polymarket WebSocket quote and re-run detection for
+    /// every matched market on that slug immediately. Returns the number of
+    /// matched markets updated. Prices feed detection only; execution depth
+    /// is still fetched from the real book at order time.
+    pub fn update_polymarket_ws_quote(&self, slug: &str, long_quote: f64, short_quote: f64) -> usize {
+        let received_at = Instant::now();
+        let mut updated_indices = Vec::new();
+        let mut cache_updates: Vec<(String, f64, f64)> = Vec::new();
+
+        {
+            let mut matched_markets = self.matched_markets.write();
+            for (idx, matched) in matched_markets.iter_mut().enumerate() {
+                let pm = &mut matched.polymarket_market;
+                if pm.market_slug != slug {
+                    continue;
+                }
+                // Map each competitor to its own native side; never infer it
+                // from outcome order.
+                let side_quote = |side: crate::models::PolymarketPositionSide| match side {
+                    crate::models::PolymarketPositionSide::Long => long_quote,
+                    crate::models::PolymarketPositionSide::Short => short_quote,
+                };
+                pm.price_a = side_quote(pm.team_a_position);
+                pm.price_b = side_quote(pm.team_b_position);
+                let (price_a, price_b) = (pm.price_a, pm.price_b);
+                let market_id = pm.market_id.clone();
+                let Ok((yes_price, no_price)) = pm.get_price_for_team(&matched.team_name) else {
+                    continue;
+                };
+                matched.poly_yes_price = yes_price;
+                matched.poly_no_price = no_price;
+                updated_indices.push(idx);
+                cache_updates.push((market_id, price_a, price_b));
+            }
+        }
+
+        if updated_indices.is_empty() {
+            return 0;
+        }
+
+        {
+            let mut cache = self.poly_rest_quotes.write();
+            let mut ws_at = self.poly_ws_quote_at.write();
+            for (market_id, price_a, price_b) in cache_updates {
+                ws_at.insert(market_id.clone(), received_at);
+                cache.insert(
+                    market_id,
+                    PolymarketRestQuote { price_a, price_b, received_at },
+                );
+            }
+        }
+        *self.polymarket_last_update_time.write() = Some(Utc::now());
+        *self.polymarket_update_count.write() += updated_indices.len() as u64;
+
+        for idx in &updated_indices {
+            self.calculate_and_notify(*idx);
+        }
+        updated_indices.len()
+    }
+
+    /// Unique native slugs of every matched Polymarket market, for the
+    /// WebSocket subscription.
+    pub fn get_polymarket_slugs(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        self.matched_markets
+            .read()
+            .iter()
+            .map(|m| m.polymarket_market.market_slug.clone())
+            .filter(|slug| seen.insert(slug.clone()))
+            .collect()
     }
 
     fn is_poly_rest_quote_fresh_at(&self, quote: &PolymarketRestQuote, now: Instant) -> bool {
@@ -1049,6 +1154,69 @@ mod tests {
             poly_no_price: 0.5,
             confidence: 1.0,
         }
+    }
+
+    fn test_manager() -> WebSocketManager {
+        let storage = Arc::new(ArbitrageStorage::new(":memory:").unwrap());
+        let manager = WebSocketManager::new(
+            1.0,
+            10.0,
+            1.0,
+            storage,
+            Arc::new(PerformanceMetrics::new()),
+            Duration::from_secs(10),
+        );
+        manager.set_matched_markets(vec![matched_market()]);
+        manager
+    }
+
+    #[tokio::test]
+    async fn polymarket_ws_quote_maps_each_competitor_to_its_own_side() {
+        let manager = test_manager();
+        // Fixture: LAL (team_a) = Long, MEM (team_b) = Short.
+        assert_eq!(manager.update_polymarket_ws_quote("lal-mem-2026-08-17", 0.31, 0.71), 1);
+        let m = manager.matched_markets.read()[0].clone();
+        assert_eq!(m.polymarket_market.price_a, 0.31);
+        assert_eq!(m.polymarket_market.price_b, 0.71);
+        // Tracked competitor is LAL: yes = its long quote, no = the other.
+        assert_eq!(m.poly_yes_price, 0.31);
+        assert_eq!(m.poly_no_price, 0.71);
+        assert!(manager.poly_rest_quotes.read().contains_key("poly-market"));
+    }
+
+    #[tokio::test]
+    async fn polymarket_ws_quote_for_an_unknown_slug_is_ignored() {
+        let manager = test_manager();
+        assert_eq!(manager.update_polymarket_ws_quote("other-slug", 0.31, 0.71), 0);
+        assert!(manager.poly_rest_quotes.read().is_empty());
+    }
+
+    #[tokio::test]
+    async fn older_rest_snapshot_does_not_overwrite_a_newer_ws_quote() {
+        let manager = test_manager();
+        let fetch_started = Instant::now();
+        std::thread::sleep(Duration::from_millis(5));
+        manager.update_polymarket_ws_quote("lal-mem-2026-08-17", 0.31, 0.71);
+
+        let stale_rest = PolymarketMarket {
+            price_a: 0.50,
+            price_b: 0.50,
+            ..matched_market().polymarket_market
+        };
+        manager.update_polymarket_rest_quotes_at(&[stale_rest.clone()], fetch_started);
+        assert_eq!(manager.matched_markets.read()[0].poly_yes_price, 0.31);
+        let cached = manager.poly_rest_quotes.read().get("poly-market").cloned().unwrap();
+        assert_eq!((cached.price_a, cached.price_b), (0.31, 0.71));
+
+        // A REST snapshot fetched after the WS quote does win.
+        manager.update_polymarket_rest_quotes_at(&[stale_rest], Instant::now());
+        assert_eq!(manager.matched_markets.read()[0].poly_yes_price, 0.50);
+    }
+
+    #[tokio::test]
+    async fn polymarket_slugs_are_unique() {
+        let manager = test_manager();
+        assert_eq!(manager.get_polymarket_slugs(), vec!["lal-mem-2026-08-17".to_string()]);
     }
 
     #[tokio::test]

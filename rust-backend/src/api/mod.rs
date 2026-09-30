@@ -73,6 +73,10 @@ pub async fn create_app(config: Config) -> Result<Router> {
     service
         .run_kalshi_quote_refresh(config.settings.refresh_interval)
         .await;
+    match crate::clients::polymarket::resolve_credentials(&config.polymarket) {
+        Ok((key_id, secret_key)) => service.run_polymarket_ws(key_id, secret_key),
+        Err(e) => error!("Polymarket WebSocket disabled, REST polling only: {:#}", e),
+    }
 
     // Initialize Telegram client
     let telegram_client = Arc::new(TelegramClient::new(config.telegram.clone()));

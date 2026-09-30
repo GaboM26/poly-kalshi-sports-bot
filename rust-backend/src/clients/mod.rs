@@ -7,7 +7,8 @@
 
 pub mod kalshi;
 pub mod polymarket;
-mod polymarket_auth;
+pub mod polymarket_ws;
+pub mod polymarket_auth;
 
 pub use kalshi::{KalshiClient, KalshiMarketQuote, KalshiOrderResult};
 pub use polymarket::{

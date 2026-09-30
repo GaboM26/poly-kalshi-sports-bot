@@ -588,3 +588,29 @@ summary.
   `config.example.toml` is the template to update when adding new settings.
 - Default dev ports: frontend `5173`, Rust API `8000`. Keep these aligned
   across services if changed.
+
+## Session log (2026-09-29, continued) — faster detection: Polymarket WebSocket
+
+**Why:** detection was entirely REST-polled (~3s per exchange, the Poly poll
+itself often 4s+ for 360 markets), and the Kalshi WS prices never fed
+detection (`is_market_ready` needs fresh REST quotes on both sides). A price
+move could sit unseen 3–4s.
+
+**Done:** `clients/polymarket_ws.rs` streams
+`wss://api.polymarket.us/v1/ws/markets` (Ed25519 headers, same signing as
+REST, `SUBSCRIPTION_TYPE_MARKET_DATA_LITE`, ≤100 slugs/subscription,
+reconnect with 1s→30s backoff, 30s silence watchdog, new slugs subscribed
+every 5s). `longQuote`/`shortQuote` were verified live to equal the
+gateway's per-side `marketSides[].quote` (11/12 identical, the 12th was
+live movement). `WebSocketManager::update_polymarket_ws_quote` maps each
+competitor to its own native side, updates the existing quote cache, and
+calls `calculate_and_notify` immediately. REST polling stays as fallback and
+for ended-market detection; `update_polymarket_rest_quotes_at` won't let a
+REST snapshot fetched *before* a WS quote overwrite it. `MIN_REST_QUOTE_
+REFRESH_SECS` lowered 3→1 (configured `refresh_interval` is still 3 —
+lowering it multiplies Kalshi REST and Polymarket gateway request volume).
+78 lib tests pass. **Not yet observed running live end-to-end** (WS-driven
+detection in the app's own logs), and `min_duration_ms` (500) is untouched.
+Kalshi-side detection is still REST-polled; using the Kalshi WS book to
+trigger detection is the remaining lever.
+`examples/probe_polymarket_ws.rs` is a read-only WS-vs-REST comparison.
