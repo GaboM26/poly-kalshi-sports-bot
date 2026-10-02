@@ -17,6 +17,25 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
   
   // Sort option.
   const [sortBy, setSortBy] = useState<SortOption>('profit');
+
+  // Live-only filter (remembered per browser; storage may be unavailable).
+  const [liveOnly, setLiveOnly] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('opportunityList.liveOnly') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleLiveOnly = () => {
+    setLiveOnly((prev) => {
+      try {
+        localStorage.setItem('opportunityList.liveOnly', prev ? '0' : '1');
+      } catch {
+        // Ignore: the filter still works for this session.
+      }
+      return !prev;
+    });
+  };
   
   // Execution state.
   const [executingKey, setExecutingKey] = useState<string | null>(null);
@@ -194,7 +213,9 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
   const oppCount = matchedMarkets.filter(m => m.has_opportunity).length;
 
   // Sort markets.
-  const sortedMarkets = [...matchedMarkets].sort((a, b) => {
+  const liveCount = matchedMarkets.filter(m => m.polymarket_live).length;
+  const visibleMarkets = liveOnly ? matchedMarkets.filter(m => m.polymarket_live) : matchedMarkets;
+  const sortedMarkets = [...visibleMarkets].sort((a, b) => {
     switch (sortBy) {
       case 'profit':
         // Descending profit margin, with opportunities first.
@@ -254,6 +275,17 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
           >
             🏀 Team
           </button>
+          <button
+            onClick={toggleLiveOnly}
+            title="Show only games Polymarket reports as in play"
+            className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+              liveOnly
+                ? 'bg-red-500 text-white'
+                : 'bg-[--bg-secondary] text-[--text-secondary] hover:bg-[--bg-primary]'
+            }`}
+          >
+            🔴 Live ({liveCount})
+          </button>
         </div>
       </div>
 
@@ -298,11 +330,20 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                       <span className="text-[--text-primary] font-medium truncate max-w-[100px] block" title={market.event_name}>
                         {market.event_name}
                       </span>
-                      {market.game_date && (
+                      {market.polymarket_live ? (
+                        <span
+                          className={`text-[9px] font-semibold ${
+                            market.polymarket_period === 'SUS' ? 'text-amber-400' : 'text-red-400'
+                          }`}
+                          title={market.polymarket_period === 'SUS' ? 'Game suspended' : 'In play'}
+                        >
+                          ● LIVE{market.polymarket_period ? ` · ${market.polymarket_period}` : ''}
+                        </span>
+                      ) : market.game_date ? (
                         <span className="text-[9px] text-[--text-muted]" title={`Game date: ${market.game_date}`}>
                           {market.game_date}
                         </span>
-                      )}
+                      ) : null}
                     </div>
                   </td>
 

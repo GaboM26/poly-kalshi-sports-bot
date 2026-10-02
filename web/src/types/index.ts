@@ -73,6 +73,10 @@ export interface MatchedMarketData {
   polymarket_market_slug: string;
   polymarket_team_position_side: 'long' | 'short';
   polymarket_opponent_position_side: 'long' | 'short';
+  /** Polymarket reports the game as in play. */
+  polymarket_live?: boolean;
+  /** Game period/clock from Polymarket, e.g. 'P2', 'Bot 4th', 'SUS' (suspended). */
+  polymarket_period?: string;
   polymarket_opponent_name: string;
   kalshi_yes_price: number;
   kalshi_no_price: number;
@@ -325,6 +329,12 @@ export interface PositionLeg {
 
 export interface PositionCard {
   kind: 'paired' | 'standalone';
+  /**
+   * How a paired card's legs were matched: 'bot_trade' = opened by the
+   * auto-trader (from its trade history); 'market_match' = recognised from
+   * the matcher's market mapping (placed manually / outside the bot).
+   */
+  paired_by: 'bot_trade' | 'market_match' | null;
   event_name: string | null;
   legs: PositionLeg[];
   total_cost: number;

@@ -135,6 +135,14 @@ pub struct PolymarketMarket {
     /// Trading volume
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<f64>,
+    /// Polymarket's own in-play flag for the event (`live` in the events
+    /// feed). False when absent or the game hasn't started.
+    #[serde(default)]
+    pub live: bool,
+    /// Game clock/period label from the same feed ("NS" = not started,
+    /// "P2", "Bot 4th", "S2", "SUS" = suspended, "FT" = finished, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period: Option<String>,
 }
 
 impl PolymarketMarket {
@@ -464,6 +472,11 @@ pub struct MatchedMarketFrontend {
     pub polymarket_opponent_name: String,
     /// Native position for the opposing competitor.
     pub polymarket_opponent_position_side: PolymarketPositionSide,
+    /// Polymarket reports the game as in play.
+    pub polymarket_live: bool,
+    /// Game period/clock label from Polymarket ("P2", "Bot 4th", "SUS"...).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub polymarket_period: Option<String>,
     pub kalshi_yes_price: f64,
     pub kalshi_no_price: f64,
     pub poly_yes_price: f64,

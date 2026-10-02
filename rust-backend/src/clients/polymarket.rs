@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use reqwest::header::HeaderMap;
 use reqwest::{Client, Method, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -190,6 +191,20 @@ impl PolymarketClient {
         signed_path: Option<&str>,
         body: Option<&Value>,
     ) -> Result<Value> {
+        self.request_json_with_headers(method, url, signed_path, body)
+            .await
+            .map(|(json, _)| json)
+    }
+
+    /// `request_json`, also returning the response headers (the market book
+    /// fetch needs them to tell an origin response from a CDN-cached one).
+    async fn request_json_with_headers(
+        &self,
+        method: Method,
+        url: &str,
+        signed_path: Option<&str>,
+        body: Option<&Value>,
+    ) -> Result<(Value, HeaderMap)> {
         let mut attempt = 0u32;
         loop {
             let mut builder = self.http.request(method.clone(), url);
@@ -232,15 +247,17 @@ impl PolymarketClient {
                 continue;
             }
 
+            let headers = response.headers().clone();
             let text = response.text().await.unwrap_or_default();
             if !status.is_success() {
                 anyhow::bail!(concise_api_error(status, &text));
             }
             if text.trim().is_empty() {
-                return Ok(json!({}));
+                return Ok((json!({}), headers));
             }
-            return serde_json::from_str(&text)
-                .with_context(|| format!("Failed to parse Polymarket US response: {}", text));
+            let json = serde_json::from_str(&text)
+                .with_context(|| format!("Failed to parse Polymarket US response: {}", text))?;
+            return Ok((json, headers));
         }
     }
 
@@ -438,7 +455,18 @@ impl PolymarketClient {
                     "TENNIS" => parse_tennis_match_winner_market(event_date, market_data),
                     _ => None,
                 };
-                if let Some((event, market)) = parsed {
+                if let Some((mut event, mut market)) = parsed {
+                    // In-play state lives on the event, not the market.
+                    let live = api_event["live"].as_bool().unwrap_or(false);
+                    let period = api_event["period"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_string);
+                    for m in event.market.iter_mut().chain(std::iter::once(&mut market)) {
+                        m.live = live;
+                        m.period = period.clone();
+                    }
                     events.push(event);
                     markets.push(market);
                 }
@@ -484,6 +512,14 @@ impl PolymarketClient {
     /// Submit a FAK order and retain explicit acceptance/fill information for
     /// paired-execution recovery. Transport failures remain errors; exchange
     /// rejections and zero fills are returned for durable recording.
+    ///
+    /// `price` is the price of the `position_side` being traded (a SHORT
+    /// order's price is the NO price), and the returned `average_fill_price`
+    /// is in those same terms. On the wire Polymarket US prices every order
+    /// on the YES book instead - "buy NO at $0.40" is "sell YES at $0.60"
+    /// (docs.polymarket.us/concepts/orders) - so both are converted here.
+    /// Sending the NO price unconverted turned a BUY_SHORT limit into a
+    /// near-meaningless "sell YES at >= NO price" order.
     pub async fn submit_limit_order(
         &self,
         market_slug: &str,
@@ -502,6 +538,21 @@ impl PolymarketClient {
             anyhow::bail!("Polymarket US limit order requires a slug, positive whole contract count, limit price, and buy or sell action");
         }
 
+        // Cached for an hour and already loaded by sizing on the paired
+        // path. Without it the price is still snapped to 0.0001, which
+        // removes float noise without moving it.
+        let tick_size = match self.market_constraints(market_slug).await {
+            Ok((_, tick_size)) => tick_size,
+            Err(error) => {
+                warn!(
+                    "Polymarket US tick size lookup failed for {}; formatting at 0.0001: {:#}",
+                    market_slug, error
+                );
+                None
+            }
+        };
+        let wire_price = format_order_price(yes_book_price(position_side, price), tick_size)?;
+
         // `quantity` is a JSON integer here because `contracts` is already
         // `i32` - the SDK's own type stubs declare `quantity: int`, and a
         // prior bug sent a JSON float (`5.0`) through the old Python hop,
@@ -515,7 +566,7 @@ impl PolymarketClient {
             "marketSlug": market_slug,
             "intent": intent,
             "type": "ORDER_TYPE_LIMIT",
-            "price": {"value": price.to_string(), "currency": "USD"},
+            "price": {"value": wire_price, "currency": "USD"},
             "quantity": contracts,
             "tif": "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL",
             "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
@@ -531,22 +582,49 @@ impl PolymarketClient {
             .context("Failed to submit Polymarket US limit order")?;
         let latency_ms = started.elapsed().as_millis() as i64;
 
-        Ok(parse_polymarket_order_result(&response, latency_ms, &body))
+        Ok(parse_polymarket_order_result(
+            &response,
+            latency_ms,
+            &body,
+            position_side,
+        ))
     }
 
-    /// Retrieve a fresh book directly from the Polymarket US gateway. This
-    /// must be called immediately before an automated paired order; display
-    /// quotes and cached account data are deliberately not substitutes.
+    /// Retrieve a fresh book directly from the Polymarket US gateway.
+    ///
+    /// The gateway serves this endpoint through Cloudflare with
+    /// `cache-control: public, max-age=30`, so a plain GET returns whatever
+    /// snapshot the edge cached, up to 30s old (measured live on in-play
+    /// markets) - the cause of the zero-fill IOC orders that surfaced as
+    /// `ORD_REJECT_REASON_EXCHANGE_OPTION`. A unique query string forces an
+    /// origin fetch, and the response's CDN headers are checked so that a
+    /// cached copy is refused rather than silently trusted if that ever
+    /// stops working.
     pub async fn get_market_book(&self, market_slug: &str) -> Result<PolymarketMarketBook> {
         if market_slug.trim().is_empty() {
             anyhow::bail!("Polymarket US market slug cannot be empty");
         }
         let base = self.config.base_url.trim_end_matches('/');
-        let url = format!("{}/v1/markets/{}/book", base, market_slug);
-        let response = self
-            .request_json(Method::GET, &url, None, None)
+        let url = format!(
+            "{}/v1/markets/{}/book?fresh={}",
+            base,
+            market_slug,
+            cache_busting_nonce()
+        );
+        let (response, headers) = self
+            .request_json_with_headers(Method::GET, &url, None, None)
             .await
             .context("Failed to retrieve Polymarket US market book")?;
+        if let Some(reason) = cdn_cached_reason(
+            headers.get("cf-cache-status").and_then(|v| v.to_str().ok()),
+            headers.get("age").and_then(|v| v.to_str().ok()),
+        ) {
+            anyhow::bail!(
+                "Polymarket US market book for {} was {}; refusing to treat it as fresh",
+                market_slug,
+                reason
+            );
+        }
         let mut book = build_market_book(&response, market_slug)?;
 
         // Cached after the first lookup, so this normally costs nothing
@@ -572,10 +650,16 @@ impl PolymarketClient {
     /// `minimumTradeQty` / `orderPriceMinTickSize` for a market, cached for
     /// an hour (docs.polymarket.us/api-reference/orders/overview:
     /// "constraints are market-dependent - retrieve ... before order
-    /// submission").
-    async fn market_constraints(&self, market_slug: &str) -> Result<(Option<f64>, Option<f64>)> {
-        let mut cache = self.market_constraints_cache.lock().await;
-        if let Some((cached_at, min_qty, tick_size)) = cache.get(market_slug) {
+    /// submission"). The cache lock is not held across the HTTP call, so a
+    /// first-time lookup for one market never stalls a cached lookup for
+    /// another on the order path.
+    pub async fn market_constraints(
+        &self,
+        market_slug: &str,
+    ) -> Result<(Option<f64>, Option<f64>)> {
+        if let Some((cached_at, min_qty, tick_size)) =
+            self.market_constraints_cache.lock().await.get(market_slug)
+        {
             if cached_at.elapsed() < MARKET_CONSTRAINTS_CACHE_TTL {
                 return Ok((*min_qty, *tick_size));
             }
@@ -588,7 +672,10 @@ impl PolymarketClient {
         let min_qty = market.and_then(|m| amount_as_f64(&m["minimumTradeQty"]));
         let tick_size = market.and_then(|m| amount_as_f64(&m["orderPriceMinTickSize"]));
 
-        cache.insert(market_slug.to_string(), (Instant::now(), min_qty, tick_size));
+        self.market_constraints_cache
+            .lock()
+            .await
+            .insert(market_slug.to_string(), (Instant::now(), min_qty, tick_size));
         Ok((min_qty, tick_size))
     }
 
@@ -785,16 +872,131 @@ fn concise_api_error(status: StatusCode, body_text: &str) -> String {
     format!("Polymarket US API error {}: {}", status, truncated)
 }
 
+/// Polymarket US quotes every order price, and every fill's `avgPx`, on the
+/// YES (long) book: "buy NO at $0.40" is "sell YES at $0.60"
+/// (docs.polymarket.us/concepts/orders). Converts a price for
+/// `position_side` to that YES-book price - and, since the conversion is its
+/// own inverse, a YES-book price back to the `position_side` price.
+pub fn yes_book_price(position_side: PolymarketPositionSide, price: f64) -> f64 {
+    match position_side {
+        PolymarketPositionSide::Long => price,
+        PolymarketPositionSide::Short => 1.0 - price,
+    }
+}
+
+/// Snap a limit price to the market's tick (0.0001 when unknown, which only
+/// strips float noise) and render it as a plain decimal string. `1.0 - 0.56`
+/// must go out as "0.44", never "0.43999999999999995" - the exchange
+/// silently truncated that to 0.43.
+pub fn format_order_price(price: f64, tick_size: Option<f64>) -> Result<String> {
+    let tick = tick_size
+        .filter(|tick| tick.is_finite() && *tick > 0.0 && *tick < 1.0)
+        .unwrap_or(0.0001);
+    let decimals = ((-tick.log10()) - 1e-9).ceil().clamp(0.0, 8.0) as usize;
+    let snapped = (price / tick).round() * tick;
+    if !snapped.is_finite() || snapped <= 0.0 || snapped >= 1.0 {
+        anyhow::bail!(
+            "Polymarket US limit price {} falls outside (0, 1) once snapped to tick {}",
+            price,
+            tick
+        );
+    }
+    Ok(format!("{:.*}", decimals, snapped))
+}
+
+/// Why a response must not be trusted as fresh market data, if the CDN
+/// served it from cache (`None` for an origin response). `cf-cache-status`
+/// HIT/STALE/UPDATING all mean an edge copy was returned instead of origin.
+fn cdn_cached_reason(cache_status: Option<&str>, age: Option<&str>) -> Option<String> {
+    let status = cache_status.map(|status| status.trim().to_ascii_uppercase());
+    let age_secs = age.and_then(|age| age.trim().parse::<u64>().ok());
+    if matches!(status.as_deref(), Some("HIT" | "STALE" | "UPDATING")) {
+        return Some(format!(
+            "served from the CDN cache (cf-cache-status {}, age {}s)",
+            status.unwrap_or_default(),
+            age_secs.map_or_else(|| "?".to_string(), |age| age.to_string())
+        ));
+    }
+    match age_secs {
+        Some(age) if age > 1 => Some(format!("a {}s-old cached copy", age)),
+        _ => None,
+    }
+}
+
+/// A query value no other request has used, so the CDN can't answer it
+/// from cache.
+fn cache_busting_nonce() -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{nanos}-{count}")
+}
+
+/// Explain an order that filled nothing. `orderRejectReason` is serialized on
+/// *every* execution and its zero value is `ORD_REJECT_REASON_EXCHANGE_OPTION`,
+/// so on an accepted order (`EXECUTION_TYPE_NEW`) or an IOC that simply
+/// expired it is a default, not a reason - it only means something on an
+/// actual rejection. Reporting it unconditionally made every zero-fill IOC
+/// look like an exchange rejection.
+fn unfilled_order_reason(executions: &[Value], order: &Value, request_body: &Value) -> String {
+    let execution_type = |execution: &Value| {
+        execution
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let state = order
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let rejection = executions
+        .iter()
+        .find(|execution| execution_type(execution) == "EXECUTION_TYPE_REJECTED")
+        .or_else(|| (state == "ORDER_STATE_REJECTED").then(|| executions.last()).flatten());
+    if let Some(rejection) = rejection {
+        let code = rejection
+            .get("orderRejectReason")
+            .and_then(Value::as_str)
+            .unwrap_or("no reason given");
+        return match rejection
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            Some(text) => format!("Polymarket US rejected the order: {} ({})", code, text),
+            None => format!("Polymarket US rejected the order: {}", code),
+        };
+    }
+
+    let expired = state == "ORDER_STATE_EXPIRED"
+        || executions
+            .iter()
+            .any(|execution| execution_type(execution) == "EXECUTION_TYPE_EXPIRED");
+    if expired {
+        let limit = request_body["price"]["value"].as_str().unwrap_or("?");
+        format!(
+            "Order expired unfilled: nothing was resting at or better than its limit (YES-book price {}) when it reached the exchange",
+            limit
+        )
+    } else {
+        format!("Order received no fill (state: {})", state)
+    }
+}
+
 /// Convert the raw `/v1/orders` execution envelope into an explicit order
 /// result. Unlike the old Python order-service hop this replaced, a non-fill
-/// logs the full outgoing request and raw
-/// response at `warn!` - previously only a fill was logged anywhere, which
-/// left rejections like `ORD_REJECT_REASON_EXCHANGE_OPTION` with no trace
-/// of what was actually sent.
+/// logs the full outgoing request and raw response at `warn!`, so there is
+/// always a record of exactly what was sent.
 fn parse_polymarket_order_result(
     response: &Value,
     latency_ms: i64,
     request_body: &Value,
+    position_side: PolymarketPositionSide,
 ) -> PolymarketOrderResult {
     let executions = response.get("executions").and_then(Value::as_array);
     let Some(executions) = executions.filter(|executions| !executions.is_empty()) else {
@@ -847,7 +1049,11 @@ fn parse_polymarket_order_result(
     let filled = amount_as_f64(&order["cumQuantity"]).unwrap_or(0.0);
 
     if filled > 0.0 {
-        let average_fill_price = extract_average_fill_price(response);
+        // `avgPx` is on the YES book like the order price; report it in
+        // the traded side's terms so entry prices and the neutralization
+        // loss bound compare like with like.
+        let average_fill_price = extract_average_fill_price(response)
+            .map(|yes_price| yes_book_price(position_side, yes_price));
         let fill_quantity_valid = filled.is_finite()
             && filled >= 0.0
             && filled.fract() == 0.0
@@ -877,17 +1083,7 @@ fn parse_polymarket_order_result(
         };
     }
 
-    let reject_code = execution.get("orderRejectReason").and_then(Value::as_str);
-    let reject_text = execution.get("text").and_then(Value::as_str);
-    let error = match (reject_code, reject_text) {
-        (Some(code), Some(text)) if code != text => format!("{}: {}", code, text),
-        (Some(code), _) => code.to_string(),
-        (None, Some(text)) => text.to_string(),
-        (None, None) => format!(
-            "Order received no fill (state: {})",
-            status.as_deref().unwrap_or("unknown")
-        ),
-    };
+    let error = unfilled_order_reason(executions, order, request_body);
     warn!(
         "Polymarket US order not filled: order_id={:?} status={:?} error={} request={} response={}",
         order_id, status, error, request_body, response
@@ -1146,6 +1342,8 @@ fn build_competitor_market(
         team_b_position: side_b.position_side,
         start_time,
         volume,
+        live: false,
+        period: None,
     };
     let event = PolymarketEvent {
         event_id: condition_id,
@@ -1351,5 +1549,163 @@ mod tests {
         });
 
         assert_eq!(extract_average_fill_price(&response), Some(0.625));
+    }
+
+    #[test]
+    fn short_orders_are_priced_on_the_yes_book() {
+        // Buying NO at 0.44 is selling YES at 0.56.
+        assert!((yes_book_price(PolymarketPositionSide::Short, 0.44) - 0.56).abs() < 1e-9);
+        assert_eq!(yes_book_price(PolymarketPositionSide::Long, 0.44), 0.44);
+        // The conversion is its own inverse (fill prices come back on the
+        // YES book too).
+        let round_trip = yes_book_price(
+            PolymarketPositionSide::Short,
+            yes_book_price(PolymarketPositionSide::Short, 0.37),
+        );
+        assert!((round_trip - 0.37).abs() < 1e-12);
+    }
+
+    #[test]
+    fn order_prices_are_snapped_to_tick_without_float_noise() {
+        // The exact values sent live on 2026-09-29, which the exchange
+        // truncated to 0.43 and 0.67.
+        assert_eq!(format_order_price(1.0 - 0.56, Some(0.01)).unwrap(), "0.44");
+        assert_eq!(format_order_price(1.0 - 0.32, Some(0.01)).unwrap(), "0.68");
+        assert_eq!(format_order_price(0.5, Some(0.01)).unwrap(), "0.50");
+        // Sub-cent tick markets exist (e.g. 0.411 / 0.413 books).
+        assert_eq!(format_order_price(0.411, Some(0.001)).unwrap(), "0.411");
+        // Unknown tick: only noise is removed, the price is not moved.
+        assert_eq!(format_order_price(1.0 - 0.56, None).unwrap(), "0.4400");
+        assert_eq!(format_order_price(0.4115, None).unwrap(), "0.4115");
+        // Nonsense ticks fall back to the same safe resolution.
+        assert_eq!(format_order_price(0.44, Some(0.0)).unwrap(), "0.4400");
+        // Snapping must never produce a price outside (0, 1).
+        assert!(format_order_price(0.996, Some(0.01)).is_err());
+        assert!(format_order_price(0.004, Some(0.01)).is_err());
+    }
+
+    /// The real response to order CV9F74QA0YGE (2026-10-01): accepted, then
+    /// expired unfilled, with the enum default on both executions.
+    fn expired_ioc_response() -> Value {
+        let execution = |id: &str, kind: &str, leaves: i64| {
+            json!({
+                "aggressor": false,
+                "id": id,
+                "order": {
+                    "action": "ORDER_ACTION_BUY",
+                    "avgPx": {"currency": "USD", "value": "0.0000"},
+                    "cumQuantity": 0,
+                    "id": "CV9F74QA0YGE",
+                    "intent": "ORDER_INTENT_BUY_LONG",
+                    "leavesQuantity": leaves,
+                    "marketSlug": "aec-itfme-arysha-evabyn-2026-10-01",
+                    "price": {"currency": "USD", "value": "0.5"},
+                    "quantity": 10,
+                    "state": if kind == "EXECUTION_TYPE_NEW" { "ORDER_STATE_NEW" } else { "ORDER_STATE_EXPIRED" }
+                },
+                "orderRejectReason": "ORD_REJECT_REASON_EXCHANGE_OPTION",
+                "text": "",
+                "type": kind
+            })
+        };
+        json!({"executions": [
+            execution("CV9W79QCJYHR", "EXECUTION_TYPE_NEW", 10),
+            execution("CV9W79QCMYHR", "EXECUTION_TYPE_EXPIRED", 0)
+        ]})
+    }
+
+    fn limit_request(price: &str) -> Value {
+        json!({"price": {"value": price, "currency": "USD"}})
+    }
+
+    #[test]
+    fn an_expired_ioc_is_not_reported_as_an_exchange_rejection() {
+        let result = parse_polymarket_order_result(
+            &expired_ioc_response(),
+            134,
+            &limit_request("0.50"),
+            PolymarketPositionSide::Long,
+        );
+        assert_eq!(result.filled_contracts, 0);
+        assert!(result.accepted, "the exchange accepted the order");
+        assert_eq!(result.order_id.as_deref(), Some("CV9F74QA0YGE"));
+        let error = result.error.unwrap();
+        assert!(!error.contains("EXCHANGE_OPTION"), "{error}");
+        assert!(error.contains("expired unfilled"), "{error}");
+        assert!(error.contains("0.50"), "{error}");
+    }
+
+    #[test]
+    fn a_real_rejection_reports_its_reason_and_text() {
+        let response = json!({"executions": [{
+            "order": {"id": "X1", "cumQuantity": 0, "state": "ORDER_STATE_REJECTED"},
+            "orderRejectReason": "ORD_REJECT_REASON_EXCHANGE_CLOSED",
+            "text": "Book is SUSPENDED",
+            "type": "EXECUTION_TYPE_REJECTED"
+        }]});
+        let error = parse_polymarket_order_result(
+            &response,
+            50,
+            &limit_request("0.50"),
+            PolymarketPositionSide::Long,
+        )
+        .error
+        .unwrap();
+        assert!(error.contains("ORD_REJECT_REASON_EXCHANGE_CLOSED"), "{error}");
+        assert!(error.contains("Book is SUSPENDED"), "{error}");
+    }
+
+    #[test]
+    fn a_short_fill_price_is_converted_off_the_yes_book() {
+        // Order CSDJ2WV62YB5 (2026-09-29): BUY_SHORT filled at avgPx 0.49 on
+        // the YES book, i.e. NO cost 0.51 (position cost basis confirmed it).
+        let response = json!({"executions": [{
+            "order": {
+                "id": "CSDJ2WV62YB5",
+                "cumQuantity": 10,
+                "state": "ORDER_STATE_FILLED",
+                "avgPx": {"currency": "USD", "value": "0.4900"}
+            },
+            "type": "EXECUTION_TYPE_FILL"
+        }]});
+        let short = parse_polymarket_order_result(
+            &response,
+            199,
+            &limit_request("0.56"),
+            PolymarketPositionSide::Short,
+        );
+        assert_eq!(short.filled_contracts, 10);
+        assert!((short.average_fill_price.unwrap() - 0.51).abs() < 1e-9);
+        assert!(short.error.is_none());
+
+        let long = parse_polymarket_order_result(
+            &response,
+            199,
+            &limit_request("0.49"),
+            PolymarketPositionSide::Long,
+        );
+        assert!((long.average_fill_price.unwrap() - 0.49).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cdn_cached_market_data_is_refused() {
+        assert!(cdn_cached_reason(Some("HIT"), Some("12")).is_some());
+        assert!(cdn_cached_reason(Some("hit"), None).is_some());
+        assert!(cdn_cached_reason(Some("STALE"), None).is_some());
+        assert!(cdn_cached_reason(Some("UPDATING"), None).is_some());
+        assert!(cdn_cached_reason(None, Some("25")).is_some());
+        // Origin responses.
+        assert!(cdn_cached_reason(Some("MISS"), None).is_none());
+        assert!(cdn_cached_reason(Some("EXPIRED"), None).is_none());
+        assert!(cdn_cached_reason(Some("REVALIDATED"), None).is_none());
+        assert!(cdn_cached_reason(Some("BYPASS"), None).is_none());
+        assert!(cdn_cached_reason(Some("DYNAMIC"), Some("0")).is_none());
+        assert!(cdn_cached_reason(None, None).is_none());
+    }
+
+    #[test]
+    fn cache_busting_nonces_never_repeat() {
+        let nonces: HashSet<String> = (0..1000).map(|_| cache_busting_nonce()).collect();
+        assert_eq!(nonces.len(), 1000);
     }
 }

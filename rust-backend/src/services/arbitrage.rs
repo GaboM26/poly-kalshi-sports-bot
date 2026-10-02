@@ -296,9 +296,46 @@ impl ArbitrageService {
                     crate::clients::polymarket_ws::PolyWsEvent::Book(book) => {
                         ws_manager.update_polymarket_ws_book(book);
                     }
+                    crate::clients::polymarket_ws::PolyWsEvent::Connected => {
+                        ws_manager.on_polymarket_ws_connected();
+                    }
+                    crate::clients::polymarket_ws::PolyWsEvent::Heartbeat => {
+                        ws_manager.note_polymarket_ws_frame();
+                    }
+                    crate::clients::polymarket_ws::PolyWsEvent::Disconnected => {
+                        ws_manager.on_polymarket_ws_disconnected();
+                    }
                 },
             )
             .await;
+        });
+    }
+
+    /// Log one line a minute showing whether each WebSocket is delivering:
+    /// message rates and how many matched markets got a push recently. A
+    /// stream that silently stops shows up as a rate of 0.
+    pub fn run_ws_stats_reporter(&self) {
+        let ws_manager = self.ws_manager.clone();
+        tokio::spawn(async move {
+            const PERIOD: Duration = Duration::from_secs(60);
+            let mut interval = tokio::time::interval(PERIOD);
+            interval.tick().await; // first tick fires immediately
+            let mut last = ws_manager.ws_stats(PERIOD);
+            loop {
+                interval.tick().await;
+                let now = ws_manager.ws_stats(PERIOD);
+                info!(
+                    "📶 WS last 60s: Polymarket {} quotes + {} books ({}/{} markets pushed), Kalshi {} book updates ({}/{} markets)",
+                    now.poly_quote_msgs - last.poly_quote_msgs,
+                    now.poly_book_msgs - last.poly_book_msgs,
+                    now.poly_markets_recent,
+                    now.markets_total,
+                    now.kalshi_msgs - last.kalshi_msgs,
+                    now.kalshi_markets_recent,
+                    now.markets_total,
+                );
+                last = now;
+            }
         });
     }
 

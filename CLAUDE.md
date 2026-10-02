@@ -20,12 +20,13 @@ confidence. Priorities when helping:
 - Treat any bug in this path as potentially money-losing. Confirm fixes
   against the invariants below rather than assuming a plausible-looking
   change is correct.
-- As of 2026-09-29, the `ORD_REJECT_REASON_EXCHANGE_OPTION` blocker that
-  prevented every order from ever filling is resolved and confirmed against
-  a real live fill (see that session log below) — read it before assuming
-  order submission is still broken. Check `git status` before reasoning
-  about "current" behavior generally; this file's session logs describe
-  work as it happened, not necessarily what's still uncommitted now.
+- `ORD_REJECT_REASON_EXCHANGE_OPTION` was root-caused on 2026-10-01 (see
+  that session log — it supersedes the 2026-09-29 "root cause", which was a
+  coincidence): it is the reject-reason enum's default value, not a
+  rejection; the orders were IOCs expiring unfilled against a Polymarket
+  book served from a 30s Cloudflare cache. Check `git status` before
+  reasoning about "current" behavior generally; this file's session logs
+  describe work as it happened, not necessarily what's still uncommitted now.
 
 ## Session log (2026-09-24) — read this before continuing
 
@@ -306,7 +307,15 @@ false on multiple occurrences, the staleness theory is wrong and the
 becomes the next thing to check, likely requiring Polymarket support
 contact since it isn't something log-reading alone can resolve.
 
-## Session log (2026-09-29) — ROOT CAUSE FOUND: `manualOrderIndicator` must be `AUTOMATIC`
+## Session log (2026-09-29) — ~~ROOT CAUSE FOUND: `manualOrderIndicator` must be `AUTOMATIC`~~
+
+> **Corrected 2026-10-01 — this conclusion was wrong.** Three paired orders
+> had already filled at 00:43 that day while still sending `MANUAL` (same
+> process that logged `MANUAL` at 00:48), and the exchange records *every*
+> API order as `AUTOMATIC` regardless of what is sent. The "first fill after
+> the fix" was simply a pre-game order. The staleness theory below was
+> "ruled out" only because both the sizing fetch and the post-rejection
+> re-check read the same 30s Cloudflare-cached book. See the 2026-10-01 log.
 
 **Resolved.** The 2026-09-28 staleness instrumentation immediately paid off:
 the first real rejection it caught showed `book_age_ms_at_submit=19` and
@@ -463,7 +472,8 @@ REST quote endpoint already used elsewhere
 (`clients/kalshi.rs::get_market_quotes`) for a live mark; entry price is
 `market_exposure_dollars / abs(position_fp)`.
 
-**Pairing decision:** match on the full tuple `(kalshi_market_id,
+**Pairing decision (extended 2026-10-01 — history alone missed manual
+hedges, see that log):** match on the full tuple `(kalshi_market_id,
 kalshi_side, polymarket_market_id, polymarket_side)` against this bot's own
 trade history (`ArbitrageStorage::get_auto_trade_history`, already exists —
 no new endpoint needed for the history read itself), using only the most
@@ -543,9 +553,18 @@ summary.
 - **Kalshi signing**: sign the path only, exclude query params.
 - **Polymarket order responses**: read fills from `executions[].order`
   (e.g. `.avgPx`), never from the top-level response envelope.
-- **Polymarket depth**: only from `/v1/markets/{market_slug}/book`
-  (`clients/polymarket.rs::get_market_book`) — never gateway display quotes,
-  account caches, or the non-US CLOB API.
+- **Polymarket depth** (changed 2026-10-01 with user sign-off): only via
+  `services/paired_execution.rs::executable_polymarket_book` — the live
+  WebSocket full book while its connection is provably current
+  (`WebSocketManager::fresh_polymarket_book`), else one origin-fresh
+  `/v1/markets/{market_slug}/book` (`get_market_book` cache-busts and refuses
+  a CDN-cached response). Market must be `MARKET_STATE_OPEN`. Never a
+  CDN-cached gateway response, gateway display quotes, account caches, or
+  the non-US CLOB API.
+- **Polymarket prices are YES-book prices** on the wire and in `avgPx`: a
+  SHORT order's NO price must be complemented before sending and its fill
+  complemented back (`yes_book_price`), snapped to tick, sent as a decimal
+  string.
 - **Kalshi depth**: only from a fresh Kalshi WebSocket book at execution
   time. Kalshi size is fixed-point — floor when converting to whole
   contracts, never round up.
@@ -641,3 +660,165 @@ unchanged).** Also fixed along the way: tracking's depth snapshot used the
 tracked team's own native side regardless of Kalshi side; the Polymarket leg
 actually buys the *opponent* when Kalshi is YES (see `OpportunityList.tsx`
 `polymarket_competitor`), so it now uses that side. 82 lib tests pass.
+
+**WS stats line + live-game detection (same day):** `run_ws_stats_reporter`
+logs `📶 WS last 60s: Polymarket N quotes + N books (x/y markets pushed),
+Kalshi N book updates (x/y markets)` every minute — a stream that silently
+stops shows as 0. In-play state: Polymarket's events feed carries `live`
+(bool) and `period` ("NS" not started, "P2", "Bot 4th", "S2", "SUS"
+suspended, "FT" finished) per *event*; checked live across nba/nhl/mlb/atp/
+wta. Now parsed into `PolymarketMarket.live/period`, refreshed every REST
+cycle (even when WS owns prices), exposed as `polymarket_live`/
+`polymarket_period` on the matched-market frontend model. UI: a `● LIVE ·
+period` tag replaces the date under the event name, and a "🔴 Live (N)"
+toggle in `OpportunityList.tsx` filters the list (remembered in
+localStorage). Kalshi has no in-play flag (only `status: active`), so
+"live" = Polymarket's word. **Display only — nothing in auto-trade or
+sizing reads it.** Open question: `SUS` (suspended) games are flagged live;
+auto-trade does not currently skip them. 83 lib tests pass.
+
+## Session log (2026-10-01) — EXCHANGE_OPTION actually root-caused; execution moved to the live WS book
+
+**Root cause (verified against the exchange's own order records via
+read-only `GET /v1/order/{id}` and `/v1/portfolio/activities`, plus live
+header/latency measurements — no orders placed):**
+
+1. **`ORD_REJECT_REASON_EXCHANGE_OPTION` is not a rejection.** It is value 0
+   of the reject-reason enum (first in the documented enum), serialized on
+   every execution — including the `EXECUTION_TYPE_NEW` acceptance. All 14
+   "failed" orders in the logs were `NEW` → `EXPIRED`: accepted IOCs that
+   found nothing at their limit. There has never been an
+   `EXECUTION_TYPE_REJECTED` in the logs. `parse_polymarket_order_result`
+   used to surface the default field as the error.
+2. **Why nothing matched: the book was up to 30s old.** The gateway book
+   (`gateway.polymarket.us/v1/markets/{slug}/book`, and `api.polymarket.us`'s
+   copy of it) is served via Cloudflare with `cache-control: public,
+   max-age=30`; measured live, every request for a market returns the same
+   frozen snapshot until it expires (0–30s old, ~15s on average) while the
+   WS book and a cache-busted request move. `book_age_ms` only measured our
+   own fetch time, and the post-rejection re-check hit the same cache entry
+   — which is how 2026-09-28's instrumentation "ruled out" staleness. Every
+   order placed in-play (13 orders, 7 markets, including a 90¢ buy 26s before
+   a market closed) expired; both pre-game orders filled.
+3. **The 2026-10-01 opportunity itself was a phantom**: born in the same ms
+   as a Polymarket REST quote refresh (the `/v1/events` feed is cached the
+   same way) and gone 90ms later. `update_polymarket_rest_quotes_at` let any
+   REST snapshot *fetched* after a WS quote overwrite it, even though its
+   *contents* could be 30s older.
+4. **BUY_SHORT orders were priced on the wrong side.** Polymarket prices
+   every order on the YES book ("buy NO at $0.40" = "sell YES at $0.60",
+   docs.polymarket.us/concepts/orders); the exchange records a BUY_SHORT as
+   `side: SELL` at our price as given. We sent the NO price, so the limit
+   was nearly meaningless when NO < 0.50 and unfillable when NO > 0.50.
+   `avgPx` is also a YES price. The three 2026-09-29 00:43 auto-trade "arbs"
+   (`aec-itfwo-reigot-katfak`) were planned at NO 0.44 but cost NO 0.5033
+   (position cost basis $15.10 / 30) against Kalshi at 50–51¢ — each pair
+   cost more than $1.00 before fees, i.e. a locked-in loss. Prices were also
+   sent with float noise (`"0.43999999999999995"`), which the exchange
+   truncated.
+
+**Fixes (`cargo test --lib`: 94 pass, 11 new):**
+- `clients/polymarket.rs`: `submit_limit_order` sends `yes_book_price(...)`
+  snapped to the market tick (`format_order_price`; tick from the cached
+  `market_constraints`, 0.0001 if unknown) and converts `avgPx` back for
+  SHORT. `unfilled_order_reason` reports a reject reason only for
+  `EXECUTION_TYPE_REJECTED`/`ORDER_STATE_REJECTED`, else "expired unfilled".
+  `get_market_book` adds a unique `?fresh=` query (forces a CDN miss) and
+  refuses `cf-cache-status` HIT/STALE/UPDATING or `age > 1`.
+  `market_constraints` no longer holds its lock across the HTTP call.
+- `clients/polymarket_ws.rs`: emits `Connected` / `Heartbeat` (any non-data
+  frame) / `Disconnected`. Server heartbeats arrive every 10s (measured).
+- `services/websocket_manager/mod.rs`: connection epoch + last-frame
+  liveness, Kalshi-style. Books and quotes are tagged with their epoch.
+  `fresh_polymarket_book(slug, POLYMARKET_WS_MAX_SILENCE=15s)` returns a
+  book only from the live connection. REST quotes no longer overwrite a WS
+  quote from the live connection (REST still updates live/period/listing).
+- `services/paired_execution.rs::executable_polymarket_book` (manual
+  Execute, auto-trade, Polymarket neutralization): live WS book (no network
+  round trip), else origin-fresh REST; refuses non-`MARKET_STATE_OPEN`.
+  Logs now show `book_source`, the YES-book price, and actual average fills.
+  The post-order diagnostic is an independent origin REST fetch.
+- Rulebook (`.github/copilot-instructions.md`) updated; the Polymarket depth
+  invariant change was explicitly approved by the user ("speed").
+
+**Diagnostics added (read-only, never place orders):**
+`examples/probe_polymarket_get.rs` (signed GETs only — order/activities
+lookups) and `examples/probe_poly_book_freshness.rs` (WS vs CDN-cached vs
+cache-busted REST, plus WS heartbeat timing).
+
+**Not yet verified live:** the next real order through the new path (check
+the `Polymarket leg submitting ... book_source=websocket` line and the
+fill), and the SELL_SHORT direction of the price conversion (inferred from
+the docs' symmetric rule and BUY_SHORT evidence; no SELL_SHORT has been
+sent yet).
+
+**Follow-ups found, not done:** Kalshi REST market data
+(`external-api.kalshi.com`) is served from a server-side cache
+(`x-kalshi-cache-hits: 1`, values step every ~8–10s; cache-busting does not
+bypass it) and `update_kalshi_rest_quotes_at` still lets a later-fetched
+REST snapshot overwrite a WS quote — detection-only phantom risk (execution
+re-sizes from the Kalshi WS book). Not switched to WS-owns-prices because
+the Kalshi WS book has no `seq` gap detection, so REST is its only drift
+check; add seq-gap → resnapshot first, then apply the same rule. The REST
+quote poll still re-reads a 30s CDN copy every few seconds (harmless while
+the WS is live).
+
+### Positions: manual hedge showed as "Unhedged" (2026-10-01, later)
+
+`services/positions.rs::pair_positions` only paired legs that a bot
+`auto_trade_history` row (`executed`/`neutralized`/`partial_paired`) named,
+so a hedge placed by hand (order form, or either exchange's own site) — e.g.
+Kalshi NO x2 on `KXITFMATCH-26OCT02AZKSIN-SIN` + Polymarket SHORT x2 on
+`aec-itfme-ardazk-digsin-2026-10-02` — was two ⚠ Unhedged cards. Verified
+that pair was a genuine hedge (Kalshi NO on Singh pays if Azkara wins;
+Polymarket SHORT, long side = Azkara, pays if Singh wins).
+
+Fix: two passes — bot history first (unchanged), then the matcher's market
+mapping (`hedge_pairs_for_market`: Kalshi YES on the tracked competitor ↔
+Polymarket position on the *opponent*, Kalshi NO ↔ Polymarket position on
+the competitor; native side via `us_execution_for_competitor`). Same-direction
+legs never pair. Unequal sizes still pair but set `contracts_mismatch`. New
+`PositionCard.paired_by` (`bot_trade` / `market_match`) drives the badge
+tooltip and a "· manual" suffix. A verified mapped pair is persisted in a new
+`hedge_pairs` table (`storage/hedge_pairs_repo.rs`, `CREATE IF NOT EXISTS`)
+because a game leaves the matched set when it closes — before it settles — and
+the hedge must not flip back to "unhedged" then or across a restart; a row is
+only a fact about the markets, a card is "paired" only while both legs are held.
+Limit: a manual hedge on a game the matcher never matched (e.g. non-sports
+markets like the Senate/president positions) can't be recognised and stays
+standalone. 105 lib tests pass; `examples/probe_positions_view.rs` prints the
+raw held legs (read-only).
+
+## Next up (planned 2026-09-30): extend market coverage beyond NBA + tennis
+
+**Status: not started — user's stated next piece of work.** Today the bot
+only matches NBA and tennis (ATP/WTA/etc.) match-winner markets
+(`get_supported_events_and_markets` in `clients/polymarket.rs`, parsers
+`parse_nba_market` / `parse_tennis_match_winner_market`, plus the Kalshi-side
+discovery and `core/matcher.rs`, `nba_teams.rs`, `competitors.rs`). Notes
+gathered while checking live flags, so tomorrow doesn't re-derive them:
+- Polymarket US `/v1/sports` lists (seen live): nba, cbb, nhl, epl, ucl, mls,
+  ufc, uefa, mlb, f1, boxing, wta/atp (tennis), poly-open. Per-sport series
+  ids come from that response (`series`); events via
+  `/v1/events?seriesId=<id>&active=true&closed=false&limit=100`.
+- Live event counts at the time: nhl 60, mlb 32, atp 92, wta 52, nba 8,
+  cbb 1 — NHL and MLB are the biggest unmatched pools, and both had
+  in-play games (`live: true`, period "P2"/"Bot 4th").
+- Two-outcome moneyline sports (nhl, mlb, cbb, ufc, boxing) should fit the
+  existing binary "two competitors, long/short sides" model. Soccer (epl,
+  ucl, mls, uefa) is three-way (draw) — a Kalshi-YES/Polymarket-NO pairing
+  is NOT a clean hedge there, so treat it separately or skip it.
+- Each new sport needs: a Polymarket parser, Kalshi event/market discovery
+  and name normalization, team/competitor alias mapping for the matcher, and
+  a check that both exchanges' "win" market means the same thing (regulation
+  vs. including overtime/extra innings is the classic mismatch that turns an
+  "arb" into a naked bet). Verify settlement rules per sport before enabling.
+- Scale: 186 games / 372 matched markets today → the WS subscription cap is
+  100 slugs per subscription (already chunked in `polymarket_ws.rs`);
+  Kalshi REST quote batches are 100 tickers. More sports = more polling
+  requests per cycle; watch for 429s.
+- Suggested order: mlb/nhl first (biggest live pools, binary moneyline),
+  confirm the overtime/extra-innings settlement rules match on both
+  exchanges, then decide on soccer. Keep it read-only (detection/display)
+  until settlement equivalence is verified — the auto-trade safeguards do
+  not check this.

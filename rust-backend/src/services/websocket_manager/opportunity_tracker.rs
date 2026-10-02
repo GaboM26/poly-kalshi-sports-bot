@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use tracing::{debug, info};
 
-use super::WebSocketManager;
+use super::{WebSocketManager, POLYMARKET_WS_MAX_SILENCE};
 use crate::models::{ArbitrageOpportunity, ArbitrageTrackingRecord, PolymarketUsExecution};
 
 /// A market flapping in and out of tracking (profit margin oscillating near
@@ -83,23 +83,35 @@ impl WebSocketManager {
                 .is_some_and(|last| last.elapsed() < POLY_DEPTH_SNAPSHOT_COOLDOWN);
 
             if !recently_snapshotted {
-                if let (Some(exec), Some(client)) = (poly_execution, self.polymarket_client.clone())
-                {
-                    self.poly_depth_snapshot_cooldown
-                        .write()
-                        .insert(key.clone(), Instant::now());
-                    let storage = self.storage.clone();
-                    tokio::spawn(async move {
-                        match client.get_market_book(&exec.market_slug).await {
-                            Ok(book) => {
-                                let (usd, size) = book.buy_depth(exec.position_side);
-                                storage.track_depth(&key, usd, size);
+                if let Some(exec) = poly_execution {
+                    // The live WebSocket book costs no request at all; only
+                    // without a current one fall back to a REST fetch (which
+                    // now always reaches Polymarket's origin, not the CDN).
+                    if let Some(book) =
+                        self.fresh_polymarket_book(&exec.market_slug, POLYMARKET_WS_MAX_SILENCE)
+                    {
+                        self.poly_depth_snapshot_cooldown
+                            .write()
+                            .insert(key.clone(), Instant::now());
+                        let (usd, size) = book.buy_depth(exec.position_side);
+                        self.storage.track_depth(&key, usd, size);
+                    } else if let Some(client) = self.polymarket_client.clone() {
+                        self.poly_depth_snapshot_cooldown
+                            .write()
+                            .insert(key.clone(), Instant::now());
+                        let storage = self.storage.clone();
+                        tokio::spawn(async move {
+                            match client.get_market_book(&exec.market_slug).await {
+                                Ok(book) => {
+                                    let (usd, size) = book.buy_depth(exec.position_side);
+                                    storage.track_depth(&key, usd, size);
+                                }
+                                Err(error) => {
+                                    debug!("Tracking depth snapshot failed for {}: {:#}", key, error);
+                                }
                             }
-                            Err(error) => {
-                                debug!("Tracking depth snapshot failed for {}: {}", key, error);
-                            }
-                        }
-                    });
+                        });
+                    }
                 }
             }
         }

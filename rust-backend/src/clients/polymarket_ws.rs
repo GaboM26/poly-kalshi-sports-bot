@@ -1,11 +1,13 @@
 //! Polymarket US markets WebSocket (`wss://api.polymarket.us/v1/ws/markets`).
 //!
-//! Push-based replacement for waiting on the ~3s REST poll when detecting
-//! arbitrage. Subscribes to `SUBSCRIPTION_TYPE_MARKET_DATA_LITE`, whose
-//! `longQuote`/`shortQuote` are the same per-side quotes the gateway REST
-//! feed exposes as `marketSides[].quote` (verified live). These are
-//! detection prices only - execution depth still comes exclusively from
-//! `/v1/markets/{slug}/book` at order time.
+//! Push-based replacement for the REST gateway, whose responses are
+//! Cloudflare-cached for up to 30s. Subscribes to
+//! `SUBSCRIPTION_TYPE_MARKET_DATA_LITE`, whose `longQuote`/`shortQuote` are
+//! the same per-side quotes the gateway feed exposes as
+//! `marketSides[].quote` (verified live), and to `SUBSCRIPTION_TYPE_MARKET_DATA`
+//! full books. Execution sizes from those books only while the connection
+//! that delivered them is provably alive (`WebSocketManager::
+//! fresh_polymarket_book`), falling back to a cache-bypassing REST fetch.
 //!
 //! Auth is the same Ed25519 scheme as REST: sign `{timestamp}GET{path}`.
 
@@ -40,14 +42,23 @@ pub struct PolyWsQuote {
     pub short_quote: f64,
 }
 
-/// One decoded stream message.
+/// One decoded stream message, or a connection lifecycle change.
 #[derive(Debug, Clone)]
 pub enum PolyWsEvent {
     /// Lightweight per-side quotes (detection prices).
     Quote(PolyWsQuote),
-    /// Full order book snapshot (display/tracking depth only - execution
-    /// still fetches its own fresh book from REST).
+    /// Full order book snapshot. Each one replaces the stored book; the
+    /// server sends one on subscribe and again on every change, so on a
+    /// live connection the latest snapshot is the current book.
     Book(PolymarketMarketBook),
+    /// A new connection is up. Everything stored from an earlier connection
+    /// is no longer provably current until this one re-sends it.
+    Connected,
+    /// Any other frame (heartbeat, subscription ack, ping): proof the
+    /// connection is still alive even when no subscribed market changes.
+    Heartbeat,
+    /// The connection died; a reconnect attempt follows.
+    Disconnected,
 }
 
 fn price(value: &Value) -> Option<f64> {
@@ -137,6 +148,7 @@ where
         .await
         .context("Failed to connect to the Polymarket US WebSocket")?;
     let (mut write, mut read) = stream.split();
+    on_quote(PolyWsEvent::Connected);
 
     let mut subscribed: HashSet<String> = HashSet::new();
     let mut next_id = 0u64;
@@ -166,14 +178,12 @@ where
                 let frame = frame.context("Polymarket WS silent for 30s")?;
                 match frame {
                     Some(Ok(Message::Text(text))) => {
-                        if let Some(event) = parse_event(&text) {
-                            on_quote(event);
-                        }
+                        on_quote(parse_event(&text).unwrap_or(PolyWsEvent::Heartbeat));
                     }
                     Some(Ok(Message::Close(frame))) => {
                         anyhow::bail!("Polymarket WS closed by server: {:?}", frame);
                     }
-                    Some(Ok(_)) => {}
+                    Some(Ok(_)) => on_quote(PolyWsEvent::Heartbeat),
                     Some(Err(e)) => return Err(e).context("Polymarket WS read error"),
                     None => anyhow::bail!("Polymarket WS stream ended"),
                 }
@@ -197,6 +207,7 @@ where
             Ok(()) => debug!("Polymarket WS loop returned"),
             Err(e) => warn!("Polymarket WS disconnected: {:#}. Reconnecting in {:?}", e, backoff),
         }
+        on_quote(PolyWsEvent::Disconnected);
         // A connection that stayed up a while earns a fresh backoff.
         if started.elapsed() > Duration::from_secs(60) {
             backoff = Duration::from_secs(1);

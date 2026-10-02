@@ -173,8 +173,15 @@ export function OrderPanel({ apiBaseUrl }: OrderPanelProps) {
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
                       {paired ? (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400" title="Hedged pair opened together by this bot">
-                          🔗 Paired
+                        <span
+                          className="text-[9px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-400"
+                          title={
+                            card.paired_by === 'market_match'
+                              ? 'Hedged: these legs are opposite outcomes of the same game (placed manually, not by the auto-trader)'
+                              : 'Hedged pair opened together by this bot'
+                          }
+                        >
+                          🔗 Paired{card.paired_by === 'market_match' ? ' · manual' : ''}
                         </span>
                       ) : (
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400" title="No matching hedge leg held: one-sided exposure">

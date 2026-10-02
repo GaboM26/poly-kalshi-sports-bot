@@ -7,9 +7,11 @@
 //! - `auto_trade_repo`: Auto-trade state and history
 //! - `settings_repo`: Application settings
 //! - `excluded_markets_repo`: Excluded markets for auto-trade
+//! - `hedge_pairs_repo`: Verified Kalshi/Polymarket hedge pairs for the Positions view
 
 mod auto_trade_repo;
 mod excluded_markets_repo;
+mod hedge_pairs_repo;
 mod settings_repo;
 mod tracking_repo;
 
@@ -27,6 +29,7 @@ use crate::models::ArbitrageTrackingRecord;
 
 // Re-export types from sub-modules
 pub use auto_trade_repo::{AutoTradeExecutionRecord, AutoTradeRecord, AutoTradeState};
+pub use hedge_pairs_repo::HedgePair;
 
 /// Storage command for async queue
 pub enum StorageCommand {
@@ -60,8 +63,9 @@ impl ArbitrageStorage {
         Self::init_auto_trade_tables(&conn)?;
         Self::init_settings_table(&conn)?;
         Self::init_excluded_markets_table(&conn)?;
+        Self::init_hedge_pairs_table(&conn)?;
 
-        info!("📦 Database initialized with auto_trade_state, auto_trade_history, app_settings, and excluded_markets tables");
+        info!("📦 Database initialized with auto_trade_state, auto_trade_history, app_settings, excluded_markets, and hedge_pairs tables");
 
         let conn = Arc::new(Mutex::new(conn));
 

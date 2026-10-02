@@ -317,6 +317,8 @@ mod tests {
             team_b_position: crate::models::PolymarketPositionSide::Short,
             start_time: None,
             volume: None,
+            live: false,
+            period: None,
         }
     }
 

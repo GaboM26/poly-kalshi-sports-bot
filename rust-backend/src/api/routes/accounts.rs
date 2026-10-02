@@ -229,11 +229,15 @@ pub async fn login(
 }
 
 /// Unified positions: Kalshi and Polymarket legs grouped into hedged pairs
-/// (matched against this bot's trade history) and standalone leftovers.
-/// Each exchange fails independently; its error is reported alongside
-/// whatever the other side returned.
+/// and standalone leftovers. A pair is recognised from this bot's trade
+/// history first, then from the matcher's own market mapping (so a hedge
+/// placed by hand counts too; see `services::positions`). Each exchange
+/// fails independently; its error is reported alongside whatever the other
+/// side returned.
 pub async fn get_unified_positions(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    use crate::services::positions::{kalshi_leg, pair_positions, polymarket_leg};
+    use crate::services::positions::{
+        hedge_pairs_for_market, kalshi_leg, newly_verified_pairs, pair_positions, polymarket_leg,
+    };
     use serde_json::Value;
 
     let service = state.service.read().await;
@@ -304,6 +308,33 @@ pub async fn get_unified_positions(State(state): State<Arc<AppState>>) -> impl I
         }
     };
 
-    let cards = pair_positions(kalshi_legs, poly_legs, &history);
+    // Hedge relations from the currently matched markets, plus every pair
+    // remembered from earlier: a game leaves the matched set when it closes,
+    // usually before it settles, and its hedge must not flip to "unhedged"
+    // in between (or across a restart).
+    let storage = service.ws_manager.get_storage();
+    let remembered = storage.get_hedge_pairs().unwrap_or_else(|e| {
+        error!("Failed to load remembered hedge pairs: {:#}", e);
+        Vec::new()
+    });
+    let mut known_pairs: Vec<_> = service
+        .get_matched_markets()
+        .iter()
+        .flat_map(hedge_pairs_for_market)
+        .collect();
+    known_pairs.extend(remembered.iter().cloned());
+
+    let cards = pair_positions(kalshi_legs, poly_legs, &history, &known_pairs);
+
+    let fresh = newly_verified_pairs(&cards, &remembered);
+    if !fresh.is_empty() {
+        match storage.remember_hedge_pairs(&fresh) {
+            Ok(()) => info!(
+                "Recognised {} hedge pair(s) placed outside the auto-trader and remembered them",
+                fresh.len()
+            ),
+            Err(e) => error!("Failed to remember hedge pairs: {:#}", e),
+        }
+    }
     Json(serde_json::json!({ "cards": cards, "errors": errors }))
 }

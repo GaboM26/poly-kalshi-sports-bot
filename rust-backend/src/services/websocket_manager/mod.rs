@@ -14,7 +14,7 @@ mod market_lifecycle;
 mod opportunity_tracker;
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -48,6 +48,21 @@ pub(crate) const ENDED_DETECTION_DURATION_MINS: i64 = 20;
 /// absence as confirmed closure, so a single transient gap in the feed
 /// doesn't remove a market that is still genuinely open.
 pub(crate) const POLY_MISSING_CONFIRM_STREAK: u32 = 2;
+/// The Polymarket WebSocket counts as alive only if some frame (a book,
+/// quote, or heartbeat on any market) arrived this recently. Books and
+/// quotes it delivered are trusted only while it is alive. The server sends
+/// a heartbeat every 10s on an otherwise quiet connection (measured with
+/// `examples/probe_poly_book_freshness.rs`), so 15s tolerates jitter
+/// without flapping while still dropping a hung connection quickly.
+pub const POLYMARKET_WS_MAX_SILENCE: Duration = Duration::from_secs(15);
+
+/// A full Polymarket book pushed over the WebSocket, tagged with the
+/// connection it arrived on.
+#[derive(Debug, Clone)]
+pub(crate) struct LivePolymarketBook {
+    pub book: PolymarketMarketBook,
+    pub epoch: u64,
+}
 
 /// A Polymarket US quote received from the gateway REST feed.
 ///
@@ -140,13 +155,29 @@ pub struct WebSocketManager {
     /// REST snapshot fetched *before* that moment can't overwrite it with
     /// older prices.
     pub(crate) poly_ws_quote_at: Arc<RwLock<HashMap<String, Instant>>>,
+    /// market_id -> connection epoch its newest WebSocket quote arrived on.
+    /// While that connection is alive, its quote is current and a REST
+    /// snapshot never overwrites it (see `update_polymarket_rest_quotes_at`).
+    pub(crate) poly_ws_quote_epoch: Arc<RwLock<HashMap<String, u64>>>,
+    /// Polymarket WebSocket connection state, mirroring how
+    /// `KalshiClient::get_fresh_orderbook` vouches for Kalshi books: the
+    /// epoch is bumped on every (re)connect, so anything stored under an
+    /// older epoch is not trusted until the new connection re-sends it.
+    pub(crate) poly_ws_epoch: Arc<AtomicU64>,
+    pub(crate) poly_ws_connected: Arc<AtomicBool>,
+    pub(crate) poly_ws_last_frame_at: Arc<RwLock<Option<Instant>>>,
     /// ticker -> when the newest Kalshi WebSocket-derived quote arrived;
     /// same purpose as `poly_ws_quote_at`.
     pub(crate) kalshi_ws_quote_at: Arc<RwLock<HashMap<String, Instant>>>,
-    /// slug -> latest full Polymarket book pushed over the WebSocket. Used
-    /// for display and tracking depth only; order sizing always fetches its
-    /// own fresh REST book (`get_market_book`).
-    pub(crate) poly_live_books: Arc<RwLock<HashMap<String, PolymarketMarketBook>>>,
+    /// slug -> latest full Polymarket book pushed over the WebSocket, tagged
+    /// with its connection epoch. Display and tracking read it as is;
+    /// execution only through `fresh_polymarket_book`.
+    pub(crate) poly_live_books: Arc<RwLock<HashMap<String, LivePolymarketBook>>>,
+    /// Cumulative WebSocket message counters, read by the periodic stats
+    /// line (`ws_stats`) to show whether each stream is actually delivering.
+    poly_ws_quote_msgs: Arc<AtomicU64>,
+    poly_ws_book_msgs: Arc<AtomicU64>,
+    kalshi_ws_msgs: Arc<AtomicU64>,
     /// Set of recorded skip reasons: "market_key:simplified_reason" -> prevent duplicate skip records
     pub(crate) recorded_skip_reasons: Arc<RwLock<std::collections::HashSet<String>>>,
     /// Set of market keys excluded from auto-trade (user-defined)
@@ -208,8 +239,15 @@ impl WebSocketManager {
             confirmed_ended_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
             poly_missing_streak: Arc::new(RwLock::new(HashMap::new())),
             poly_ws_quote_at: Arc::new(RwLock::new(HashMap::new())),
+            poly_ws_quote_epoch: Arc::new(RwLock::new(HashMap::new())),
+            poly_ws_epoch: Arc::new(AtomicU64::new(0)),
+            poly_ws_connected: Arc::new(AtomicBool::new(false)),
+            poly_ws_last_frame_at: Arc::new(RwLock::new(None)),
             kalshi_ws_quote_at: Arc::new(RwLock::new(HashMap::new())),
             poly_live_books: Arc::new(RwLock::new(HashMap::new())),
+            poly_ws_quote_msgs: Arc::new(AtomicU64::new(0)),
+            poly_ws_book_msgs: Arc::new(AtomicU64::new(0)),
+            kalshi_ws_msgs: Arc::new(AtomicU64::new(0)),
             recorded_skip_reasons: Arc::new(RwLock::new(std::collections::HashSet::new())),
             excluded_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
             poly_depth_snapshot_cooldown: Arc::new(RwLock::new(HashMap::new())),
@@ -406,16 +444,22 @@ impl WebSocketManager {
     }
 
     /// Same as `update_polymarket_rest_quotes`, for a snapshot whose request
-    /// started at `fetched_at`. A market that received a WebSocket quote
-    /// after that instant keeps the newer WebSocket prices (the snapshot is
-    /// older than what we already hold); the REST cycle still confirms it
-    /// is listed and refreshes its freshness stamp.
+    /// started at `fetched_at`. The WebSocket keeps ownership of a market's
+    /// prices if it quoted that market after `fetched_at`, or - while the
+    /// stream is alive - at any point on the current connection: the
+    /// gateway feed is Cloudflare-cached for up to 30s, so a snapshot
+    /// fetched after a WS quote can still carry far older prices (that is
+    /// what produced a 90ms phantom opportunity on 2026-10-01). REST prices
+    /// apply only when the WebSocket has nothing current for the market.
+    /// The REST cycle still confirms listing and refreshes freshness.
     pub fn update_polymarket_rest_quotes_at(
         &self,
         markets: &[PolymarketMarket],
         fetched_at: Instant,
     ) -> usize {
         let ws_quote_at = self.poly_ws_quote_at.read().clone();
+        let ws_quote_epoch = self.poly_ws_quote_epoch.read().clone();
+        let live_ws_epoch = self.live_polymarket_ws_epoch(POLYMARKET_WS_MAX_SILENCE);
         let quotes_by_market: HashMap<&str, &PolymarketMarket> = markets
             .iter()
             .map(|market| (market.market_id.as_str(), market))
@@ -451,10 +495,14 @@ impl WebSocketManager {
                     continue;
                 };
                 present_keys.insert(matched.market_key());
-                if ws_quote_at
-                    .get(&matched.polymarket_market.market_id)
-                    .is_some_and(|at| *at > fetched_at)
-                {
+                // In-play state only comes from the REST events feed, so
+                // take it regardless of which source owns the prices.
+                matched.polymarket_market.live = quote.live;
+                matched.polymarket_market.period = quote.period.clone();
+                let market_id = &matched.polymarket_market.market_id;
+                let ws_owns_prices = ws_quote_at.get(market_id).is_some_and(|at| *at > fetched_at)
+                    || live_ws_epoch.is_some_and(|epoch| ws_quote_epoch.get(market_id) == Some(&epoch));
+                if ws_owns_prices {
                     // Keep the newer WebSocket prices; only re-stamp.
                     kept_ws += 1;
                     quotes_to_cache
@@ -531,6 +579,9 @@ impl WebSocketManager {
     /// matched markets updated. Prices feed detection only; execution depth
     /// is still fetched from the real book at order time.
     pub fn update_polymarket_ws_quote(&self, slug: &str, long_quote: f64, short_quote: f64) -> usize {
+        self.poly_ws_quote_msgs.fetch_add(1, Ordering::Relaxed);
+        self.note_polymarket_ws_frame();
+        let epoch = self.poly_ws_epoch.load(Ordering::SeqCst);
         let received_at = Instant::now();
         let mut updated_indices = Vec::new();
         let mut cache_updates: Vec<(String, f64, f64)> = Vec::new();
@@ -569,8 +620,10 @@ impl WebSocketManager {
         {
             let mut cache = self.poly_rest_quotes.write();
             let mut ws_at = self.poly_ws_quote_at.write();
+            let mut ws_epoch = self.poly_ws_quote_epoch.write();
             for (market_id, price_a, price_b) in cache_updates {
                 ws_at.insert(market_id.clone(), received_at);
+                ws_epoch.insert(market_id.clone(), epoch);
                 cache.insert(
                     market_id,
                     PolymarketRestQuote { price_a, price_b, received_at },
@@ -586,16 +639,97 @@ impl WebSocketManager {
         updated_indices.len()
     }
 
-    /// Store a full Polymarket book snapshot pushed over the WebSocket.
-    pub fn update_polymarket_ws_book(&self, book: PolymarketMarketBook) {
-        self.poly_live_books
-            .write()
-            .insert(book.market_slug.clone(), book);
+    /// Snapshot for the periodic stats line: cumulative message counts plus
+    /// how many matched markets received a WebSocket quote within `window`
+    /// (quiet markets legitimately go silent, so this is a coverage hint,
+    /// not an error count).
+    pub fn ws_stats(&self, window: Duration) -> WsStats {
+        let now = Instant::now();
+        let recent = |map: &HashMap<String, Instant>| {
+            map.values()
+                .filter(|at| now.saturating_duration_since(**at) <= window)
+                .count()
+        };
+        WsStats {
+            poly_quote_msgs: self.poly_ws_quote_msgs.load(Ordering::Relaxed),
+            poly_book_msgs: self.poly_ws_book_msgs.load(Ordering::Relaxed),
+            kalshi_msgs: self.kalshi_ws_msgs.load(Ordering::Relaxed),
+            poly_markets_recent: recent(&self.poly_ws_quote_at.read()),
+            kalshi_markets_recent: recent(&self.kalshi_ws_quote_at.read()),
+            markets_total: self.matched_markets.read().len(),
+        }
     }
 
-    /// Latest WebSocket book for a slug, if one has arrived.
+    /// Store a full Polymarket book snapshot pushed over the WebSocket,
+    /// tagged with the connection it arrived on.
+    pub fn update_polymarket_ws_book(&self, book: PolymarketMarketBook) {
+        self.poly_ws_book_msgs.fetch_add(1, Ordering::Relaxed);
+        self.note_polymarket_ws_frame();
+        let epoch = self.poly_ws_epoch.load(Ordering::SeqCst);
+        self.poly_live_books
+            .write()
+            .insert(book.market_slug.clone(), LivePolymarketBook { book, epoch });
+    }
+
+    /// Latest WebSocket book for a slug, if one has arrived - on any
+    /// connection, so for display and tracking only. Execution must use
+    /// `fresh_polymarket_book`.
     pub fn polymarket_live_book(&self, slug: &str) -> Option<PolymarketMarketBook> {
-        self.poly_live_books.read().get(slug).cloned()
+        self.poly_live_books
+            .read()
+            .get(slug)
+            .map(|live| live.book.clone())
+    }
+
+    /// A new Polymarket WebSocket connection is up: bump the epoch so
+    /// nothing stored from the previous connection is trusted until this one
+    /// re-sends it (the server sends a full book on subscribe).
+    pub fn on_polymarket_ws_connected(&self) {
+        let epoch = self.poly_ws_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        *self.poly_ws_last_frame_at.write() = Some(Instant::now());
+        self.poly_ws_connected.store(true, Ordering::SeqCst);
+        info!("📡 Polymarket WS connected (connection epoch {})", epoch);
+    }
+
+    /// The Polymarket WebSocket connection died; until it reconnects and
+    /// re-sends, no stored book or quote is current.
+    pub fn on_polymarket_ws_disconnected(&self) {
+        self.poly_ws_connected.store(false, Ordering::SeqCst);
+    }
+
+    /// Any frame proves the connection is alive, even a heartbeat.
+    pub fn note_polymarket_ws_frame(&self) {
+        *self.poly_ws_last_frame_at.write() = Some(Instant::now());
+    }
+
+    /// The current connection epoch, if that connection is up and has
+    /// delivered a frame within `max_silence`.
+    pub fn live_polymarket_ws_epoch(&self, max_silence: Duration) -> Option<u64> {
+        let alive = self.poly_ws_connected.load(Ordering::SeqCst)
+            && self
+                .poly_ws_last_frame_at
+                .read()
+                .is_some_and(|last| last.elapsed() <= max_silence);
+        alive.then(|| self.poly_ws_epoch.load(Ordering::SeqCst))
+    }
+
+    /// The WebSocket book for `slug`, but only if it is provably current:
+    /// it arrived on the connection that is up right now, and that
+    /// connection has delivered a frame within `max_silence`. The server
+    /// pushes a full snapshot on every change, so a quiet market's book can
+    /// be old and still exact; a dead or replaced connection is what makes
+    /// it untrustworthy. Mirrors `KalshiClient::get_fresh_orderbook`.
+    pub fn fresh_polymarket_book(
+        &self,
+        slug: &str,
+        max_silence: Duration,
+    ) -> Option<PolymarketMarketBook> {
+        let epoch = self.live_polymarket_ws_epoch(max_silence)?;
+        self.poly_live_books
+            .read()
+            .get(slug)
+            .filter(|live| live.epoch == epoch)
+            .map(|live| live.book.clone())
     }
 
     /// The matched market carrying a Kalshi ticker, if any.
@@ -768,6 +902,7 @@ impl WebSocketManager {
         }
 
         if let (Some(ya), Some(na)) = (update.yes_ask, update.no_ask) {
+            self.kalshi_ws_msgs.fetch_add(1, Ordering::Relaxed);
             self.apply_kalshi_ws_quote(&update.market_id, ya, na);
         }
 
@@ -1187,6 +1322,8 @@ impl WebSocketManager {
                     polymarket_team_position_side: own_execution.position_side,
                     polymarket_opponent_name: opponent.to_string(),
                     polymarket_opponent_position_side: opponent_execution.position_side,
+                    polymarket_live: mm.polymarket_market.live,
+                    polymarket_period: mm.polymarket_market.period.clone(),
                     kalshi_yes_price: k_yes,
                     kalshi_no_price: k_no,
                     poly_yes_price: p_yes,
@@ -1216,6 +1353,17 @@ fn capitalize(s: &str) -> String {
         None => String::new(),
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
     }
+}
+
+/// Point-in-time WebSocket delivery counters (see `WebSocketManager::ws_stats`).
+#[derive(Debug, Clone, Copy)]
+pub struct WsStats {
+    pub poly_quote_msgs: u64,
+    pub poly_book_msgs: u64,
+    pub kalshi_msgs: u64,
+    pub poly_markets_recent: usize,
+    pub kalshi_markets_recent: usize,
+    pub markets_total: usize,
 }
 
 /// Data coverage statistics
@@ -1277,6 +1425,8 @@ mod tests {
                 team_b_position: crate::models::PolymarketPositionSide::Short,
                 start_time: None,
                 volume: None,
+                live: false,
+                period: None,
             },
             poly_yes_price: 0.5,
             poly_no_price: 0.5,
@@ -1336,9 +1486,112 @@ mod tests {
         let cached = manager.poly_rest_quotes.read().get("poly-market").cloned().unwrap();
         assert_eq!((cached.price_a, cached.price_b), (0.31, 0.71));
 
-        // A REST snapshot fetched after the WS quote does win.
+        // With no live WebSocket connection, a REST snapshot fetched after
+        // the WS quote does win.
         manager.update_polymarket_rest_quotes_at(&[stale_rest], Instant::now());
         assert_eq!(manager.matched_markets.read()[0].poly_yes_price, 0.50);
+    }
+
+    #[tokio::test]
+    async fn a_cached_rest_snapshot_never_overwrites_a_live_ws_quote() {
+        let manager = test_manager();
+        manager.on_polymarket_ws_connected();
+        manager.update_polymarket_ws_quote("lal-mem-2026-08-17", 0.31, 0.71);
+
+        // Fetched after the WS quote, but the gateway feed is CDN-cached, so
+        // its contents can be up to 30s older than the quote.
+        let cached_rest = PolymarketMarket {
+            price_a: 0.50,
+            price_b: 0.50,
+            ..matched_market().polymarket_market
+        };
+        manager.update_polymarket_rest_quotes_at(&[cached_rest.clone()], Instant::now());
+        assert_eq!(manager.matched_markets.read()[0].poly_yes_price, 0.31);
+        let cached = manager.poly_rest_quotes.read().get("poly-market").cloned().unwrap();
+        assert_eq!((cached.price_a, cached.price_b), (0.31, 0.71));
+
+        // Once the stream is down, REST is the only source and applies.
+        manager.on_polymarket_ws_disconnected();
+        manager.update_polymarket_rest_quotes_at(&[cached_rest], Instant::now());
+        assert_eq!(manager.matched_markets.read()[0].poly_yes_price, 0.50);
+    }
+
+    #[tokio::test]
+    async fn rest_applies_to_a_market_the_live_ws_has_not_quoted_on_this_connection() {
+        let manager = test_manager();
+        manager.on_polymarket_ws_connected();
+        manager.update_polymarket_ws_quote("lal-mem-2026-08-17", 0.31, 0.71);
+        manager.on_polymarket_ws_disconnected();
+        manager.on_polymarket_ws_connected();
+        let rest = PolymarketMarket {
+            price_a: 0.50,
+            price_b: 0.50,
+            ..matched_market().polymarket_market
+        };
+        manager.update_polymarket_rest_quotes_at(&[rest], Instant::now());
+        assert_eq!(manager.matched_markets.read()[0].poly_yes_price, 0.50);
+    }
+
+    fn ws_book(slug: &str, best_offer: f64) -> PolymarketMarketBook {
+        use crate::clients::polymarket::PolymarketBookLevel;
+        PolymarketMarketBook {
+            success: true,
+            market_slug: slug.to_string(),
+            state: "MARKET_STATE_OPEN".to_string(),
+            transact_time: None,
+            fetched_at_ms: 0,
+            bids: vec![PolymarketBookLevel { price: best_offer - 0.01, quantity: 50.0 }],
+            offers: vec![PolymarketBookLevel { price: best_offer, quantity: 50.0 }],
+            minimum_trade_qty: None,
+            price_tick_size: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_ws_book_is_executable_only_from_the_live_connection() {
+        let manager = test_manager();
+        let slug = "lal-mem-2026-08-17";
+        let window = POLYMARKET_WS_MAX_SILENCE;
+
+        // Arrived before any connection was acknowledged.
+        manager.update_polymarket_ws_book(ws_book(slug, 0.50));
+        assert!(manager.fresh_polymarket_book(slug, window).is_none());
+
+        manager.on_polymarket_ws_connected();
+        assert!(manager.fresh_polymarket_book(slug, window).is_none());
+        manager.update_polymarket_ws_book(ws_book(slug, 0.52));
+        let fresh = manager.fresh_polymarket_book(slug, window).expect("current book");
+        assert_eq!(fresh.offers[0].price, 0.52);
+        assert!(manager.fresh_polymarket_book("other-slug", window).is_none());
+
+        manager.on_polymarket_ws_disconnected();
+        assert!(manager.fresh_polymarket_book(slug, window).is_none());
+        // Display still reads the last book it has.
+        assert_eq!(manager.polymarket_live_book(slug).unwrap().offers[0].price, 0.52);
+
+        // After a reconnect the old book stays untrusted until re-sent.
+        manager.on_polymarket_ws_connected();
+        assert!(manager.fresh_polymarket_book(slug, window).is_none());
+        manager.update_polymarket_ws_book(ws_book(slug, 0.55));
+        assert_eq!(manager.fresh_polymarket_book(slug, window).unwrap().offers[0].price, 0.55);
+    }
+
+    #[tokio::test]
+    async fn a_silent_ws_connection_stops_vouching_for_its_books() {
+        let manager = test_manager();
+        let slug = "lal-mem-2026-08-17";
+        let window = POLYMARKET_WS_MAX_SILENCE;
+        manager.on_polymarket_ws_connected();
+        manager.update_polymarket_ws_book(ws_book(slug, 0.50));
+        assert!(manager.fresh_polymarket_book(slug, window).is_some());
+
+        *manager.poly_ws_last_frame_at.write() =
+            Instant::now().checked_sub(window + Duration::from_secs(1));
+        assert!(manager.fresh_polymarket_book(slug, window).is_none());
+
+        // A heartbeat alone revives it: a quiet market's book is still exact.
+        manager.note_polymarket_ws_frame();
+        assert!(manager.fresh_polymarket_book(slug, window).is_some());
     }
 
     #[tokio::test]
@@ -1398,6 +1651,24 @@ mod tests {
         assert_eq!(opp.kalshi_side, "yes");
         assert_eq!(opp.poly_ask_size, 10.0);
         assert!((opp.poly_ask_depth - 10.0 * 0.60).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn rest_refresh_carries_live_state_even_when_ws_owns_the_prices() {
+        let manager = test_manager();
+        let fetch_started = Instant::now();
+        std::thread::sleep(Duration::from_millis(5));
+        manager.update_polymarket_ws_quote("lal-mem-2026-08-17", 0.31, 0.71);
+        let in_play = PolymarketMarket {
+            live: true,
+            period: Some("P2".to_string()),
+            ..matched_market().polymarket_market
+        };
+        manager.update_polymarket_rest_quotes_at(&[in_play], fetch_started);
+        let front = manager.get_matched_markets_for_frontend();
+        assert!(front[0].polymarket_live);
+        assert_eq!(front[0].polymarket_period.as_deref(), Some("P2"));
+        assert_eq!(manager.matched_markets.read()[0].poly_yes_price, 0.31);
     }
 
     #[tokio::test]

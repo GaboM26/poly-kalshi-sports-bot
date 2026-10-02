@@ -13,10 +13,12 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use tracing::{error, info, warn};
 
+use crate::clients::polymarket::yes_book_price;
 use crate::clients::{
     KalshiOrderResult, PolymarketBookLevel, PolymarketMarketBook, PolymarketOrderResult,
 };
 use crate::models::PolymarketPositionSide;
+use crate::services::websocket_manager::POLYMARKET_WS_MAX_SILENCE;
 use crate::services::{ArbitrageService, AutoTradeExecutionRecord, TelegramClient};
 
 /// For Kalshi: a connection-liveness backstop, checked against the last
@@ -27,18 +29,82 @@ use crate::services::{ArbitrageService, AutoTradeExecutionRecord, TelegramClient
 /// enough to never fire during normal operation and tight enough to catch a
 /// genuinely hung connection promptly. The actual per-book correctness
 /// check is the connection epoch, not this duration.
-/// For Polymarket: the Python endpoint is requested synchronously, so its
-/// response is inherently a fresh book: this just bounds total round trip.
+/// Polymarket books come from `executable_polymarket_book` instead.
 pub const EXECUTABLE_BOOK_MAX_AGE: Duration = Duration::from_secs(30);
+
+/// Where an executable Polymarket book came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolymarketBookSource {
+    /// The live WebSocket book, vouched for by `fresh_polymarket_book`.
+    WebSocket,
+    /// One origin (non-CDN-cached) REST fetch, used when the WebSocket has
+    /// nothing current for the market.
+    Rest,
+}
+
+impl PolymarketBookSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PolymarketBookSource::WebSocket => "websocket",
+            PolymarketBookSource::Rest => "rest",
+        }
+    }
+}
+
+/// The Polymarket book an order may be sized, priced, or neutralized
+/// against: the live WebSocket book when that stream is provably current
+/// (no network round trip), otherwise one REST fetch that bypasses the
+/// gateway's 30s CDN cache and refuses a cached response. Either way the
+/// market must be `MARKET_STATE_OPEN`, and the book carries the market's
+/// order constraints (a book without a known minimum trade quantity is
+/// refused by sizing, never treated as "no minimum").
+pub async fn executable_polymarket_book(
+    service: &ArbitrageService,
+    market_slug: &str,
+) -> Result<(PolymarketMarketBook, PolymarketBookSource), String> {
+    let (mut book, source) = match service
+        .ws_manager
+        .fresh_polymarket_book(market_slug, POLYMARKET_WS_MAX_SILENCE)
+    {
+        Some(book) => (book, PolymarketBookSource::WebSocket),
+        None => {
+            let book = service
+                .polymarket_client
+                .get_market_book(market_slug)
+                .await
+                .map_err(|error| format!("{error:#}"))?;
+            (book, PolymarketBookSource::Rest)
+        }
+    };
+    if book.state != "MARKET_STATE_OPEN" {
+        return Err(format!(
+            "Polymarket US market is not open for trading (state: {})",
+            book.state
+        ));
+    }
+    if source == PolymarketBookSource::WebSocket {
+        // Cached for an hour per market; the REST path already filled these.
+        match service.polymarket_client.market_constraints(market_slug).await {
+            Ok((minimum_trade_qty, price_tick_size)) => {
+                book.minimum_trade_qty = minimum_trade_qty;
+                book.price_tick_size = price_tick_size;
+            }
+            Err(error) => warn!(
+                "Polymarket US market constraint lookup failed for {}: {:#}",
+                market_slug, error
+            ),
+        }
+    }
+    Ok((book, source))
+}
+
 /// A conservative floor on Polymarket leg notional (contracts * price), kept
-/// as an extra safety margin. This is NOT the actual cause of
-/// ORD_REJECT_REASON_EXCHANGE_OPTION rejections - real rejected orders have
-/// had notional from $3.80-$9.50, well above this floor. That reject reason
-/// is a generic exchange catch-all (see docs.polymarket.us) that, per
-/// official docs, is most likely explained by each market's own
-/// `minimumTradeQty` (see `PolymarketMarketBook::minimum_trade_qty`), not a
-/// fixed dollar amount. Kalshi has no equivalent floor, so this only bounds
-/// the Polymarket leg's size search.
+/// as an extra safety margin. Kalshi has no equivalent floor, so this only
+/// bounds the Polymarket leg's size search. (For the record: the long-running
+/// `ORD_REJECT_REASON_EXCHANGE_OPTION` "rejections" were never about size -
+/// that is the reject-reason enum's zero value, serialized on every
+/// execution; those orders were IOCs expiring unfilled against a book that
+/// was up to 30s stale. See CLAUDE.md, 2026-10-01.)
 pub const POLYMARKET_MIN_NOTIONAL_USD: f64 = 1.0;
 
 #[derive(Debug)]
@@ -241,9 +307,9 @@ pub fn calculate_contracts_to_trade(
 /// `poly_min_trade_qty` is the Polymarket market's own minimum tradeable
 /// quantity (docs.polymarket.us/api-reference/orders/overview: "constraints
 /// are market-dependent - retrieve minimumTradeQty ... before order
-/// submission"). Every order below it is rejected by the exchange
-/// (ORD_REJECT_REASON_EXCHANGE_OPTION). `None` means the order service could
-/// not look it up and must block sizing entirely, not be treated as zero.
+/// submission"); orders below it are rejected by the exchange. `None` means
+/// it could not be looked up and must block sizing entirely, not be treated
+/// as zero.
 pub fn find_profitable_contract_size(
     size_cap: i32,
     min_contracts: i32,
@@ -292,11 +358,9 @@ pub async fn neutralize_polymarket(
         "Polymarket actual entry price was not returned; bounded close cannot be verified"
             .to_string()
     })?;
-    let book = service
-        .polymarket_client
-        .get_market_book(market_slug)
+    let (book, _) = executable_polymarket_book(service, market_slug)
         .await
-        .map_err(|error| format!("Unable to fetch fresh Polymarket close book: {error}"))?;
+        .map_err(|error| format!("Unable to get a fresh Polymarket close book: {error}"))?;
     let close_price = worst_price(&polymarket_sell_levels(&book, position_side), contracts)
         .ok_or_else(|| "Fresh Polymarket close book lacks required executable depth".to_string())?;
     if close_price + f64::EPSILON < entry_price - max_loss_cents as f64 / 100.0 {
@@ -370,11 +434,11 @@ pub struct PairedOrderParams {
     pub profit_margin: f64,
     pub duration_ms: i64,
     /// `PolymarketMarketBook::fetched_at_ms` of the book `poly_price` was
-    /// computed from. Diagnostic only - lets us log how stale that book was
-    /// by the time the order actually reached the exchange, to confirm or
-    /// rule out a market-moved-between-snapshot-and-submission explanation
-    /// for `ORD_REJECT_REASON_EXCHANGE_OPTION` (see CLAUDE.md session log).
+    /// computed from: when it was fetched (REST) or last pushed (WebSocket).
+    /// Diagnostic only.
     pub poly_book_fetched_at_ms: i64,
+    /// Which source that book came from. Diagnostic only.
+    pub poly_book_source: PolymarketBookSource,
     pub neutralization_max_loss_cents: i32,
     /// When true, no order is submitted to either exchange and nothing is
     /// persisted as a real attempt; the returned outcome carries the
@@ -509,8 +573,14 @@ pub async fn submit_paired_order(
     let poly_started = Instant::now();
     let book_age_at_submit_ms = Utc::now().timestamp_millis() - params.poly_book_fetched_at_ms;
     info!(
-        "Polymarket leg submitting: market_slug={} price={:.4} contracts={} book_age_ms={}",
-        params.polymarket_market_slug, params.poly_price, params.contracts, book_age_at_submit_ms
+        "Polymarket leg submitting: market_slug={} side={} price={:.4} (YES-book {:.4}) contracts={} book_source={} book_age_ms={}",
+        params.polymarket_market_slug,
+        params.polymarket_position_side.as_str(),
+        params.poly_price,
+        yes_book_price(params.polymarket_position_side, params.poly_price),
+        params.contracts,
+        params.poly_book_source.as_str(),
+        book_age_at_submit_ms
     );
     let poly_result = match service
         .polymarket_client
@@ -530,13 +600,11 @@ pub async fn submit_paired_order(
         .latency_ms
         .or(Some(poly_started.elapsed().as_millis() as i64));
 
-    // Diagnostic only, fires after the order already resolved: re-fetch the
-    // book to see whether the market had already moved past our submitted
-    // price by the time we placed it. `poly_price` was computed as the exact
-    // worst-case boundary price for `contracts` (find_profitable_contract_size),
-    // with no slippage buffer, so any movement between that snapshot and
-    // submission is a plausible explanation for a zero-fill IOC rejection
-    // independent of payload format (see CLAUDE.md session log).
+    // Diagnostic only, fires after the order already resolved: an
+    // independent origin REST fetch (never the CDN cache, never the WS book
+    // the price came from) showing where the market actually was. The IOC
+    // was priced at the exact worst-case boundary for `contracts` with no
+    // slippage buffer, so any movement since the sizing book shows up here.
     if poly_result.filled_contracts <= 0 {
         match service
             .polymarket_client
@@ -547,19 +615,22 @@ pub async fn submit_paired_order(
                 let post_levels = polymarket_buy_levels(&post_book, params.polymarket_position_side);
                 let current_best_price = post_levels.first().map(|(price, _)| *price);
                 let market_moved_past_our_price =
-                    current_best_price.is_some_and(|price| price > params.poly_price);
+                    current_best_price.is_some_and(|price| price > params.poly_price + 1e-9);
                 warn!(
-                    "Polymarket leg rejected: post-rejection book check for {} — submitted_price={:.4} book_age_ms_at_submit={} current_best_buy_price={:?} market_moved_past_our_price={}",
+                    "Polymarket leg unfilled: post-order origin book check for {} — submitted_price={:.4} book_source={} book_age_ms_at_submit={} current_best_buy_price={:?} market_moved_past_our_price={} book_state={} book_transact_time={:?}",
                     params.polymarket_market_slug,
                     params.poly_price,
+                    params.poly_book_source.as_str(),
                     book_age_at_submit_ms,
                     current_best_price,
-                    market_moved_past_our_price
+                    market_moved_past_our_price,
+                    post_book.state,
+                    post_book.transact_time
                 );
             }
             Err(error) => {
                 warn!(
-                    "Polymarket leg rejected: post-rejection book check failed for {}: {}",
+                    "Polymarket leg unfilled: post-order origin book check failed for {}: {:#}",
                     params.polymarket_market_slug, error
                 );
             }
@@ -792,7 +863,7 @@ pub async fn submit_paired_order(
     // can be grepped and cross-checked against the exchanges directly.
     if kalshi_result.filled_contracts > 0 || poly_result.filled_contracts > 0 {
         info!(
-            "Paired order {}: {} {} | kalshi order_id={:?} filled={}/{} @ {}c | polymarket order_id={:?} filled={}/{} @ {:.4} | neutralization={:?} residual={}",
+            "Paired order {}: {} {} | kalshi order_id={:?} filled={}/{} limit {}c avg_fill={:?} | polymarket order_id={:?} {} filled={}/{} limit {:.4} avg_fill={:?} | neutralization={:?} residual={}",
             status,
             params.event_name,
             params.team_name,
@@ -800,10 +871,13 @@ pub async fn submit_paired_order(
             kalshi_result.filled_contracts,
             params.contracts,
             params.kalshi_price_cents,
+            kalshi_result.average_fill_price,
             poly_result.order_id,
+            params.polymarket_position_side.as_str(),
             poly_result.filled_contracts,
             params.contracts,
             params.poly_price,
+            poly_result.average_fill_price,
             neutralization_success,
             residual_contracts,
         );

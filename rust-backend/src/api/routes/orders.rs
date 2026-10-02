@@ -14,8 +14,8 @@ use tracing::{error, info, warn};
 use crate::api::AppState;
 use crate::models::PolymarketPositionSide;
 use crate::services::paired_execution::{
-    executable_depth, find_profitable_contract_size, kalshi_buy_levels, polymarket_buy_levels,
-    submit_paired_order, EXECUTABLE_BOOK_MAX_AGE,
+    executable_depth, executable_polymarket_book, find_profitable_contract_size,
+    kalshi_buy_levels, polymarket_buy_levels, submit_paired_order, EXECUTABLE_BOOK_MAX_AGE,
 };
 use crate::services::PairedOrderParams;
 
@@ -362,10 +362,11 @@ pub async fn execute_arbitrage(
             "Fresh Kalshi websocket executable depth is unavailable",
         );
     };
-    let poly_book = match service
-        .polymarket_client
-        .get_market_book(&execution.market_slug)
-        .await
+    let (poly_book, poly_book_source) = match executable_polymarket_book(
+        &service,
+        &execution.market_slug,
+    )
+    .await
     {
         Ok(book) => book,
         Err(reason) => {
@@ -432,6 +433,7 @@ pub async fn execute_arbitrage(
             profit_margin,
             duration_ms: 0,
             poly_book_fetched_at_ms: poly_book.fetched_at_ms,
+            poly_book_source,
             neutralization_max_loss_cents: auto_state.neutralization_max_loss_cents,
             dry_run: req.dry_run,
         },

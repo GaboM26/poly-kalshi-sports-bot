@@ -35,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
                 return;
             }
             PolyWsEvent::Quote(q) => q,
+            PolyWsEvent::Connected | PolyWsEvent::Heartbeat | PolyWsEvent::Disconnected => return,
         };
         let (pa, pb, sa, sb) = sample2[&q.slug];
         let side = |s: PolymarketPositionSide| if s == PolymarketPositionSide::Long { q.long_quote } else { q.short_quote };

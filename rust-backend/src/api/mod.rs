@@ -23,8 +23,9 @@ use tracing::{error, info, warn, Level};
 use crate::config::Config;
 use crate::models::PriceUpdate;
 use crate::services::paired_execution::{
-    calculate_contracts_to_trade, executable_depth, find_profitable_contract_size,
-    kalshi_buy_levels, polymarket_buy_levels, submit_paired_order, EXECUTABLE_BOOK_MAX_AGE,
+    calculate_contracts_to_trade, executable_depth, executable_polymarket_book,
+    find_profitable_contract_size, kalshi_buy_levels, polymarket_buy_levels, submit_paired_order,
+    EXECUTABLE_BOOK_MAX_AGE,
 };
 use crate::services::{ArbitrageService, PairedOrderParams, PerformanceMetrics, TelegramClient};
 
@@ -73,6 +74,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
     service
         .run_kalshi_quote_refresh(config.settings.refresh_interval)
         .await;
+    service.run_ws_stats_reporter();
     match crate::clients::polymarket::resolve_credentials(&config.polymarket) {
         Ok((key_id, secret_key)) => service.run_polymarket_ws(key_id, secret_key),
         Err(e) => error!("Polymarket WebSocket disabled, REST polling only: {:#}", e),
@@ -641,11 +643,8 @@ async fn execute_single_auto_trade(
         );
         return;
     };
-    let poly_book = match service
-        .polymarket_client
-        .get_market_book(&poly_execution.market_slug)
-        .await
-    {
+    let (poly_book, poly_book_source) =
+        match executable_polymarket_book(service, &poly_execution.market_slug).await {
         Ok(book) => book,
         Err(reason) => {
             save_auto_trade_skip(
@@ -719,6 +718,7 @@ async fn execute_single_auto_trade(
             profit_margin,
             duration_ms,
             poly_book_fetched_at_ms: poly_book.fetched_at_ms,
+            poly_book_source,
             neutralization_max_loss_cents: auto_state.neutralization_max_loss_cents,
             dry_run: false,
         },
