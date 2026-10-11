@@ -715,6 +715,39 @@ impl PolymarketClient {
         Ok(positions)
     }
 
+    /// Ask the exchange how many contracts actually filled, for an order the
+    /// submit response reported as unfilled. The response can be wrong or
+    /// missing (a fill once landed while the bot recorded none), and a naked
+    /// unrecorded position is worse than a missed trade.
+    ///
+    /// With an order id the order itself is read; without one (no execution
+    /// came back) the account's recent trades on this market since
+    /// `since_ms` are summed. A failed lookup is an `Err`: the caller must
+    /// not treat it as "no fill".
+    pub async fn confirm_filled_contracts(
+        &self,
+        order_id: Option<&str>,
+        market_slug: &str,
+        since_ms: i64,
+    ) -> Result<i32> {
+        if let Some(order_id) = order_id {
+            let path = format!("/v1/order/{}", order_id);
+            let url = format!("{}{}", self.config.api_base_url, path);
+            let response = self
+                .request_json(Method::GET, &url, Some(&path), None)
+                .await
+                .context("Failed to look up Polymarket US order to confirm its fill")?;
+            return filled_from_order_lookup(&response);
+        }
+        let path = "/v1/portfolio/activities?limit=50";
+        let url = format!("{}{}", self.config.api_base_url, path);
+        let response = self
+            .request_json(Method::GET, &url, Some("/v1/portfolio/activities"), None)
+            .await
+            .context("Failed to look up Polymarket US trades to confirm a fill")?;
+        Ok(filled_from_activities(&response, market_slug, since_ms))
+    }
+
     /// Cancel an order directly against the Polymarket US API. The
     /// exchange requires the order's `marketSlug` on cancel, so this looks
     /// the order up first.
@@ -1131,6 +1164,37 @@ fn extract_average_fill_price(response: &Value) -> Option<f64> {
     .filter(|price| price.is_finite() && (0.0..1.0).contains(price))
 }
 
+/// Whole contracts filled according to a `GET /v1/order/{id}` response.
+fn filled_from_order_lookup(response: &Value) -> Result<i32> {
+    let order = response.get("order").unwrap_or(response);
+    let filled = amount_as_f64(&order["cumQuantity"])
+        .filter(|filled| filled.is_finite() && *filled >= 0.0)
+        .ok_or_else(|| anyhow::anyhow!("Polymarket US order lookup had no cumQuantity"))?;
+    // Round up: a fractional fill is still exposure, never report less.
+    Ok(filled.ceil() as i32)
+}
+
+/// Contracts traded on `market_slug` at or after `since_ms` (epoch millis),
+/// from a `GET /v1/portfolio/activities` response.
+fn filled_from_activities(response: &Value, market_slug: &str, since_ms: i64) -> i32 {
+    let total: f64 = response
+        .get("activities")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|activity| activity.get("trade"))
+        .filter(|trade| trade["marketSlug"].as_str() == Some(market_slug))
+        .filter(|trade| {
+            trade["createTime"]
+                .as_str()
+                .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
+                .is_some_and(|time| time.timestamp_millis() >= since_ms)
+        })
+        .filter_map(|trade| amount_as_f64(&trade["qty"]))
+        .sum();
+    total.ceil() as i32
+}
+
 fn amount_as_f64(value: &Value) -> Option<f64> {
     let value = value.get("value").unwrap_or(value);
     value.as_f64().or_else(|| value.as_str()?.parse().ok())
@@ -1399,6 +1463,28 @@ fn extract_date_from_slug(slug: &str) -> Option<DateTime<Utc>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_order_lookup_reports_the_exchange_fill() {
+        let filled = json!({"order": {"id": "o", "cumQuantity": "3", "state": "ORDER_STATE_FILLED"}});
+        assert_eq!(filled_from_order_lookup(&filled).unwrap(), 3);
+        let unfilled = json!({"order": {"id": "o", "cumQuantity": "0"}});
+        assert_eq!(filled_from_order_lookup(&unfilled).unwrap(), 0);
+        assert!(filled_from_order_lookup(&json!({"order": {}})).is_err());
+    }
+
+    #[test]
+    fn only_trades_on_this_market_since_submission_count_as_a_fill() {
+        let since = chrono::DateTime::parse_from_rfc3339("2026-09-11T20:35:37Z").unwrap().timestamp_millis();
+        let response = json!({"activities": [
+            {"trade": {"marketSlug": "m", "qty": "1", "createTime": "2026-09-11T20:35:38.142Z"}},
+            {"trade": {"marketSlug": "m", "qty": "2", "createTime": "2026-09-11T20:00:00Z"}},
+            {"trade": {"marketSlug": "other", "qty": "5", "createTime": "2026-09-11T20:35:38Z"}},
+            {"positionResolution": {}}
+        ]});
+        assert_eq!(filled_from_activities(&response, "m", since), 1);
+        assert_eq!(filled_from_activities(&response, "none", since), 0);
+    }
+
     use super::*;
 
     fn book(bids: Vec<(f64, f64)>, offers: Vec<(f64, f64)>) -> PolymarketMarketBook {

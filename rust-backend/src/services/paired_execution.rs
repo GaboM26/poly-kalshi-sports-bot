@@ -660,7 +660,8 @@ pub async fn submit_paired_order(
         params.poly_book_source.as_str(),
         book_age_at_submit_ms
     );
-    let poly_result = match service
+    let poly_submitted_at_ms = Utc::now().timestamp_millis();
+    let mut poly_result = match service
         .polymarket_client
         .submit_limit_order(
             &params.polymarket_market_slug,
@@ -677,6 +678,46 @@ pub async fn submit_paired_order(
     let poly_latency = poly_result
         .latency_ms
         .or(Some(poly_started.elapsed().as_millis() as i64));
+
+    // An unfilled response is not proof of no fill: one landed 0.6s after the
+    // bot recorded none and it then unhedged the other leg. Ask the exchange
+    // before concluding. If it cannot be asked, stop trading rather than
+    // risk a naked, unrecorded position.
+    if poly_result.filled_contracts == 0 && poly_result.fill_quantity_valid {
+        match service
+            .polymarket_client
+            .confirm_filled_contracts(
+                poly_result.order_id.as_deref(),
+                &params.polymarket_market_slug,
+                poly_submitted_at_ms - 2_000,
+            )
+            .await
+        {
+            Ok(0) => {}
+            Ok(confirmed) => {
+                error!(
+                    "Polymarket order response reported no fill but the exchange shows {} filled on {}; using the exchange's number",
+                    confirmed, params.polymarket_market_slug
+                );
+                poly_result.filled_contracts = confirmed;
+                poly_result.error = None;
+            }
+            Err(reason) => {
+                error!(
+                    "Halting auto-trading: could not confirm the Polymarket fill for {}: {:#}",
+                    params.polymarket_market_slug, reason
+                );
+                if let Err(disable_reason) = service.ws_manager.disable_auto_trade() {
+                    error!("Failed to halt auto-trading: {:#}", disable_reason);
+                }
+                poly_result.fill_quantity_valid = false;
+                poly_result.error = Some(format!(
+                    "Polymarket fill could not be confirmed after an unfilled response: {:#}",
+                    reason
+                ));
+            }
+        }
+    }
 
     // Ground-truth check on the fee model: Polymarket reports the commission
     // it collected on the order. If that stops matching `core::fees`, every
