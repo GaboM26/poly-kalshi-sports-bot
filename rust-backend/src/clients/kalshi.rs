@@ -876,11 +876,13 @@ impl KalshiClient {
         let data: Value = serde_json::from_str(text).ok()?;
         let msg_type = data.get("type")?.as_str()?;
 
-        // `seq` counts every message of one subscription (`sid`), across all
-        // the tickers that subscription carries - it is NOT per ticker. A
-        // per-ticker check reported ~1 false gap every 3s on the live feed.
-        // A skipped number on a sid means a message was lost.
-        if matches!(msg_type, "orderbook_snapshot" | "orderbook_delta") {
+        // `seq` counts EVERY message on a subscription id (`sid`) - snapshots,
+        // deltas and the `ok` acknowledgements alike - and one sid carries all
+        // tickers. Verified on the live feed: sid=1, seq 1..N across mixed
+        // `orderbook_snapshot` / `ok` messages. Counting only book messages
+        // (or per ticker) reported false gaps on every connect. A skipped
+        // number on a sid means a message was lost.
+        {
             if let (Some(sid), Some(got)) = (
                 data.get("sid").and_then(Value::as_u64),
                 data.get("seq").and_then(Value::as_u64),
@@ -1817,6 +1819,24 @@ mod tests {
         assert!(matches!(parse(&delta(1, 7, "A"), &cache, &mut seqs), Some(Ok(_))));
         assert!(matches!(parse(&delta(1, 8, "B"), &cache, &mut seqs), Some(Ok(_))));
         assert_eq!(cache.read().get("A").unwrap().epoch, 1);
+    }
+
+    #[test]
+    fn ok_acknowledgements_consume_sequence_numbers() {
+        // Live feed: snapshot seq=1, then `ok` acks seq=2..3, then the next
+        // snapshot is seq=4. The acks must count or this looks like a gap.
+        let cache = ws_cache();
+        let mut seqs = HashMap::new();
+        let ok = |seq: u64| format!(r#"{{"type":"ok","sid":1,"seq":{seq},"msg":{{}}}}"#);
+        assert!(matches!(parse(&snapshot(1, 1, "A"), &cache, &mut seqs), Some(Ok(_))));
+        parse(&ok(2), &cache, &mut seqs);
+        parse(&ok(3), &cache, &mut seqs);
+        assert!(matches!(parse(&snapshot(1, 4, "B"), &cache, &mut seqs), Some(Ok(_))));
+        // A skipped ack is a real gap.
+        let Some(Err(gap)) = parse(&snapshot(1, 6, "B"), &cache, &mut seqs) else {
+            panic!("expected a gap");
+        };
+        assert_eq!((gap.expected, gap.got), (5, 6));
     }
 
     #[test]
