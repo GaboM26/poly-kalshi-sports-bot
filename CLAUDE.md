@@ -183,6 +183,26 @@ Ordered by money risk. (Fixed 2026-10-11: sizing now re-checks `min_profit_margi
     (2026-09-27). Never triaged: could be the Kalshi WS, the frontend WS
     client, or a backend restart.
 
+## Next up: restart the backend by chat message
+
+Requested 2026-10-11. The user wants to reset the backend by sending a message
+to the Claude session over Discord, instead of restarting it by hand. Remind
+the user of this when planning work. Notes for the design:
+
+- Run the backend under a named tmux session (like the Claude session) with a
+  single restart script (`stop`, `build`, `start`), so a restart is one
+  command that works the same from a terminal or from chat.
+- Guardrails, because this is live trading software: refuse the restart if an
+  unresolved `submitting` execution record exists or if auto-trading is
+  enabled, unless the user confirms in full; log every restart request with
+  the sender; accept it only from the allowlisted Discord sender.
+- A restart reconnects both exchange WebSockets and reloads settings from the
+  database. Check the log for errors after it starts and report the result in
+  the reply.
+- The Discord session is itself a long-lived tmux Claude session; see the
+  always-on setup notes in the conversation of 2026-10-11 (tmux + Task
+  Scheduler) before building this.
+
 ## Next up: extend market coverage beyond NBA + tennis
 
 Not started. Keep it read-only (detection/display) until settlement
