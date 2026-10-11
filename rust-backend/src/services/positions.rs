@@ -14,6 +14,9 @@
 //!    recognises a hedge placed by hand - on the order form or on either
 //!    exchange's own site - which leaves no bot history row.
 //!
+//! Every leg's cost is all-in (fees included) and its fees are shown, so a
+//! hedge's real result - and where the fees went - is visible.
+//!
 //! Hedged means "opposite outcomes of the same game on the two exchanges",
 //! so legs pointing the same way (both pay if the same competitor wins) are
 //! never paired by either source.
@@ -43,12 +46,19 @@ pub struct PositionLeg {
     /// Kalshi: "yes"/"no". Polymarket: "long"/"short".
     pub side: String,
     pub contracts: f64,
+    /// Price paid per contract, EXCLUDING fees (what the order filled at).
     pub entry_price: Option<f64>,
     pub current_price: Option<f64>,
+    /// All-in cost: what the contracts cost plus the fees paid on them.
+    /// Both exchanges are put on the same basis here - Kalshi reports
+    /// exposure and fees separately, Polymarket's `cost` already adds them.
     pub cost: f64,
     pub value: Option<f64>,
+    /// `value - cost`: net of the fees paid on entry, before any exit fee.
     pub unrealized_pnl: Option<f64>,
-    /// `None` means unknown (Polymarket exposes no fee field), never $0.
+    /// Fees paid on this position, as reported by the exchange, and already
+    /// included in `cost`. `None` means the exchange did not report it
+    /// (unknown), never $0.
     pub fees: Option<f64>,
 }
 
@@ -61,9 +71,18 @@ pub struct PositionCard {
     pub paired_by: Option<&'static str>,
     pub event_name: Option<String>,
     pub legs: Vec<PositionLeg>,
+    /// Sum of the legs' all-in costs (fees included).
     pub total_cost: f64,
     pub total_value: Option<f64>,
+    /// `total_value - total_cost`: mark-to-market, net of entry fees.
     pub total_pnl: Option<f64>,
+    /// Sum of the legs' fees; `None` if any leg's fees are unknown.
+    pub total_fees: Option<f64>,
+    /// Paired cards only: the worst-case result if held to settlement. One
+    /// leg or the other pays $1 per contract, so the guaranteed payout is the
+    /// smaller leg's contract count, minus the all-in cost of both legs. This
+    /// is where fees decide whether a hedge made money. `None` when unpaired.
+    pub settlement_pnl: Option<f64>,
     /// Paired legs whose contract counts differ are only partly hedged.
     pub contracts_mismatch: bool,
 }
@@ -73,11 +92,27 @@ fn num(value: Option<&Value>) -> Option<f64> {
     value.as_f64().or_else(|| value.as_str()?.parse().ok())
 }
 
-fn leg_economics(contracts: f64, cost: f64, mark: Option<f64>) -> (Option<f64>, Option<f64>, Option<f64>) {
-    let entry = (contracts > 0.0).then(|| cost / contracts);
+/// One leg's derived figures; see `leg_economics`.
+struct LegEconomics {
+    entry_price: Option<f64>,
+    cost: f64,
+    value: Option<f64>,
+    unrealized_pnl: Option<f64>,
+}
+
+/// `base_cost` is what the contracts cost EXCLUDING fees and `fees` what was
+/// paid on them (`None` = not reported). The entry price is quoted without
+/// fees; cost and P&L are all-in so the two exchanges are comparable and a
+/// hedge's fees are not hidden.
+fn leg_economics(contracts: f64, base_cost: f64, fees: Option<f64>, mark: Option<f64>) -> LegEconomics {
+    let cost = base_cost + fees.unwrap_or(0.0);
     let value = mark.map(|m| m * contracts);
-    let pnl = value.map(|v| v - cost);
-    (entry, value, pnl)
+    LegEconomics {
+        entry_price: (contracts > 0.0).then(|| base_cost / contracts),
+        cost,
+        value,
+        unrealized_pnl: value.map(|v| v - cost),
+    }
 }
 
 /// Build a Kalshi leg from a raw `market_positions` entry. `mark` is the
@@ -91,8 +126,12 @@ pub fn kalshi_leg(position: &Value, mark: Option<f64>) -> Option<PositionLeg> {
     let ticker = position.get("ticker")?.as_str()?.to_string();
     let contracts = signed.abs();
     // Sign of market_exposure_dollars is undocumented for NO positions.
-    let cost = num(position.get("market_exposure_dollars").or_else(|| position.get("market_exposure")))?.abs();
-    let (entry_price, value, unrealized_pnl) = leg_economics(contracts, cost, mark);
+    // Exposure is what the contracts cost, WITHOUT fees (verified live:
+    // 2 contracts at 51c = 1.02 with fees_paid_dollars 0.035 separate).
+    let base_cost = num(position.get("market_exposure_dollars").or_else(|| position.get("market_exposure")))?.abs();
+    let fees = num(position.get("fees_paid_dollars").or_else(|| position.get("fees_paid")));
+    let LegEconomics { entry_price, cost, value, unrealized_pnl } =
+        leg_economics(contracts, base_cost, fees, mark);
     Some(PositionLeg {
         platform: "kalshi",
         title: position
@@ -108,7 +147,7 @@ pub fn kalshi_leg(position: &Value, mark: Option<f64>) -> Option<PositionLeg> {
         cost,
         value,
         unrealized_pnl,
-        fees: num(position.get("fees_paid_dollars").or_else(|| position.get("fees_paid"))),
+        fees,
     })
 }
 
@@ -120,9 +159,19 @@ pub fn polymarket_leg(position: &Value) -> Option<PositionLeg> {
     }
     let market_id = position.get("id")?.as_str()?.to_string();
     let contracts = signed.abs();
-    let cost = num(position.get("cost"))?.abs();
-    let value = num(position.get("value")).map(f64::abs);
-    let (entry_price, _, _) = leg_economics(contracts, cost, None);
+    let fees = num(position.get("fees"));
+    // Polymarket reports `cost` = `baseCost` + `fees` (verified on every live
+    // position). Prefer the two components, so a change to what `cost`
+    // includes cannot shift the numbers; fall back to `cost` minus fees.
+    let base_cost = match num(position.get("base_cost")) {
+        Some(base_cost) => base_cost.abs(),
+        None => num(position.get("cost"))?.abs() - fees.unwrap_or(0.0),
+    };
+    // Polymarket reports the position's current value in dollars; the
+    // per-contract mark is derived from it.
+    let mark = num(position.get("value")).map(|value| value.abs() / contracts);
+    let LegEconomics { entry_price, cost, value, unrealized_pnl } =
+        leg_economics(contracts, base_cost, fees, mark);
     Some(PositionLeg {
         platform: "polymarket",
         title: position
@@ -134,11 +183,11 @@ pub fn polymarket_leg(position: &Value) -> Option<PositionLeg> {
         side: if signed > 0.0 { "long" } else { "short" }.to_string(),
         contracts,
         entry_price,
-        current_price: value.map(|v| v / contracts),
+        current_price: mark,
         cost,
         value,
-        unrealized_pnl: value.map(|v| v - cost),
-        fees: None,
+        unrealized_pnl,
+        fees,
     })
 }
 
@@ -148,9 +197,14 @@ fn card(
     event_name: Option<String>,
     legs: Vec<PositionLeg>,
 ) -> PositionCard {
-    let total_cost = legs.iter().map(|l| l.cost).sum();
+    let total_cost: f64 = legs.iter().map(|l| l.cost).sum();
     let total_value = legs.iter().map(|l| l.value).sum::<Option<f64>>();
+    let total_fees = legs.iter().map(|l| l.fees).sum::<Option<f64>>();
     let contracts_mismatch = legs.len() == 2 && (legs[0].contracts - legs[1].contracts).abs() > 1e-9;
+    // Opposite outcomes of one game: exactly one leg pays $1 per contract, so
+    // the guaranteed payout is the smaller leg's contract count.
+    let settlement_pnl = (kind == "paired" && legs.len() == 2)
+        .then(|| legs[0].contracts.min(legs[1].contracts) - total_cost);
     PositionCard {
         kind,
         paired_by,
@@ -158,6 +212,8 @@ fn card(
         total_cost,
         total_pnl: total_value.map(|v| v - total_cost),
         total_value,
+        total_fees,
+        settlement_pnl,
         contracts_mismatch,
         legs,
     }
@@ -342,6 +398,7 @@ mod tests {
             kalshi_contracts: 0,
             kalshi_price: 0.0,
             kalshi_fee: 0.0,
+            polymarket_fee: None,
             polymarket_amount: 0.0,
             polymarket_price: 0.0,
             total_amount: 0.0,
@@ -753,8 +810,10 @@ mod tests {
         let l = kalshi_leg(&raw, Some(0.50)).unwrap();
         assert_eq!(l.side, "no");
         assert_eq!(l.contracts, 10.0);
+        // Entry is the price paid, without fees; cost and P&L are all-in.
         assert!((l.entry_price.unwrap() - 0.42).abs() < 1e-9);
-        assert!((l.unrealized_pnl.unwrap() - 0.80).abs() < 1e-9);
+        assert!((l.cost - 4.35).abs() < 1e-9);
+        assert!((l.unrealized_pnl.unwrap() - (5.00 - 4.35)).abs() < 1e-9);
         assert_eq!(l.fees, Some(0.15));
     }
 
@@ -767,6 +826,138 @@ mod tests {
         assert!((l.current_price.unwrap() - 0.5).abs() < 1e-9);
         assert!((l.unrealized_pnl.unwrap() - 0.4).abs() < 1e-9);
         assert_eq!(l.fees, None);
+    }
+
+    // --- Fees on both legs, using the real 2026-10-01 AZKSIN hedge ---
+
+    /// Kalshi's raw record: 2 NO contracts at 51c = exposure 1.02, fees apart.
+    fn real_kalshi_azksin() -> Value {
+        json!({
+            "ticker": "KXITFMATCH-26OCT02AZKSIN-SIN", "event_ticker": "KXITFMATCH-26OCT02AZKSIN",
+            "position_fp": "-2.00", "market_exposure_dollars": "1.020000",
+            "fees_paid_dollars": "0.035000", "realized_pnl_dollars": "0.000000",
+            "total_traded_dollars": "1.020000"
+        })
+    }
+
+    /// Polymarket's record after `normalize_positions`: baseCost 0.94 + fees
+    /// 0.04 = cost 0.98 for 2 SHORT contracts.
+    fn real_polymarket_azksin() -> Value {
+        json!({
+            "id": "aec-itfme-ardazk-digsin-2026-10-02", "title": "Arda Azkara vs. Digvijay Pratap Singh",
+            "size": "-2", "value": 0.94, "cost": 0.98, "base_cost": 0.94, "fees": 0.04, "pnl": 0.0
+        })
+    }
+
+    #[test]
+    fn kalshi_cost_includes_the_separately_reported_fees() {
+        let l = kalshi_leg(&real_kalshi_azksin(), Some(0.50)).unwrap();
+        assert!((l.entry_price.unwrap() - 0.51).abs() < 1e-9, "entry is quoted without fees");
+        assert!((l.cost - 1.055).abs() < 1e-9, "1.02 + 0.035, got {}", l.cost);
+        assert_eq!(l.fees, Some(0.035));
+        // 2 contracts marked at 0.50 = 1.00, against the all-in 1.055.
+        assert!((l.unrealized_pnl.unwrap() - (1.00 - 1.055)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn polymarket_fees_are_read_from_the_position_instead_of_reported_unknown() {
+        let l = polymarket_leg(&real_polymarket_azksin()).unwrap();
+        assert_eq!(l.side, "short");
+        assert_eq!(l.fees, Some(0.04));
+        assert!((l.cost - 0.98).abs() < 1e-9, "baseCost + fees");
+        assert!((l.entry_price.unwrap() - 0.47).abs() < 1e-9, "entry is quoted without fees");
+        assert!((l.current_price.unwrap() - 0.47).abs() < 1e-9);
+        // Already net of fees on Polymarket's own numbers: 0.94 - 0.98.
+        assert!((l.unrealized_pnl.unwrap() - (-0.04)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn polymarket_falls_back_to_cost_minus_fees_when_the_base_cost_is_missing() {
+        let mut raw = real_polymarket_azksin();
+        raw.as_object_mut().unwrap().remove("base_cost");
+        let l = polymarket_leg(&raw).unwrap();
+        assert!((l.cost - 0.98).abs() < 1e-9);
+        assert!((l.entry_price.unwrap() - 0.47).abs() < 1e-9);
+        assert_eq!(l.fees, Some(0.04));
+    }
+
+    #[test]
+    fn polymarket_fees_that_are_absent_stay_unknown_not_zero() {
+        let mut raw = real_polymarket_azksin();
+        let obj = raw.as_object_mut().unwrap();
+        obj.remove("fees");
+        obj.remove("base_cost");
+        let l = polymarket_leg(&raw).unwrap();
+        assert_eq!(l.fees, None);
+        assert!((l.cost - 0.98).abs() < 1e-9, "cost is whatever the exchange reported");
+        // A null fee (as on resolved positions) is the same as absent.
+        let mut raw = real_polymarket_azksin();
+        raw["fees"] = Value::Null;
+        assert_eq!(polymarket_leg(&raw).unwrap().fees, None);
+    }
+
+    #[test]
+    fn a_hedged_pair_shows_both_legs_fees_and_what_it_settles_at() {
+        let cards = pair_positions(
+            vec![kalshi_leg(&real_kalshi_azksin(), Some(0.50)).unwrap()],
+            vec![polymarket_leg(&real_polymarket_azksin()).unwrap()],
+            &[],
+            &[HedgePair {
+                event_name: "AZKARA VS SINGH".into(),
+                kalshi_market_id: "KXITFMATCH-26OCT02AZKSIN-SIN".into(),
+                kalshi_side: "no".into(),
+                polymarket_market_id: "aec-itfme-ardazk-digsin-2026-10-02".into(),
+                polymarket_side: "short".into(),
+            }],
+        );
+        let card = &cards[0];
+        assert_eq!(card.kind, "paired");
+        // 1.055 (Kalshi, fees included) + 0.98 (Polymarket, fees included).
+        assert!((card.total_cost - 2.035).abs() < 1e-9, "{}", card.total_cost);
+        assert!((card.total_fees.unwrap() - 0.075).abs() < 1e-9);
+        // 2 contracts pay $2.00 whichever player wins: gross +0.04 on the
+        // 51c + 47c entries, but 0.075 of fees turns it into a 3.5c loss.
+        assert!((card.settlement_pnl.unwrap() - (2.0 - 2.035)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_partly_hedged_pair_settles_on_its_smaller_leg() {
+        let cards = pair_positions(
+            vec![leg("kalshi", "K1", "yes", 5.0, 2.0)],
+            vec![leg("polymarket", "P1", "short", 2.0, 0.9)],
+            &[row("executed", "K1", "yes", "P1", "short")],
+            &[],
+        );
+        let card = &cards[0];
+        assert!(card.contracts_mismatch);
+        // Only 2 contracts are guaranteed to pay: 2 - (2.0 + 0.9).
+        assert!((card.settlement_pnl.unwrap() - (2.0 - 2.9)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unpaired_cards_have_no_settlement_result_and_unknown_fees_are_not_summed_as_zero() {
+        let cards = pair_positions(
+            vec![leg("kalshi", "K1", "yes", 5.0, 2.0)],
+            vec![leg("polymarket", "P9", "short", 5.0, 2.5)],
+            &[],
+            &[],
+        );
+        assert!(cards.iter().all(|c| c.kind == "standalone" && c.settlement_pnl.is_none()));
+
+        // One leg's fee unknown: the total is unknown rather than understated.
+        let mut known = leg("kalshi", "K1", "yes", 5.0, 2.0);
+        known.fees = Some(0.10);
+        let mut unknown = leg("polymarket", "P1", "short", 5.0, 2.5);
+        unknown.fees = None;
+        let cards = pair_positions(
+            vec![known],
+            vec![unknown],
+            &[row("executed", "K1", "yes", "P1", "short")],
+            &[],
+        );
+        assert_eq!(cards[0].kind, "paired");
+        assert_eq!(cards[0].total_fees, None);
+        assert!((cards[0].total_cost - 4.5).abs() < 1e-9, "cost still sums");
     }
 
     #[test]

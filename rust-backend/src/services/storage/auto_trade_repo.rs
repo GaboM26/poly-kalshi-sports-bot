@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use super::ArbitrageStorage;
+use crate::core::fees::{kalshi_taker_fee, polymarket_taker_fee};
 
 /// Auto-trade state stored in database
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,7 +64,11 @@ pub struct AutoTradeRecord {
     pub polymarket_side: String,
     pub kalshi_contracts: i32,
     pub kalshi_price: f64,
+    /// Modeled Kalshi taker fee for the planned size.
     pub kalshi_fee: f64,
+    /// Modeled Polymarket taker fee for the planned size; `None` for rows
+    /// written before it was modeled.
+    pub polymarket_fee: Option<f64>,
     pub polymarket_amount: f64,
     pub polymarket_price: f64,
     pub total_amount: f64,
@@ -112,6 +117,8 @@ pub struct AutoTradeExecutionRecord {
     pub contracts: i32,
     pub kalshi_price: f64,
     pub kalshi_fee: f64,
+    /// Modeled Polymarket taker fee for the planned size.
+    pub polymarket_fee: f64,
     pub polymarket_price: f64,
     pub profit_margin: f64,
     pub duration_ms: i64,
@@ -287,8 +294,10 @@ impl ArbitrageStorage {
     pub fn save_auto_trade_execution(&self, record: &AutoTradeExecutionRecord) -> Result<i64> {
         let conn = self.conn().lock();
         let polymarket_amount = record.contracts as f64 * record.polymarket_price;
-        let total_amount =
-            record.contracts as f64 * record.kalshi_price + record.kalshi_fee + polymarket_amount;
+        let total_amount = record.contracts as f64 * record.kalshi_price
+            + record.kalshi_fee
+            + polymarket_amount
+            + record.polymarket_fee;
         conn.execute(
             "INSERT INTO auto_trade_history (
                 event_name, team_name, kalshi_market_id, polymarket_market_id, kalshi_side,
@@ -299,10 +308,10 @@ impl ArbitrageStorage {
                 kalshi_filled_contracts, polymarket_filled_contracts, kalshi_order_status,
                 polymarket_order_status, neutralization_leg, neutralization_success,
                 neutralization_order_id, neutralization_filled_contracts, neutralization_error,
-                residual_leg, residual_contracts, created_at
+                residual_leg, residual_contracts, created_at, polymarket_fee
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
                       ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29,
-                      ?30, ?31, ?32, ?33, ?34, ?35, ?36)",
+                      ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37)",
             params![
                 record.event_name,
                 record.team_name,
@@ -340,6 +349,7 @@ impl ArbitrageStorage {
                 record.residual_leg,
                 record.residual_contracts,
                 Utc::now().to_rfc3339(),
+                record.polymarket_fee,
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -354,8 +364,10 @@ impl ArbitrageStorage {
     ) -> Result<()> {
         let conn = self.conn().lock();
         let polymarket_amount = record.contracts as f64 * record.polymarket_price;
-        let total_amount =
-            record.contracts as f64 * record.kalshi_price + record.kalshi_fee + polymarket_amount;
+        let total_amount = record.contracts as f64 * record.kalshi_price
+            + record.kalshi_fee
+            + polymarket_amount
+            + record.polymarket_fee;
         conn.execute(
             "UPDATE auto_trade_history SET kalshi_contracts=?2, kalshi_price=?3, kalshi_fee=?4,
                 polymarket_amount=?5, polymarket_price=?6, total_amount=?7, profit_margin=?8,
@@ -365,7 +377,7 @@ impl ArbitrageStorage {
                 polymarket_filled_contracts=?21, kalshi_order_status=?22, polymarket_order_status=?23,
                 neutralization_leg=?24, neutralization_success=?25, neutralization_order_id=?26,
                 neutralization_filled_contracts=?27, neutralization_error=?28, residual_leg=?29,
-                residual_contracts=?30 WHERE id=?1",
+                residual_contracts=?30, polymarket_fee=?31 WHERE id=?1",
             params![
                 id, record.contracts, record.kalshi_price, record.kalshi_fee, polymarket_amount,
                 record.polymarket_price, total_amount, record.profit_margin, record.duration_ms,
@@ -376,7 +388,7 @@ impl ArbitrageStorage {
                 record.kalshi_order_status, record.polymarket_order_status, record.neutralization_leg,
                 record.neutralization_success.map(i32::from), record.neutralization_order_id,
                 record.neutralization_filled_contracts, record.neutralization_error, record.residual_leg,
-                record.residual_contracts,
+                record.residual_contracts, record.polymarket_fee,
             ],
         )?;
         Ok(())
@@ -548,11 +560,11 @@ impl ArbitrageStorage {
         let conn = self.conn().lock();
 
         // Calculate estimated amounts for reference
-        let kalshi_fee =
-            (0.07 * kalshi_contracts as f64 * kalshi_price * (1.0 - kalshi_price) * 100.0).ceil()
-                / 100.0;
+        let kalshi_fee = kalshi_taker_fee(kalshi_contracts as f64, kalshi_price);
+        let polymarket_fee = polymarket_taker_fee(kalshi_contracts as f64, polymarket_price);
         let polymarket_amount = kalshi_contracts as f64 * polymarket_price;
-        let total_amount = kalshi_contracts as f64 * kalshi_price + kalshi_fee + polymarket_amount;
+        let total_amount =
+            kalshi_contracts as f64 * kalshi_price + kalshi_fee + polymarket_amount + polymarket_fee;
 
         conn.execute(
             "INSERT INTO auto_trade_history (
@@ -561,8 +573,8 @@ impl ArbitrageStorage {
                 polymarket_amount, polymarket_price, total_amount, profit_margin,
                 duration_ms, kalshi_success, polymarket_success,
                 kalshi_order_id, polymarket_order_id, kalshi_error, polymarket_error,
-                status, skip_reason, created_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                status, skip_reason, created_at, polymarket_fee
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             params![
                 event_name,
                 team_name,
@@ -587,6 +599,7 @@ impl ArbitrageStorage {
                 "skipped",
                 Some(skip_reason),
                 Utc::now().to_rfc3339(),
+                polymarket_fee,
             ],
         )?;
 
@@ -612,7 +625,7 @@ impl ArbitrageStorage {
                     kalshi_order_status, polymarket_order_status,
                     neutralization_leg, neutralization_success, neutralization_order_id,
                     neutralization_filled_contracts, neutralization_error,
-                    residual_leg, residual_contracts, created_at
+                    residual_leg, residual_contracts, created_at, polymarket_fee
              FROM auto_trade_history
              ORDER BY created_at DESC
              LIMIT ?1",
@@ -631,6 +644,7 @@ impl ArbitrageStorage {
                     kalshi_contracts: row.get(7)?,
                     kalshi_price: row.get(8)?,
                     kalshi_fee: row.get(9)?,
+                    polymarket_fee: row.get::<_, Option<f64>>(38)?,
                     polymarket_amount: row.get(10)?,
                     polymarket_price: row.get(11)?,
                     total_amount: row.get(12)?,
@@ -666,5 +680,182 @@ impl ArbitrageStorage {
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(records)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn execution(polymarket_fee: f64) -> AutoTradeExecutionRecord {
+        AutoTradeExecutionRecord {
+            event_name: "ARYAN SHAH VS EVAN BYNOE".into(),
+            team_name: "ARYAN SHAH".into(),
+            kalshi_market_id: "KXITFMATCH-26OCT01SHABYN-SHA".into(),
+            polymarket_market_id: "aec-itfme-arysha-evabyn-2026-10-01".into(),
+            kalshi_side: "no".into(),
+            polymarket_side: "long".into(),
+            contracts: 10,
+            kalshi_price: 0.46,
+            kalshi_fee: 0.18,
+            polymarket_fee,
+            polymarket_price: 0.50,
+            profit_margin: 0.5,
+            duration_ms: 0,
+            total_duration_ms: 0,
+            kalshi_success: false,
+            polymarket_success: false,
+            kalshi_order_id: None,
+            polymarket_order_id: None,
+            kalshi_error: None,
+            polymarket_error: None,
+            kalshi_latency_ms: None,
+            poly_latency_ms: None,
+            kalshi_filled_contracts: 0,
+            polymarket_filled_contracts: 0,
+            kalshi_order_status: None,
+            polymarket_order_status: None,
+            neutralization_leg: None,
+            neutralization_success: None,
+            neutralization_order_id: None,
+            neutralization_filled_contracts: 0,
+            neutralization_error: None,
+            residual_leg: None,
+            residual_contracts: 0,
+            status: "submitting".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_polymarket_fee_is_stored_finalized_and_part_of_the_total() {
+        let storage = ArbitrageStorage::new(":memory:").unwrap();
+        let id = storage.save_auto_trade_execution(&execution(0.17)).unwrap();
+
+        let row = &storage.get_auto_trade_history(10).unwrap()[0];
+        assert_eq!(row.polymarket_fee, Some(0.17));
+        assert!((row.kalshi_fee - 0.18).abs() < 1e-9);
+        // 10 x 0.46 + 0.18 + 10 x 0.50 + 0.17
+        assert!((row.total_amount - 9.95).abs() < 1e-9, "{}", row.total_amount);
+
+        // Finalising rewrites it from the finished record.
+        let mut finished = execution(0.19);
+        finished.status = "executed".into();
+        storage.finish_auto_trade_execution(id, &finished).unwrap();
+        let row = &storage.get_auto_trade_history(10).unwrap()[0];
+        assert_eq!(row.polymarket_fee, Some(0.19));
+        assert!((row.total_amount - 9.97).abs() < 1e-9, "{}", row.total_amount);
+    }
+
+    #[tokio::test]
+    async fn legacy_rows_have_no_polymarket_fee_rather_than_a_fake_zero() {
+        let storage = ArbitrageStorage::new(":memory:").unwrap();
+        // A row exactly as written before Polymarket's fee was modeled: the
+        // column exists (added by the migration) but was never set.
+        storage
+            .conn()
+            .lock()
+            .execute(
+                "INSERT INTO auto_trade_history (
+                    event_name, team_name, kalshi_market_id, polymarket_market_id, kalshi_side,
+                    polymarket_side, kalshi_contracts, kalshi_price, kalshi_fee, polymarket_amount,
+                    polymarket_price, total_amount, profit_margin, duration_ms, kalshi_success,
+                    polymarket_success, status, created_at
+                 ) VALUES ('E', 'T', 'K', 'P', 'yes', 'short', 10, 0.5, 0.18, 4.4, 0.44, 9.58,
+                           2.0, 0, 1, 1, 'executed', '2026-09-29T00:43:42+00:00')",
+                [],
+            )
+            .unwrap();
+        let row = &storage.get_auto_trade_history(10).unwrap()[0];
+        assert_eq!(row.polymarket_fee, None);
+    }
+
+    #[tokio::test]
+    async fn the_migration_adds_the_column_to_an_existing_database() {
+        // Build a database with the exact schema the live app had before
+        // Polymarket's fee was modeled (copied from the real
+        // arbitrage_history.db), then open it with the app.
+        let path = std::env::temp_dir().join(format!(
+            "polytaoli-fee-migration-{}-{}.db",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute(
+                r#"CREATE TABLE auto_trade_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_name TEXT NOT NULL,
+                team_name TEXT NOT NULL,
+                kalshi_market_id TEXT NOT NULL,
+                polymarket_market_id TEXT NOT NULL,
+                kalshi_side TEXT NOT NULL,
+                polymarket_side TEXT NOT NULL,
+                kalshi_contracts INTEGER NOT NULL,
+                kalshi_price REAL NOT NULL,
+                kalshi_fee REAL DEFAULT 0,
+                polymarket_amount REAL NOT NULL,
+                polymarket_price REAL NOT NULL,
+                total_amount REAL NOT NULL,
+                profit_margin REAL NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                total_duration_ms INTEGER DEFAULT 0,
+                kalshi_success INTEGER NOT NULL,
+                polymarket_success INTEGER NOT NULL,
+                kalshi_order_id TEXT,
+                polymarket_order_id TEXT,
+                kalshi_error TEXT,
+                polymarket_error TEXT,
+                status TEXT DEFAULT 'executed',
+                skip_reason TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            , kalshi_latency_ms INTEGER DEFAULT 0, poly_latency_ms INTEGER DEFAULT 0, kalshi_filled_contracts INTEGER DEFAULT 0, polymarket_filled_contracts INTEGER DEFAULT 0, kalshi_order_status TEXT, polymarket_order_status TEXT, neutralization_leg TEXT, neutralization_success INTEGER, neutralization_order_id TEXT, neutralization_filled_contracts INTEGER DEFAULT 0, neutralization_error TEXT, residual_leg TEXT, residual_contracts INTEGER DEFAULT 0)"#,
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO auto_trade_history (event_name, team_name, kalshi_market_id,
+                    polymarket_market_id, kalshi_side, polymarket_side, kalshi_contracts,
+                    kalshi_price, polymarket_amount, polymarket_price, total_amount,
+                    profit_margin, duration_ms, kalshi_success, polymarket_success, created_at)
+                 VALUES ('OLD', 'T', 'K', 'P', 'yes', 'short', 10, 0.5, 4.4, 0.44, 9.4, 2.0, 0, 1, 1,
+                         '2026-09-01T00:00:00+00:00')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let storage = ArbitrageStorage::new(&path).unwrap();
+        let history = storage.get_auto_trade_history(10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].event_name, "OLD");
+        assert_eq!(history[0].polymarket_fee, None);
+
+        // And new rows write the column on the migrated table.
+        storage.save_auto_trade_execution(&execution(0.17)).unwrap();
+        let fees: Vec<Option<f64>> = storage
+            .get_auto_trade_history(10)
+            .unwrap()
+            .iter()
+            .map(|r| r.polymarket_fee)
+            .collect();
+        assert!(fees.contains(&Some(0.17)) && fees.contains(&None), "{fees:?}");
+
+        drop(storage);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn skipped_records_estimate_both_fees() {
+        let storage = ArbitrageStorage::new(":memory:").unwrap();
+        storage
+            .save_skipped_auto_trade_record(
+                "E", "T", "K", "P", "no", "long", 10, 0.46, 0.50, 0.5, 0, "No profitable size",
+            )
+            .unwrap();
+        let row = &storage.get_auto_trade_history(10).unwrap()[0];
+        assert_eq!(row.status, "skipped");
+        assert!((row.kalshi_fee - 0.18).abs() < 1e-9);
+        assert_eq!(row.polymarket_fee, Some(0.17));
+        assert!((row.total_amount - 9.95).abs() < 1e-9, "{}", row.total_amount);
     }
 }

@@ -8,7 +8,6 @@ __pycache__/
 venv/
 .env/
 .venv/
-poly-order-service/.venv/
 env/
 ENV/
 build/
@@ -74,7 +73,6 @@ arbitrage_tracking_history.json
 # Config files (may contain sensitive info)
 config.toml
 *.toml.backup
-poly-order-service/config.toml
 rust-backend/config.toml*
 python-backend/config.toml
 
@@ -86,3 +84,6 @@ Thumbs.db
 *.tmp
 *.bak
 *.orig
+
+# graphify
+graphify-out/

@@ -114,16 +114,25 @@ export function OrderPanel({ apiBaseUrl }: OrderPanelProps) {
         </span>
         <Field label="Qty" value={leg.contracts.toFixed(leg.platform === 'polymarket' ? 2 : 0)} mono />
         <Field label="Entry → Now" value={`${cents(leg.entry_price)} → ${cents(leg.current_price)}`} mono />
-        <Field label="Cost → Value" value={`${money(leg.cost)} → ${money(leg.value)}`} />
+        <Field
+          label="Cost → Value"
+          value={`${money(leg.cost)} → ${money(leg.value)}`}
+          title="Cost is all-in: the contracts' price plus the fees paid"
+        />
         <Field
           label="P&L"
           value={pnlText(leg.unrealized_pnl, leg.cost)}
           className={pnlColor(leg.unrealized_pnl)}
+          title="Value minus all-in cost: after the fees paid on entry, before any exit fee"
         />
         <Field
           label="Fees"
           value={leg.fees === null ? 'n/a' : money(leg.fees)}
-          title="Polymarket exposes no fee data"
+          title={
+            leg.fees === null
+              ? 'The exchange did not report fees for this position'
+              : 'Fees paid on this position (included in Cost and P&L)'
+          }
         />
       </div>
       <button
@@ -193,14 +202,26 @@ export function OrderPanel({ apiBaseUrl }: OrderPanelProps) {
                       </span>
                     </div>
                     <div className="text-[10px] whitespace-nowrap">
-                      <span className="text-[--text-muted]">
-                        Total {money(card.total_cost)} → {money(card.total_value)}{' '}
+                      <span className="text-[--text-muted]" title="Total cost includes fees">
+                        Total {money(card.total_cost)} → {money(card.total_value)}
+                        {' · '}fees {card.total_fees === null ? 'n/a' : money(card.total_fees)}{' '}
                       </span>
                       <span className={pnlColor(card.total_pnl)}>{pnlText(card.total_pnl, card.total_cost)}</span>
                     </div>
                   </div>
                   {card.contracts_mismatch && (
                     <div className="text-[9px] text-amber-400">⚠ Leg sizes differ: only partly hedged</div>
+                  )}
+                  {card.settlement_pnl !== null && (
+                    <div
+                      className="text-[9px]"
+                      title="Held to settlement, one leg pays $1 per contract whichever side wins: the smaller leg's contracts, minus the all-in cost (fees included) of both legs"
+                    >
+                      <span className="text-[--text-muted]">Settles at (worst case, after fees): </span>
+                      <span className={pnlColor(card.settlement_pnl)}>
+                        {pnlText(card.settlement_pnl, card.total_cost)}
+                      </span>
+                    </div>
                   )}
                   {card.legs.map(renderLeg)}
                 </div>

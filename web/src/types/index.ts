@@ -94,6 +94,7 @@ export interface MatchedMarketData {
   gross_profit?: number;    // Gross profit before fees
   kalshi_contracts?: number;  // Number of Kalshi contracts
   kalshi_fee?: number;      // Kalshi trading fee
+  polymarket_fee?: number;  // Polymarket US taker fee
   arbitrage_type?: string;
 }
 
@@ -318,12 +319,15 @@ export interface PositionLeg {
   /** Kalshi: yes/no. Polymarket: long/short. */
   side: string;
   contracts: number;
+  /** Price paid per contract, excluding fees. */
   entry_price: number | null;
   current_price: number | null;
+  /** All-in cost: the contracts' cost plus the fees paid on them. */
   cost: number;
   value: number | null;
+  /** value - cost: net of the fees paid on entry (before any exit fee). */
   unrealized_pnl: number | null;
-  /** null = unknown (Polymarket exposes no fee field). */
+  /** Fees paid on this position (already included in cost); null = not reported by the exchange. */
   fees: number | null;
 }
 
@@ -337,9 +341,18 @@ export interface PositionCard {
   paired_by: 'bot_trade' | 'market_match' | null;
   event_name: string | null;
   legs: PositionLeg[];
+  /** Sum of the legs' all-in costs (fees included). */
   total_cost: number;
   total_value: number | null;
+  /** Mark-to-market, net of entry fees. */
   total_pnl: number | null;
+  /** Sum of the legs' fees; null if any leg's fees are unknown. */
+  total_fees: number | null;
+  /**
+   * Paired cards only: worst-case result if held to settlement (the smaller
+   * leg's contracts pay $1 each, minus the all-in cost of both legs).
+   */
+  settlement_pnl: number | null;
   contracts_mismatch: boolean;
 }
 
@@ -385,6 +398,10 @@ export interface ArbitrageExecuteResponse {
   contracts?: number;
   kalshi_price?: number;
   polymarket_price?: number;
+  /** Modeled taker fees for the sized trade, in dollars. */
+  kalshi_fee?: number;
+  polymarket_fee?: number;
+  /** Net margin (%) after BOTH exchanges' fees. */
   profit_margin?: number;
   kalshi?: {
     success: boolean;

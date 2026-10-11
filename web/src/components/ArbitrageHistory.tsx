@@ -31,6 +31,8 @@ interface AutoTradeRecord {
   kalshi_contracts: number;
   kalshi_price: number;
   kalshi_fee: number;
+  /** Modeled Polymarket taker fee; null for trades recorded before it was modeled. */
+  polymarket_fee: number | null;
   polymarket_amount: number;
   polymarket_price: number;
   total_amount: number;
@@ -505,6 +507,12 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
                 <div className="flex justify-between">
                   <span className="text-[--text-muted]">Price</span>
                   <span className="text-[--text-primary] tabular-nums">{(selectedAutoTrade.polymarket_price * 100).toFixed(2)}¢</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[--text-muted]">Fee</span>
+                  <span className="text-[--text-primary] tabular-nums">
+                    {selectedAutoTrade.polymarket_fee != null ? `$${selectedAutoTrade.polymarket_fee.toFixed(2)}` : 'n/a'}
+                  </span>
                 </div>
                 {selectedAutoTrade.polymarket_order_id && (
                   <div className="flex justify-between">

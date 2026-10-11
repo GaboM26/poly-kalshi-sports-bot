@@ -6,819 +6,258 @@ Polytaoli: a real-time cross-exchange arbitrage system between **Kalshi** and
 **Polymarket US** prediction markets. It watches matched markets on both
 venues, computes profit margins after fees, and can automatically execute
 paired (hedged) orders across both exchanges. This is live financial software
-handling real money and real exchange APIs — precision and correctness in the
+handling real money and real exchange APIs. Precision and correctness in the
 order-execution path matter more than anywhere else in the codebase.
 
 ## Current goal
 
-The user is debugging the arbitrage/execution pipeline so they can start
-publishing (executing) real trades on detected arbitrage opportunities with
-confidence. Priorities when helping:
+The user is debugging the arbitrage and execution pipeline so they can start
+executing real trades on detected opportunities with confidence. Priorities:
 
 - Find and fix correctness bugs in price/quantity calculation, order sizing,
-  and paired-execution logic before worrying about features or polish.
-- Treat any bug in this path as potentially money-losing. Confirm fixes
-  against the invariants below rather than assuming a plausible-looking
-  change is correct.
-- `ORD_REJECT_REASON_EXCHANGE_OPTION` was root-caused on 2026-10-01 (see
-  that session log — it supersedes the 2026-09-29 "root cause", which was a
-  coincidence): it is the reject-reason enum's default value, not a
-  rejection; the orders were IOCs expiring unfilled against a Polymarket
-  book served from a 30s Cloudflare cache. Check `git status` before
-  reasoning about "current" behavior generally; this file's session logs
-  describe work as it happened, not necessarily what's still uncommitted now.
-
-## Session log (2026-09-24) — read this before continuing
-
-**Done this session, builds/tests green (`cargo build`, `cargo test --lib
-paired_execution`, `pytest test_market_book.py`):**
-
-- Polymarket US rate-limit backoff: `poly-order-service/main.py` now has
-  `call_with_backoff()`, wrapping every SDK call (balances, positions,
-  market book, market detail, order create/retrieve/cancel/list). On a 429
-  (`RateLimitError`) it waits then retries at `2**attempt` (1s/2s/4s, 3
-  attempts), exactly matching docs.polymarket.us/api-reference/rate-limits'
-  own guidance. Only 429s are retried — a real order rejection is never
-  retried, so this can't cause a duplicate submission.
-- Success/fill logging so fills can be cross-checked against the exchanges
-  by grepping logs, not just reading the DB/UI history: Python
-  `order_result()` logs `Polymarket US order FILLED: ...` (order_id,
-  filled_contracts, avg_price) whenever a market/limit order actually
-  fills; Rust `submit_paired_order` (`services/paired_execution.rs`) logs
-  one INFO line per attempt where either leg filled (both order IDs, fill
-  counts vs. requested size, prices, neutralization/residual outcome); the
-  manual single-leg endpoints (`place_kalshi_order`, `place_polymarket_order`
-  in `api/routes/orders.rs`) got the same treatment.
-
-**Open investigation — root cause of `ORD_REJECT_REASON_EXCHANGE_OPTION`
-still unknown, and the current uncommitted theory is likely wrong:**
-
-The diff already on disk (before this session) added `minimum_trade_qty`/
-`price_tick_size` plumbing (`PolymarketMarketBook`, `find_profitable_
-contract_size` in `services/paired_execution.rs`, `cached_market_
-constraints()` in `poly-order-service/main.py`) on the theory that
-`ORD_REJECT_REASON_EXCHANGE_OPTION` rejections are explained by each
-market's own `minimumTradeQty` (per docs.polymarket.us/api-reference/
-orders/overview). **This was checked against the live API this session and
-does not hold**: queried `markets.retrieve_by_slug` directly for three real
-markets seen in today's logs (`aec-itfwo-gabsoa-julsil-2026-09-24`,
-`aec-itfme-giobra-joasch-2026-09-24`, `aec-itfwo-hancha-alishc-2026-09-24`)
-and `minimumTradeQty` came back `0.01` on all three — `orderPriceMinTickSize`
-was also `0.01` on all three. `0.01` contracts is below any whole-contract
-order this bot would ever place (`min_contracts.max(0.01.ceil())` = a
-no-op floor of 1), so it cannot be what's rejecting real orders. Treat the
-comments in `services/paired_execution.rs` around `POLYMARKET_MIN_NOTIONAL_
-USD` and `find_profitable_contract_size` asserting minimumTradeQty as the
-likely cause as **unconfirmed, probably wrong** until re-verified.
-
-Also worth noting: `orderPriceMinTickSize` is fetched and stored on
-`PolymarketMarketBook.price_tick_size` but is **never read anywhere** —
-no code rounds or validates a submission price against it. Not obviously
-the cause (book levels are already exchange-quoted prices), but it's dead
-data worth double-checking if price alignment turns out to matter.
-
-The actual `ORD_REJECT_REASON_EXCHANGE_OPTION` hits visible in today's
-`rust-backend/logs/polytaoli.log.2026-09-24` (search `EXCHANGE_OPTION`) are
-all logged from `api::routes::orders: 149`, i.e. the **standalone
-`place_polymarket_order` manual endpoint** — which takes `contracts`/`price`
-straight from the request body and never calls `find_profitable_contract_
-size` or checks `minimum_trade_qty` at all. Worth confirming whether these
-were manual test orders (in which case they say nothing about the real
-paired-execution path) or something the frontend calls on the hot path.
-`execute_arbitrage` (the real paired path) *does* gate on `poly_book.
-minimum_trade_qty`, but since that value is always ~0.01 the gate is
-currently a no-op there too.
-
-**Next step, not yet started:** inspect `market_order_params()` /
-`limit_order_params()` in `poly-order-service/main.py` (units sent for
-price/quantity, e.g. `cashOrderQty` vs `quantity`, `slippageTolerance`
-ticks) for a mismatch that could trigger a generic exchange-option
-rejection independent of size. Was about to start this when the session
-pivoted to the rate-limit/logging work above.
-
-## Session log (2026-09-26)
-
-**Leading theory for `ORD_REJECT_REASON_EXCHANGE_OPTION`, not yet confirmed
-against a live order:** `limit_order_params()` (the only path actually used —
-`place_polymarket_order`/`submit_limit_order` in Rust always calls
-`/order/limit`, never `/order/market`) built `"quantity": request.size`,
-where `request.size` is a Pydantic `float`. The SDK's own type stubs
-(`polymarket_us/types/orders.py`) declare `quantity: int` on
-`CreateOrderParams`/`Order` — every other numeric field in that payload is
-carefully type-matched to the spec (`price`/`cashOrderQty` wrapped as
-`Amount` dicts, `maxBlockTime` sent as the string `"5"`) except this one,
-which was sending e.g. `5.0` instead of `5`. Fixed: both `limit_order_params()`
-and the dead-code `market_order_params()` sell path now cast to `int` and
-raise if the size isn't a whole number rather than silently truncating.
-**Still needs a real order against the live API to confirm this was the
-actual cause** — do not mark this closed until that's verified.
-
-Also fixed, unrelated: Kalshi startup fetch had no retry.
-`ArbitrageService::initialize()` calls
-`kalshi_client.get_supported_events_and_markets().await?` with no retry, so
-a single transient network timeout to `external-api.kalshi.com` killed the
-whole Rust backend before it ever bound its port (the "health check failed
-after 5 attempts" wrapper-script error is just polling a server that never
-started — it's not 5 real Kalshi outages). Fixed in `clients/kalshi.rs`:
-the low-level `get()` (used by balance/events/quotes/positions/orders-list —
-every GET) now retries a transport-level failure (timeout, reset, DNS) with
-exponential backoff (1s/2s, 3 attempts total), regenerating the
-timestamp+signature on each attempt. Deliberately **not** applied to
-`post()`, which is order placement (`/portfolio/events/orders`) — retrying
-that blindly on a timeout risks submitting a duplicate order if the first
-one actually went through and only the response was lost, mirroring why the
-Polymarket backoff only retries a clean 429 and never a generic exception.
-A non-success HTTP status from Kalshi (a real API error) is still never
-retried, only the transport-level send failure.
-
-**Queued for later, explicitly deferred until the above is settled:**
-evaluate dropping the `polymarket_us` SDK / `poly-order-service` Python
-process entirely and calling the Polymarket US REST API directly from Rust,
-the same way `clients/kalshi.rs` does. Its auth is Ed25519-signing
-`f"{timestamp}{method}{path}"` (`polymarket_us/auth.py`) — comparable
-complexity to the RSA-PSS signing Rust already does for Kalshi. Would
-remove a whole failure class (the extra process/port, the IPC hop, and
-JSON type mismatches like the one above) but is a real rewrite of the
-order-submission and market-book paths for live-money code — treat it as
-its own careful, incremental migration, not a quick swap.
-
-## Session log (2026-09-27) — Polymarket US direct-API migration
-
-Done this session (full cutover, requested by the user after hitting the
-still-unresolved `K: Kalshi leg was not submitted because Polymarket did not
-fill a positive contract quantity; P: ORD_REJECT_REASON_EXCHANGE_OPTION`
-error live): the previously-deferred migration above. `poly-order-service`
-(the Python/FastAPI process wrapping the official `polymarket-us` SDK) is no
-longer started or called. `clients/polymarket.rs` now calls
-`gateway.polymarket.us` (market book, market constraints, events/sports —
-unauthenticated, unchanged) and `api.polymarket.us` (balances, positions,
-orders list/create/cancel — Ed25519-signed) directly, mirroring how
-`clients/kalshi.rs` already signs and calls Kalshi directly. New
-`clients/polymarket_auth.rs` replicates `polymarket_us/auth.py` exactly:
-sign `{timestamp}{METHOD}{path}` only (never body or query), base64-decode
-the secret key, use only its first 32 bytes as the Ed25519 seed if 64 bytes
-were provided. `PolymarketConfig` gained `api_base_url` and
-`key_id`/`secret_key` fields (env vars `POLYMARKET_KEY_ID`/
-`POLYMARKET_SECRET_KEY` still take precedence, matching the old service's
-precedence); `order_service_url` is gone. `start_rust_stack.sh`,
-`deploy/start.sh`, and `build_linux.sh`'s packaging step no longer
-start/bundle the Python process. `poly-order-service/` itself is left in
-the repo for reference only — not part of the runtime.
-
-429 retry (1s/2s/4s, 3 attempts, matching docs.polymarket.us/api-reference/
-rate-limits) and the balance/positions (30s) and market-constraints (1h)
-caches were preserved from the Python service. On any order response with
-zero fill (a rejection, not just a transport error), the full outgoing
-request JSON and raw response JSON are now logged at `warn!` in
-`clients/polymarket.rs::parse_polymarket_order_result` — previously nothing
-logged this, so a rejection like `ORD_REJECT_REASON_EXCHANGE_OPTION` left no
-record of what was actually sent.
-
-**Important: this migration is not expected to fix
-`ORD_REJECT_REASON_EXCHANGE_OPTION` by itself.** That string arrives inside
-a normal HTTP 200 (`executions[].orderRejectReason`) — Polymarket accepts
-the request and rejects the *order* on some exchange-side check — so
-sending the same JSON body from Rust instead of Python changes nothing
-about whether the exchange accepts it. The migration was done because it
-was already overdue (removes the IPC hop, the extra process/port that can
-fail to start, and the class of Python/JSON type-marshaling bugs already
-found once) and because it adds the request/response logging above. If
-`ORD_REJECT_REASON_EXCHANGE_OPTION` recurs, the next step is to read that
-new `warn!` line for the exact payload Polymarket rejected and compare it
-field-by-field against a market where an order succeeds.
-
-Read-only endpoints (balance, market book, positions, open orders) were
-validated against the live API before this was considered done; order
-submission was not live/test-fired as part of this work (per this file's
-own rule below) and still needs to be confirmed against a real order.
-`cargo build`/`cargo test` pass; `paired_execution.rs` and `polymarket.rs`
-unit tests (pure functions) were unchanged and still pass.
-
-**Next steps (not yet started, user wants to pick this up later):** after
-running with the direct-API path live, the user is still seeing
-`Polymarket US limit order did not fill: ORD_REJECT_REASON_EXCHANGE_OPTION:`
-— confirms the prediction above that the migration alone would not fix this;
-the new `warn!` request/response logging in `parse_polymarket_order_result`
-(`clients/polymarket.rs`) should now have the exact rejected payload the
-next time this fires, so start there instead of re-guessing at a cause.
-Separately, the user also reported something "seems to disconnect every few
-seconds" — not yet triaged, unclear if this is the Kalshi WebSocket
-(`clients/kalshi.rs`, reconnect/epoch logic), the frontend's WebSocket
-client (`web/src/hooks/useWebSocket.ts`), or something else entirely (e.g.
-the backend itself restarting). Needs reproduction and log correlation
-before assuming which layer it's in.
-
-User's further observation (2026-09-27, still deferred): the frontend shows
-two different messages for what may be the same underlying opportunity —
-the opportunity list (left panel) shows what the user describes as "the
-typical ORD_QUANTITY exception," while that same opportunity's detail page
-(the manual arbitrage-execution view) shows "No profitable size remains
-after fees, worst-case prices, Polymarket's minimum trade quantity,
-available depth, and the configured max trade amount" (the `reject_with_skip`
-message from `find_profitable_contract_size` returning `None` in
-`api/routes/orders.rs::execute_arbitrage` — a sizing failure that never
-reaches order submission at all). It's not yet established whether "the
-typical ORD_QUANTITY exception" is literally a distinct Polymarket reject
-reason (i.e. not `ORD_REJECT_REASON_EXCHANGE_OPTION`) or just the user's
-shorthand for the same rejection described differently — check the actual
-list-panel string against backend logs before assuming either way. If it is
-genuinely a different, more specific reject reason than
-`ORD_REJECT_REASON_EXCHANGE_OPTION`, that's a stronger lead than anything
-found so far. Also worth checking directly: why the list and detail views
-would disagree at all for the same opportunity — one implies "never
-attempted" (sizing failed) and the other implies "attempted and rejected by
-the exchange," which shouldn't both be true for one opportunity at once
-unless the two views are reading different data (e.g. a stale/cached
-opportunity record vs. a fresh live sizing attempt).
-
-## Session log (2026-09-28) — EXCHANGE_OPTION: new theory + instrumentation added
-
-**Read the full logs first, not just the code comments.** Grepped every
-retained log file (`rust-backend/logs/polytaoli.log.2026-07-29` through
-`.2026-09-27`, ~50MB, 14 files): there are **zero** `"order FILLED"` /
-`ORDER_STATE_FILLED` lines anywhere. Every real order attempt on record (11
-total, all in `.2026-09-27`) was rejected with
-`ORD_REJECT_REASON_EXCHANGE_OPTION`. So there is no successful-order example
-in these logs to diff a rejected payload against — that approach the
-2026-09-27 log entry suggested is a dead end until a fill actually happens.
-
-**What the rejections actually look like:** every one goes through exactly
-two executions, `EXECUTION_TYPE_NEW` (`cumQuantity: 0`) immediately followed
-by `EXECUTION_TYPE_EXPIRED` (`cumQuantity: 0`, `leavesQuantity: 0`). That is
-an IOC order the exchange *accepted syntactically* and then expired with no
-match — not an immediate hard validation rejection. Request payloads were
-clean and consistent (whole-number `quantity`, valid `price.value` strings),
-so the float/int theory from 2026-09-26 is not the explanation here.
-
-**What `EXCHANGE_OPTION` means, per
-`docs.polymarket.us/institutional/fix-api/fix-reject-reasons`:** it's FIX
-`OrdRejReason` tag 103, code 0 — a **generic catch-all**, not a specific
-error. Covers price/quantity/notional bounds, insufficient buying power,
-self-match prevention, and (most relevant given the NEW→EXPIRED pattern)
-liquidity-derivation/insufficient-liquidity-for-fill scenarios. Stop treating
-it as one identifiable bug to find — it may legitimately mean "no match,"
-in which case the fix is pricing/timing, not a payload field.
-
-**New leading theory:** `find_profitable_contract_size`
-(`services/paired_execution.rs`) prices the Polymarket leg at
-`worst_price(poly_levels, contracts)` — the exact boundary price needed to
-fill the full requested size, with **zero slippage buffer**. Between that
-book snapshot (`get_market_book`) and the order reaching
-`api.polymarket.us` there's a DB persist (`save_auto_trade_execution`) plus
-a full network round trip. On a moving sports market that's enough time for
-the book to tick past a price with no headroom, which would explain a
-zero-fill IOC on every single attempt with no exceptions. The create-order
-API documents a `slippageTolerance` field (`currentPrice` + bips/ticks
-tolerance) that this code has never set — worth using once the theory is
-confirmed.
-
-**Not yet ruled in or out:** every rejection's response echoes
-`order.manualOrderIndicator: MANUAL_ORDER_INDICATOR_AUTOMATIC` even though
-the request sends `MANUAL_ORDER_INDICATOR_MANUAL` — consistent across all
-11 samples. "Account type or customer order capacity validation failures"
-is on the EXCHANGE_OPTION list, so this is a real secondary lead, but could
-equally be normal exchange-side reclassification of any synchronous/IOC API
-order. Don't chase this before the staleness theory is tested — it's the
-weaker signal.
-
-**Instrumentation added this session (no execution-logic change, builds and
-`cargo test --lib paired_execution` pass):** `PairedOrderParams` gained
-`poly_book_fetched_at_ms` (both callers — `api/routes/orders.rs`'s
-`execute_arbitrage` and `api/mod.rs`'s auto-trade handler — now pass
-`poly_book.fetched_at_ms`). `submit_paired_order`
-(`services/paired_execution.rs`) now logs `book_age_ms` at `info!` right
-before every Polymarket submission, and on any zero-fill result, does a
-**read-only, diagnostic-only** re-fetch of the market book afterward and
-logs `current_best_buy_price` vs. the price we submitted plus
-`market_moved_past_our_price: bool`. This adds no risk to the execution
-path (fires only after the order already resolved) and makes no order
-decisions from the re-fetch. Purpose: the *next* real
-`ORD_REJECT_REASON_EXCHANGE_OPTION` in the logs will directly confirm or
-refute the staleness theory instead of guessing again.
-
-**Next step:** run the bot until the next live rejection (or next intended
-test order, per this file's own live-order rule — don't fire one
-speculatively), then grep the new `warn!` line
-(`"post-rejection book check for"`) and read `market_moved_past_our_price`.
-If true, implement a slippage buffer (`slippageTolerance` field, or a small
-cushion added to `worst_price` before submission) as the actual fix. If
-false on multiple occurrences, the staleness theory is wrong and the
-`manualOrderIndicator` mismatch (or a real Polymarket-side account issue)
-becomes the next thing to check, likely requiring Polymarket support
-contact since it isn't something log-reading alone can resolve.
-
-## Session log (2026-09-29) — ~~ROOT CAUSE FOUND: `manualOrderIndicator` must be `AUTOMATIC`~~
-
-> **Corrected 2026-10-01 — this conclusion was wrong.** Three paired orders
-> had already filled at 00:43 that day while still sending `MANUAL` (same
-> process that logged `MANUAL` at 00:48), and the exchange records *every*
-> API order as `AUTOMATIC` regardless of what is sent. The "first fill after
-> the fix" was simply a pre-game order. The staleness theory below was
-> "ruled out" only because both the sizing fetch and the post-rejection
-> re-check read the same 30s Cloudflare-cached book. See the 2026-10-01 log.
-
-**Resolved.** The 2026-09-28 staleness instrumentation immediately paid off:
-the first real rejection it caught showed `book_age_ms_at_submit=19` and
-`market_moved_past_our_price=false` — the order was fresh and marketable and
-still got rejected, ruling out staleness entirely. A follow-up manual test
-order at an aggressive, obviously-marketable price (buying at 90¢ against a
-~72¢ market, 1 contract, tiny notional, clean `BUY_LONG` with no
-`action`/`side` contradiction) was *still* rejected with
-`ORD_REJECT_REASON_EXCHANGE_OPTION` — ruling out price, size, and balance.
-The user confirmed manual orders on Polymarket's own website work fine on
-this same account, ruling out account status/KYC.
-
-The one field consistent across every single rejection, long and short
-alike: we sent `manualOrderIndicator: MANUAL_ORDER_INDICATOR_MANUAL`, and
-the response always echoed back `MANUAL_ORDER_INDICATOR_AUTOMATIC` — the
-exchange was silently reclassifying every order regardless of what we sent.
-Git history showed the original Python `poly-order-service/main.py` sent
-`AUTOMATIC` originally; commit `575eb5b` ("fix: correcting positions with
-new UI requirements", 2026-09-11) flipped it to `MANUAL` with no explanation
-in the commit message, and the Rust rewrite just carried that value forward.
-
-**Fix:** `clients/polymarket.rs::submit_limit_order` now sends
-`manualOrderIndicator: MANUAL_ORDER_INDICATOR_AUTOMATIC`. First test order
-after the fix (`aec-atp-jaumun-alekov-2026-09-28`, 1 contract, limit 75¢)
-**filled** at `avg_price=0.59` — order id `CSE6Z40H6YC3`, the first
-successful fill this bot has ever recorded via the API in the full log
-history checked (back to 2026-07-29). Confirmed against live data, not
-inference.
-
-**Secondary bug found and fixed along the way:** while chasing a *different*
-failure (a stale market slug that had closed for trading), the actual cause
-was invisible because nearly every `error!(...)` call across the codebase
-logged an `anyhow::Error` with `{}` instead of `{:#}`, which silently
-truncates to the outermost context and hides the real cause (HTTP status,
-transport failure, etc.). Fixed every such call site (grep `error!(` to
-verify none remain using bare `{}` on an error/reason variable). This isn't
-specific to Polymarket — it was hiding root causes in Kalshi, storage,
-auto-trade, and WebSocket error paths too.
-
-**Cleanup done this session:** `poly-order-service/` deleted entirely (no
-longer referenced anywhere; confirmed nothing in the Rust runtime or start
-scripts calls it, and the Rust-only path is now proven with a real fill).
-`.github/copilot-instructions.md` and the startup scripts updated to remove
-stale references to the Python service, its port, and its test suite.
-
-**Not yet investigated:** the frontend price-pairing question raised this
-session (Kalshi showing ~50%/52%/52% for a live match) checked out fine on
-a live query immediately after — most likely just live in-play odds
-movement between screenshots, not a bug. Revisit only if it recurs with
-static (non-moving) numbers.
-
-## Session log (2026-09-29, continued) — log noise, stale closed markets, broken manual Sell
-
-**Log noise:** `📥 Retrieved N Polymarket {category} events` (`clients/polymarket.rs`,
-fired once per sport code per scan — 8x per cycle) demoted from `info!` to
-`debug!`. It was drowning out the signal the user actually wants visible in
-the terminal: scan start/end, matched-market discovery, and REST quote
-refresh summaries, all of which already log at `info!` and were left alone
-(`services/arbitrage.rs`'s `🔄 Starting scan for new markets`,
-`✅ Kalshi/Polymarket REST quote refresh updated N markets`, etc.).
-
-**Every UI API call now logs a line on completion**, not just failures.
-`TraceLayer` in `api/mod.rs` previously only surfaced failures (`on_failure`
-defaults to ERROR; a successful response's default trace level is DEBUG,
-and `main.rs` filtered `tower_http` down to `warn`). Now
-`.make_span_with(...)`/`.on_response(...)` are both pinned to `Level::INFO`
-and the filter raised to `tower_http=info`, so method/path/status/latency
-prints for every request. This is verbose (the frontend polls routinely) —
-revisit if it's too noisy in practice.
-
-**Stale closed markets stayed visible indefinitely (e.g. a Kalshi market at
-84¢ that had already closed).** Root cause: `market_lifecycle.rs`'s cleanup
-only ever inferred "ended" from *extreme* prices (Kalshi ≥99¢/≤2¢, Poly
-≥100¢/0¢) sustained 20+ minutes — it never checked either exchange's actual
-closed/settled status, so a market that simply stops trading at a normal
-price was invisible to it forever. Fixed at the source, in the existing
-periodic REST quote-refresh functions (`services/websocket_manager/mod.rs`):
-- **Kalshi**: `KalshiMarketQuote` now carries the raw `status` field
-  (`unopened`/`open`/`paused`/`closed`/`settled` — confirmed via Kalshi's
-  public API docs). `update_kalshi_rest_quotes` treats `closed`/`settled` as
-  immediate, undebounced confirmation (Kalshi's own status field doesn't
-  flicker) and skips the price update entirely for that cycle.
-- **Polymarket**: `update_polymarket_rest_quotes` is already driven by the
-  same `active=true&closed=false` feed discovery uses, fetched atomically
-  per cycle. A previously-matched market missing from that list is now
-  tracked via `poly_missing_streak` and confirmed ended after
-  `POLY_MISSING_CONFIRM_STREAK` (2) consecutive misses — debounced, unlike
-  Kalshi's status field, because absence-from-a-filtered-list is an
-  inference, not an explicit per-market field.
-- Both paths feed the *existing* `confirmed_ended_markets` set, so all the
-  existing removal plumbing (unsubscribe, cache cleanup, opportunity/
-  tracking removal) in `remove_ended_markets()` is reused unchanged.
-- 5 new tests in `services/websocket_manager/mod.rs::tests` cover: closed/
-  settled status triggers immediate removal at a non-extreme price (the
-  exact reported bug), open status at a non-extreme price does *not* get
-  marked ended, the Polymarket miss-streak requires 2 consecutive misses,
-  and a single reappearance resets the streak rather than decrementing it.
-
-**Manual Sell button was broken for any position whose market had fallen
-out of active WebSocket tracking**, failing with "No executable Kalshi
-quote is available for this order." Root cause: `place_kalshi_order`
-(`api/routes/orders.rs`) sourced its price *exclusively* from
-`kalshi_client.get_orderbook()`, which only has data for tickers the
-scanner currently has WebSocket-subscribed — a scope tied to "currently
-matched by the arbitrage scanner," not "any market I hold a position in."
-A held position whose market rolled out of that tracking (including,
-notably, via the closed-market fix directly above — closing now actively
-unsubscribes) could no longer be sold through the UI, at all, even though
-the position itself might still be genuinely closeable on the exchange.
-Fixed: `place_kalshi_order` now falls back to a fresh REST quote
-(`kalshi_client.get_market_quotes`, already used elsewhere, works for any
-ticker regardless of subscription state) when the WebSocket book has
-nothing. New `KalshiMarketQuote::limit_price_for_order` mirrors
-`OrderBook::limit_price_for_order`'s sign convention (REST only has asks,
-so a sell price is the complement of the *opposite* side's ask — same
-yes/no complement identity used throughout this codebase). This is a
-price-only fallback for one manual, already-known-quantity order; it must
-never be wired into auto-trade sizing or depth, which stays exclusively on
-the fresh WebSocket book. 3 new unit tests in `clients/kalshi.rs::tests`
-cover buy/sell price derivation and rejection of an unrecognized side or
-action.
-
-All three fixes: `cargo build --release` and `cargo test --lib` both clean
-(57 passing).
-
-## Positions tab — design decision (2026-09-29)
-
-**Status: implemented 2026-09-29** (`cargo test --lib` 68 passing incl. 11 new
-in `services/positions.rs`; `npm run build` clean; `npm run lint` is broken
-independent of this change — `--ext` flag unsupported by the flat eslint
-config). **Not yet verified against live data:** the Kalshi NO-leg
-`market_exposure_dollars` sign risk below, and Polymarket `cost`/`cashValue`
-sign/units on a real short position. Kalshi mark = complement of the opposite
-side's ask (liquidation value), not a bid. Original design follows.
-
-**Why:** the Positions panel (`web/src/components/OrderPanel.tsx`) shows a
-flat, unrelated list of raw exchange positions. Kalshi legs show no entry
-price, no live price, and no unrealized P&L at all (only exposure $ and
-*realized* P&L, which is ~always $0 for an open position). Polymarket legs
-reference `avgPrice`/`curPrice`/`pnlPercent` in the TS type, but
-`normalize_positions` (`clients/polymarket.rs`) never actually populates
-them — a pre-existing bug, not by design. Most importantly for a hedged
-arbitrage bot: there is no indication that a Kalshi leg and a Polymarket leg
-were opened together as one trade, nor any way to tell a properly hedged
-position from a naked, one-sided residual (e.g. from a failed
-neutralization) at a glance.
-
-**The fix requires no new external API calls.** Polymarket's
-`/v1/portfolio/positions` response already includes a `cost` field (total
-cost basis) that `normalize_positions` silently discards today — combined
-with the `cashValue` it already reads, that's avg entry price, current
-mark, and unrealized P&L for free. Kalshi needs one additional call to the
-REST quote endpoint already used elsewhere
-(`clients/kalshi.rs::get_market_quotes`) for a live mark; entry price is
-`market_exposure_dollars / abs(position_fp)`.
-
-**Pairing decision (extended 2026-10-01 — history alone missed manual
-hedges, see that log):** match on the full tuple `(kalshi_market_id,
-kalshi_side, polymarket_market_id, polymarket_side)` against this bot's own
-trade history (`ArbitrageStorage::get_auto_trade_history`, already exists —
-no new endpoint needed for the history read itself), using only the most
-recent history row with status `executed`/`neutralized`/`partial_paired`
-for each currently-held leg. Market ID alone is insufficient — the same
-Kalshi+Polymarket market pair can appear on opposite sides across different
-trades over time, and only the side-aware match prevents cross-pairing.
-Both legs must currently be held (nonzero size) to render as a paired card;
-otherwise each renders standalone. New `/api/positions/unified` endpoint
-does this server-side (one implementation, not duplicated Rust/TS pairing
-logic) and returns already-grouped cards; the frontend becomes a pure
-renderer.
-
-**Fees:** Kalshi has `fees_paid_dollars`, ships as planned. Polymarket has
-**no fee field anywhere in its API** (positions or trade-history
-endpoints) — confirmed via docs.polymarket.us, not an oversight to fix
-later trivially. Render "n/a" for a Polymarket leg's fee, never a fake
-$0.00. Capturing Polymarket fees going forward (from
-`commissionNotionalCollected` on the order-submission response, already
-parsed and currently discarded in `parse_polymarket_order_result`) is
-explicitly out of scope for this change and cannot backfill fees for
-positions already open today.
-
-**Open risk, verify before trusting displayed P&L on Kalshi NO legs:**
-`market_exposure_dollars`'s sign is not documented by Kalshi for a NO
-position specifically (only `position_fp`'s sign is documented — positive
-= YES, negative = NO). The plan uses `abs(market_exposure_dollars)` as cost
-basis, which is safe regardless of sign, but check a real held NO
-position's raw JSON against this assumption before shipping.
-
-**UI:** paired cards get a 🔗 badge, combined cost/value/P&L, and both legs
-shown underneath; standalone/unhedged cards get a ⚠ amber badge so a naked
-residual position is impossible to miss. New files: `services/positions.rs`
-(pure economics + pairing functions, unit-tested — ~10 test cases covering
-unmatched legs, stale opposite-side history rows, rejected trades not
-counting as pairs, no double-counting a leg into two cards). Modified:
-`clients/polymarket.rs` (`normalize_positions`), `api/routes/accounts.rs`
-(new handler), `api/mod.rs` (route registration), `web/src/types/index.ts`,
-`web/src/utils/api.ts`, `web/src/components/OrderPanel.tsx`.
+  and paired-execution logic before features or polish.
+- Treat any bug in this path as potentially money-losing. Check fixes against
+  the invariants below rather than assuming a plausible-looking change is
+  correct.
+- Check `git status` before reasoning about "current" behavior. This file
+  describes the state of the code at the last update, not what is uncommitted.
 
 ## Architecture
 
 Two services, started together via `./start_rust_stack.sh`:
 
-- **`rust-backend/`** (Axum + Tokio, port `8000`) — the core engine.
+- **`rust-backend/`** (Axum + Tokio, port `8000`), the core engine.
   - `core/`: `matcher.rs` (event/market matching between exchanges, incl.
-    NBA-specific logic in `nba_teams.rs`/`competitors.rs`), `calculator.rs`
-    (profit-margin math).
+    NBA logic in `nba_teams.rs`/`competitors.rs`), `calculator.rs` (profit
+    margin math), `fees.rs` (the only place fee math lives).
   - `clients/`: `kalshi.rs` (REST + WebSocket, RSA-PSS-signed requests
     against `external-api.kalshi.com`), `polymarket.rs` (REST against
     `gateway.polymarket.us` for market data and `api.polymarket.us` for
-    orders/account/portfolio, Ed25519-signed via `polymarket_auth.rs`) —
-    both exchanges are called directly, with no separate order-service
-    process for either.
-  - `services/`: `arbitrage.rs` (opportunity detection/control),
-    `websocket_manager/` (live delivery to frontend, `auto_trade.rs` for
-    automated paired execution, `market_lifecycle.rs`), `storage/`
-    (SQLite persistence, `auto_trade_repo.rs` tracks execution state
-    machine), `telegram.rs` (alerts).
+    orders/account/portfolio, Ed25519-signed via `polymarket_auth.rs`),
+    `polymarket_ws.rs` (authenticated market-data WebSocket). Both exchanges
+    are called directly; there is no separate order-service process.
+  - `services/`: `arbitrage.rs` (detection/control), `paired_execution.rs`
+    (sizing, paired submission, neutralization), `positions.rs` (position
+    economics and hedge pairing), `websocket_manager/` (live delivery to the
+    frontend, quote caches, `auto_trade.rs`, `market_lifecycle.rs`),
+    `storage/` (SQLite; `auto_trade_repo.rs` tracks the execution state
+    machine, `hedge_pairs_repo.rs` persists verified hedges), `telegram.rs`.
   - `api/`: HTTP routes and the `mod.rs` request/response wiring.
-- **`web/`** (Vite + React + TS, port `5173`) — dashboard: live
+- **`web/`** (Vite + React + TS, port `5173`), the dashboard: live
   opportunities, order forms, position/history views, WebSocket client
   (`hooks/useWebSocket.ts`).
 
-`poly-order-service/` (the old FastAPI wrapper around the official
-`polymarket-us` SDK) has been deleted from the repo — see the 2026-09-27
-session log above for the migration off it, and the 2026-09-29 log for its
-removal once the Rust path was proven working end-to-end (first confirmed
-live fill).
+The old Python `poly-order-service/` (FastAPI wrapper around the
+`polymarket-us` SDK) was replaced by direct Rust calls on 2026-09-27 and
+deleted on 2026-09-29. Nothing references it.
 
 ## Critical invariants (do not weaken without explicit user sign-off)
 
-These come from `.github/copilot-instructions.md` — read that file too, it's
-the authoritative day-to-day rulebook and may be more current than this
-summary.
+`.github/copilot-instructions.md` is the authoritative day-to-day rulebook and
+may be more current than this summary. Read it too.
 
 - **Kalshi signing**: sign the path only, exclude query params.
 - **Polymarket order responses**: read fills from `executions[].order`
   (e.g. `.avgPx`), never from the top-level response envelope.
+- **`ORD_REJECT_REASON_EXCHANGE_OPTION` is not a rejection.** It is the zero
+  value of the reject-reason enum and appears on every execution, including
+  the `EXECUTION_TYPE_NEW` acceptance. Only `EXECUTION_TYPE_REJECTED` /
+  `ORDER_STATE_REJECTED` carries a real reason. An accepted IOC that finds no
+  liquidity goes `NEW` then `EXPIRED` and is reported as "expired unfilled".
 - **Polymarket depth** (changed 2026-10-01 with user sign-off): only via
-  `services/paired_execution.rs::executable_polymarket_book` — the live
+  `services/paired_execution.rs::executable_polymarket_book`: the live
   WebSocket full book while its connection is provably current
   (`WebSocketManager::fresh_polymarket_book`), else one origin-fresh
   `/v1/markets/{market_slug}/book` (`get_market_book` cache-busts and refuses
   a CDN-cached response). Market must be `MARKET_STATE_OPEN`. Never a
-  CDN-cached gateway response, gateway display quotes, account caches, or
-  the non-US CLOB API.
+  CDN-cached gateway response, gateway display quotes, account caches, or the
+  non-US CLOB API. The gateway is Cloudflare-cached with `max-age=30`, so a
+  plain GET can be up to 30s stale.
 - **Polymarket prices are YES-book prices** on the wire and in `avgPx`: a
   SHORT order's NO price must be complemented before sending and its fill
   complemented back (`yes_book_price`), snapped to tick, sent as a decimal
-  string.
+  string, never a raw `f64`.
+- **`manualOrderIndicator`**: send `MANUAL_ORDER_INDICATOR_AUTOMATIC`. The
+  exchange records every API order as AUTOMATIC regardless, so this field is
+  not a fix for anything; do not treat it as one.
 - **Kalshi depth**: only from a fresh Kalshi WebSocket book at execution
-  time. Kalshi size is fixed-point — floor when converting to whole
-  contracts, never round up.
+  time. Kalshi size is fixed-point; floor when converting to whole contracts,
+  never round up.
+- **Fees**: every margin is net of BOTH exchanges' taker fees, computed only
+  by `core/fees.rs` (Kalshi ceil-to-cent 0.07·C·p·(1−p); Polymarket US
+  banker's-rounded 0.0695·C·p·(1−p), rounded on the cumulative exact fee per
+  order). Never re-implement fee math elsewhere, and never drop either fee
+  from detection, sizing, or stored estimates. A drift check compares the
+  modeled fee with `commissionNotionalTotalCollected` on every fill and logs
+  `Polymarket fee model drift` if they diverge.
 - **Pairing logic**: Kalshi YES ↔ Polymarket NO, Kalshi NO ↔ Polymarket YES,
-  for the *tracked competitor*. The native Polymarket LONG/SHORT side must
-  be resolved from that competitor mapping, never inferred from a raw
-  outcome index.
+  for the *tracked competitor*. The native Polymarket LONG/SHORT side must be
+  resolved from that competitor mapping, never inferred from a raw outcome
+  index.
 - **Execution state machine**: persist a `submitting` record before either
-  leg fires; durably update each acknowledgement before submitting the
-  second leg. On startup, halt if an unresolved `submitting` record exists
-  until it's reconciled.
-- **Neutralization**: on unequal fills, attempt a bounded IOC/FAK offset
-  only within `neutralization_max_loss_cents` (default 5¢/contract). If it
-  can't fully close, record the residual durably, disable auto-trading, and
-  alert via Telegram — don't silently retry or hide it.
+  leg fires; durably update each acknowledgement before submitting the second
+  leg. On startup, halt if an unresolved `submitting` record exists until it
+  is reconciled.
+- **Neutralization**: on unequal fills, attempt a bounded IOC/FAK offset only
+  within `neutralization_max_loss_cents` (default 5¢/contract). If it cannot
+  fully close, record the residual durably, disable auto-trading, and alert
+  via Telegram. Do not silently retry or hide it.
 - **Safeguards**: never weaken order-size, profit-margin, duration,
   duplicate-trade, or execution-count limits without being asked.
+- **Error logging**: log `anyhow::Error` with `{:#}`, never `{}`. Bare `{}`
+  truncates to the outermost context and hid root causes in the past.
 - Preserve WebSocket message compatibility between the Rust manager and the
   React client when touching opportunity models.
+
+## Data sources and freshness
+
+- **Polymarket**: the authenticated WebSocket
+  (`wss://api.polymarket.us/v1/ws/markets`) streams quotes
+  (`SUBSCRIPTION_TYPE_MARKET_DATA_LITE`) and full books
+  (`SUBSCRIPTION_TYPE_MARKET_DATA`); at most 100 slugs per subscription.
+  Connection epoch and last-frame liveness gate whether a WS value is trusted.
+  REST polling stays as fallback and drives ended-market detection and
+  `live`/`period` fields, but must not overwrite a quote from the live
+  connection.
+- **Kalshi**: the WebSocket book feeds `apply_kalshi_ws_quote`, which
+  triggers detection when best prices change. Kalshi REST market data is
+  served from a server-side cache (values step every ~8–10s). The Kalshi WS
+  book has no `seq` gap detection.
+- WS-derived depth shown on the detail page and in tracking is display-only.
+  Order sizing always fetches its own fresh book.
+- Closed markets: Kalshi `closed`/`settled` status ends a market immediately;
+  a Polymarket market missing from the active feed for 2 consecutive cycles
+  is treated as ended. Both feed `confirmed_ended_markets`.
+- Manual Sell falls back to a fresh REST quote when the WS book is empty
+  (`KalshiMarketQuote::limit_price_for_order`). That fallback is price-only
+  for one manual order; never use it for auto-trade sizing or depth.
+- Retries: Kalshi GETs retry transport failures (1s/2s, 3 attempts); Kalshi
+  `post()` (order placement) never retries, to avoid duplicate orders.
+  Polymarket retries only clean 429s (1s/2s/4s). Never retry a real order
+  rejection.
+
+## Positions and fees in the UI
+
+- `/api/positions/unified` returns server-side grouped cards; the frontend is
+  a pure renderer. `services/positions.rs` holds the economics and pairing.
+- Pairing: bot trade history first (`executed`/`neutralized`/`partial_paired`,
+  matched on the full `(kalshi_market_id, kalshi_side, polymarket_market_id,
+  polymarket_side)` tuple), then the matcher's market mapping for manual
+  hedges (`paired_by`: `bot_trade` / `market_match`). Verified mapped pairs
+  persist in `hedge_pairs`. A manual hedge on a market the matcher never
+  matched stays standalone.
+- Both legs use an all-in cost basis (cost includes fees; entry price excludes
+  them). Polymarket `cost` = `baseCost` + `fees`; Kalshi
+  `market_exposure_dollars` excludes fees (`fees_paid_dollars` is separate). A
+  null fee shows "n/a", never $0.00. Paired cards show settlement P&L
+  `min(leg contracts) − total all-in cost`.
+- Details page: `ArbitrageCalculator::preview_single` shows fees and margin
+  for any market with fresh prices on both sides. It is display-only; only the
+  gated calculator decides `has_opportunity`, and nothing may trade on a
+  preview.
+- Open risk: Kalshi `market_exposure_dollars` sign for NO positions is
+  undocumented. The code uses `abs(...)`; verify against a real held NO
+  position.
+
+## Open issues (found, not fixed)
+
+Ordered by money risk. (Fixed 2026-10-11: sizing now re-checks `min_profit_margin` on the fresh books, neutralization's loss bound includes the closing taker fee, and auto-trade skips `SUS` games.)
+
+1. Kalshi REST can overwrite a newer WS quote (detection-only phantom risk;
+   execution re-sizes from the WS book). Add `seq`-gap detection and a
+   resnapshot before making the WS own prices.
+2. Not yet verified live: the `SELL_SHORT` price conversion (inferred from the
+   docs and BUY_SHORT evidence; none sent yet) and WS-driven detection
+   end-to-end in the app's own logs.
+3. `orderPriceMinTickSize` is now used to snap prices; `minimumTradeQty` is
+   `0.01` on every market checked, so the minimum-quantity gate in
+   `find_profitable_contract_size` is effectively a no-op.
+4. Log noise: every UI API call logs at INFO (`TraceLayer`). Revisit if too
+   verbose.
+5. `polymarket.rs` and `positions.rs` have low graph cohesion (~0.06) and
+   `WebSocketManager` is a 68-edge hub. Candidates for splitting; do not
+   refactor without being asked.
+6. The user reported something "seems to disconnect every few seconds"
+    (2026-09-27). Never triaged: could be the Kalshi WS, the frontend WS
+    client, or a backend restart.
+
+## Next up: extend market coverage beyond NBA + tennis
+
+Not started. Keep it read-only (detection/display) until settlement
+equivalence is verified; auto-trade safeguards do not check it.
+
+- Polymarket US `/v1/sports` lists nba, cbb, nhl, epl, ucl, mls, ufc, uefa,
+  mlb, f1, boxing, wta/atp, poly-open. Per-sport series ids come from that
+  response. Fetch events with `&sportsMarketTypes=<type>` (unfiltered NHL is
+  ~22 MB per request).
+- Two-outcome moneylines (nhl, mlb, cbb, ufc, boxing) fit the existing binary
+  model. Soccer is three-way (draw): a Kalshi YES / Polymarket NO pairing is
+  not a clean hedge there.
+- **Identity**: join on team abbreviations (Kalshi ticker suffix, Polymarket
+  `marketSides[].team.abbreviation`). NHL differences: Kalshi→Polymarket
+  `MTL→MON`, `NSH→NAS`, `VGK→VEG`, `WSH→WAS`. MLB: all 30 agree. Do not reuse
+  `extract_teams_from_ticker` (NBA 3+3 split); NHL has 2-letter codes and MLB
+  tickers embed the game time. Parse like tennis: two markets per event.
+- **Allowlist exact Polymarket market types**: NHL `hockey_team_full_game_
+  winner` (includes OT/SO; never `hockey_team_regulation_winner`), MLB
+  `baseball_team_full_game_winner` (not `first_five`/`inningN_winner`).
+- **Settlement**: NHL equivalent on both exchanges. MLB mismatch: Kalshi
+  settles at a fair price if a postponed game is not played within 2 days;
+  Polymarket waits up to 2 weeks. Decide before auto-trading MLB (per-sport
+  switch).
+- **Doubleheaders**: the matcher takes the first free Polymarket candidate for
+  a (category, teams, date) key. Add an ambiguity guard (refuse when more than
+  one candidate) before the regular season.
+- Edges after both fees are rare and transient (a live snapshot of 35 NHL + 5
+  MLB games had none positive), which is where WS-driven detection matters.
 
 ## Validation
 
 - Rust: `cargo test` from `rust-backend/`.
-- Frontend: `npm run lint && npm run build` from `web/`.
-- `rust-backend/examples/verify_polymarket_direct.rs` (`cargo run --example
-  verify_polymarket_direct` from `rust-backend/`) hits the live Polymarket
-  US API's read-only endpoints (balance, positions, open orders, a market
-  book) using real credentials from `config.toml` — useful for confirming
-  Ed25519 signing/parsing still works after touching `clients/polymarket.rs`
-  or `clients/polymarket_auth.rs`. Do not run it as part of routine/automatic
-  validation — it's a manual check, and it never places an order.
+- Frontend: `npm run build` from `web/`. `npm run lint` is broken independent
+  of recent changes (the `--ext` flag is unsupported by the flat eslint
+  config).
+- `cargo run --example verify_polymarket_direct` (from `rust-backend/`) hits
+  read-only live Polymarket endpoints with real credentials. Manual check
+  only; never routine. Other read-only probes: `probe_polymarket_get`,
+  `probe_poly_book_freshness`, `probe_polymarket_ws`, `probe_positions_view`.
 - **Never enable automatic trading or submit live/test orders** as part of
-  routine development or debugging. Config default is `auto_trade.enabled =
-  false`; keep it that way unless the user explicitly asks to test live.
+  routine development or debugging. The config default is
+  `auto_trade.enabled = false`; keep it that way unless the user explicitly
+  asks to test live.
 
 ## Config & secrets
 
 - `rust-backend/config.toml` is gitignored and holds real Kalshi/Polymarket
-  credentials — never read it back into chat output or commit it.
-  `config.example.toml` is the template to update when adding new settings.
-- Default dev ports: frontend `5173`, Rust API `8000`. Keep these aligned
+  credentials. Never read it back into chat output or commit it.
+  `config.example.toml` is the template to update when adding settings.
+  `POLYMARKET_KEY_ID` / `POLYMARKET_SECRET_KEY` env vars take precedence over
+  config.
+- Default dev ports: frontend `5173`, Rust API `8000`. Keep them aligned
   across services if changed.
 
-## Session log (2026-09-29, continued) — faster detection: Polymarket WebSocket
+## Lessons from past debugging (so they are not repeated)
 
-**Why:** detection was entirely REST-polled (~3s per exchange, the Poly poll
-itself often 4s+ for 360 markets), and the Kalshi WS prices never fed
-detection (`is_market_ready` needs fresh REST quotes on both sides). A price
-move could sit unseen 3–4s.
+- `ORD_REJECT_REASON_EXCHANGE_OPTION` was chased through five wrong theories
+  (minimumTradeQty, float quantity, SDK/IPC, zero slippage buffer,
+  `manualOrderIndicator`). The real causes were a 30s Cloudflare-cached book
+  and BUY_SHORT orders priced on the wrong side of the YES book. A staleness
+  check "ruled out" the cache only because the check read the same cached
+  copy. When verifying a theory, make sure the check does not share the
+  suspected fault.
+- A first fill after a change is not proof the change worked (a pre-game
+  order filled after the `AUTOMATIC` change; pre-game orders always filled).
+- Check the exchange's own records (`GET /v1/order/{id}`,
+  `/v1/portfolio/activities`) before trusting a log line.
+- Read logs in full before theorizing: no `FILLED` line existed in 14 files of
+  history, which ruled out "compare to a successful payload".
 
-**Done:** `clients/polymarket_ws.rs` streams
-`wss://api.polymarket.us/v1/ws/markets` (Ed25519 headers, same signing as
-REST, `SUBSCRIPTION_TYPE_MARKET_DATA_LITE`, ≤100 slugs/subscription,
-reconnect with 1s→30s backoff, 30s silence watchdog, new slugs subscribed
-every 5s). `longQuote`/`shortQuote` were verified live to equal the
-gateway's per-side `marketSides[].quote` (11/12 identical, the 12th was
-live movement). `WebSocketManager::update_polymarket_ws_quote` maps each
-competitor to its own native side, updates the existing quote cache, and
-calls `calculate_and_notify` immediately. REST polling stays as fallback and
-for ended-market detection; `update_polymarket_rest_quotes_at` won't let a
-REST snapshot fetched *before* a WS quote overwrite it. `MIN_REST_QUOTE_
-REFRESH_SECS` lowered 3→1 (configured `refresh_interval` is still 3 —
-lowering it multiplies Kalshi REST and Polymarket gateway request volume).
-78 lib tests pass. **Not yet observed running live end-to-end** (WS-driven
-detection in the app's own logs), and `min_duration_ms` (500) is untouched.
-Kalshi-side detection is still REST-polled; using the Kalshi WS book to
-trigger detection is the remaining lever.
-`examples/probe_polymarket_ws.rs` is a read-only WS-vs-REST comparison.
+## graphify
 
-**Kalshi WebSocket-driven detection (same day, follow-up):** Kalshi's WS book
-already produced `yes_ask`/`no_ask` per update (`clients/kalshi.rs::
-parse_ws_message`) but `on_kalshi_price_update` only stored them.
-`WebSocketManager::apply_kalshi_ws_quote` now writes them into the quote
-cache and calls `calculate_and_notify` only when the best prices changed
-(deeper-level deltas just re-stamp freshness). Same REST-can't-overwrite-
-newer-WS rule as Polymarket (`update_kalshi_rest_quotes_at`); REST still
-applies closed/settled status and self-heals any WS drift within one cycle.
-Price-only: execution depth still comes exclusively from the fresh WS book.
-80 lib tests pass. Not yet observed live in the app's logs.
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
-**Polymarket depth on the detail page + tracking (same day):** the detail
-page's Polymarket ×size/$ was blank because `/api/orderbook/depth` hardcoded
-`polymarket: None` and `calculate_and_notify` forced `poly_ask_depth/size` to
-0. The WS client now also subscribes `SUBSCRIPTION_TYPE_MARKET_DATA` (full
-book; each message is a full snapshot, verified identical to REST
-`/book` on 3/3 markets) and stores it in `poly_live_books`. The depth
-endpoint serves best-level price/size for the tracked competitor (Yes) and
-its opponent (No) from that book, falling back to one REST `get_market_book`
-call if no WS book has arrived yet. Opportunities' `poly_ask_depth/size` now
-come from the same book. **These are display/tracking values only — order
-sizing still fetches its own fresh REST book (critical invariant
-unchanged).** Also fixed along the way: tracking's depth snapshot used the
-tracked team's own native side regardless of Kalshi side; the Polymarket leg
-actually buys the *opponent* when Kalshi is YES (see `OpportunityList.tsx`
-`polymarket_competitor`), so it now uses that side. 82 lib tests pass.
-
-**WS stats line + live-game detection (same day):** `run_ws_stats_reporter`
-logs `📶 WS last 60s: Polymarket N quotes + N books (x/y markets pushed),
-Kalshi N book updates (x/y markets)` every minute — a stream that silently
-stops shows as 0. In-play state: Polymarket's events feed carries `live`
-(bool) and `period` ("NS" not started, "P2", "Bot 4th", "S2", "SUS"
-suspended, "FT" finished) per *event*; checked live across nba/nhl/mlb/atp/
-wta. Now parsed into `PolymarketMarket.live/period`, refreshed every REST
-cycle (even when WS owns prices), exposed as `polymarket_live`/
-`polymarket_period` on the matched-market frontend model. UI: a `● LIVE ·
-period` tag replaces the date under the event name, and a "🔴 Live (N)"
-toggle in `OpportunityList.tsx` filters the list (remembered in
-localStorage). Kalshi has no in-play flag (only `status: active`), so
-"live" = Polymarket's word. **Display only — nothing in auto-trade or
-sizing reads it.** Open question: `SUS` (suspended) games are flagged live;
-auto-trade does not currently skip them. 83 lib tests pass.
-
-## Session log (2026-10-01) — EXCHANGE_OPTION actually root-caused; execution moved to the live WS book
-
-**Root cause (verified against the exchange's own order records via
-read-only `GET /v1/order/{id}` and `/v1/portfolio/activities`, plus live
-header/latency measurements — no orders placed):**
-
-1. **`ORD_REJECT_REASON_EXCHANGE_OPTION` is not a rejection.** It is value 0
-   of the reject-reason enum (first in the documented enum), serialized on
-   every execution — including the `EXECUTION_TYPE_NEW` acceptance. All 14
-   "failed" orders in the logs were `NEW` → `EXPIRED`: accepted IOCs that
-   found nothing at their limit. There has never been an
-   `EXECUTION_TYPE_REJECTED` in the logs. `parse_polymarket_order_result`
-   used to surface the default field as the error.
-2. **Why nothing matched: the book was up to 30s old.** The gateway book
-   (`gateway.polymarket.us/v1/markets/{slug}/book`, and `api.polymarket.us`'s
-   copy of it) is served via Cloudflare with `cache-control: public,
-   max-age=30`; measured live, every request for a market returns the same
-   frozen snapshot until it expires (0–30s old, ~15s on average) while the
-   WS book and a cache-busted request move. `book_age_ms` only measured our
-   own fetch time, and the post-rejection re-check hit the same cache entry
-   — which is how 2026-09-28's instrumentation "ruled out" staleness. Every
-   order placed in-play (13 orders, 7 markets, including a 90¢ buy 26s before
-   a market closed) expired; both pre-game orders filled.
-3. **The 2026-10-01 opportunity itself was a phantom**: born in the same ms
-   as a Polymarket REST quote refresh (the `/v1/events` feed is cached the
-   same way) and gone 90ms later. `update_polymarket_rest_quotes_at` let any
-   REST snapshot *fetched* after a WS quote overwrite it, even though its
-   *contents* could be 30s older.
-4. **BUY_SHORT orders were priced on the wrong side.** Polymarket prices
-   every order on the YES book ("buy NO at $0.40" = "sell YES at $0.60",
-   docs.polymarket.us/concepts/orders); the exchange records a BUY_SHORT as
-   `side: SELL` at our price as given. We sent the NO price, so the limit
-   was nearly meaningless when NO < 0.50 and unfillable when NO > 0.50.
-   `avgPx` is also a YES price. The three 2026-09-29 00:43 auto-trade "arbs"
-   (`aec-itfwo-reigot-katfak`) were planned at NO 0.44 but cost NO 0.5033
-   (position cost basis $15.10 / 30) against Kalshi at 50–51¢ — each pair
-   cost more than $1.00 before fees, i.e. a locked-in loss. Prices were also
-   sent with float noise (`"0.43999999999999995"`), which the exchange
-   truncated.
-
-**Fixes (`cargo test --lib`: 94 pass, 11 new):**
-- `clients/polymarket.rs`: `submit_limit_order` sends `yes_book_price(...)`
-  snapped to the market tick (`format_order_price`; tick from the cached
-  `market_constraints`, 0.0001 if unknown) and converts `avgPx` back for
-  SHORT. `unfilled_order_reason` reports a reject reason only for
-  `EXECUTION_TYPE_REJECTED`/`ORDER_STATE_REJECTED`, else "expired unfilled".
-  `get_market_book` adds a unique `?fresh=` query (forces a CDN miss) and
-  refuses `cf-cache-status` HIT/STALE/UPDATING or `age > 1`.
-  `market_constraints` no longer holds its lock across the HTTP call.
-- `clients/polymarket_ws.rs`: emits `Connected` / `Heartbeat` (any non-data
-  frame) / `Disconnected`. Server heartbeats arrive every 10s (measured).
-- `services/websocket_manager/mod.rs`: connection epoch + last-frame
-  liveness, Kalshi-style. Books and quotes are tagged with their epoch.
-  `fresh_polymarket_book(slug, POLYMARKET_WS_MAX_SILENCE=15s)` returns a
-  book only from the live connection. REST quotes no longer overwrite a WS
-  quote from the live connection (REST still updates live/period/listing).
-- `services/paired_execution.rs::executable_polymarket_book` (manual
-  Execute, auto-trade, Polymarket neutralization): live WS book (no network
-  round trip), else origin-fresh REST; refuses non-`MARKET_STATE_OPEN`.
-  Logs now show `book_source`, the YES-book price, and actual average fills.
-  The post-order diagnostic is an independent origin REST fetch.
-- Rulebook (`.github/copilot-instructions.md`) updated; the Polymarket depth
-  invariant change was explicitly approved by the user ("speed").
-
-**Diagnostics added (read-only, never place orders):**
-`examples/probe_polymarket_get.rs` (signed GETs only — order/activities
-lookups) and `examples/probe_poly_book_freshness.rs` (WS vs CDN-cached vs
-cache-busted REST, plus WS heartbeat timing).
-
-**Not yet verified live:** the next real order through the new path (check
-the `Polymarket leg submitting ... book_source=websocket` line and the
-fill), and the SELL_SHORT direction of the price conversion (inferred from
-the docs' symmetric rule and BUY_SHORT evidence; no SELL_SHORT has been
-sent yet).
-
-**Follow-ups found, not done:** Kalshi REST market data
-(`external-api.kalshi.com`) is served from a server-side cache
-(`x-kalshi-cache-hits: 1`, values step every ~8–10s; cache-busting does not
-bypass it) and `update_kalshi_rest_quotes_at` still lets a later-fetched
-REST snapshot overwrite a WS quote — detection-only phantom risk (execution
-re-sizes from the Kalshi WS book). Not switched to WS-owns-prices because
-the Kalshi WS book has no `seq` gap detection, so REST is its only drift
-check; add seq-gap → resnapshot first, then apply the same rule. The REST
-quote poll still re-reads a 30s CDN copy every few seconds (harmless while
-the WS is live).
-
-### Positions: manual hedge showed as "Unhedged" (2026-10-01, later)
-
-`services/positions.rs::pair_positions` only paired legs that a bot
-`auto_trade_history` row (`executed`/`neutralized`/`partial_paired`) named,
-so a hedge placed by hand (order form, or either exchange's own site) — e.g.
-Kalshi NO x2 on `KXITFMATCH-26OCT02AZKSIN-SIN` + Polymarket SHORT x2 on
-`aec-itfme-ardazk-digsin-2026-10-02` — was two ⚠ Unhedged cards. Verified
-that pair was a genuine hedge (Kalshi NO on Singh pays if Azkara wins;
-Polymarket SHORT, long side = Azkara, pays if Singh wins).
-
-Fix: two passes — bot history first (unchanged), then the matcher's market
-mapping (`hedge_pairs_for_market`: Kalshi YES on the tracked competitor ↔
-Polymarket position on the *opponent*, Kalshi NO ↔ Polymarket position on
-the competitor; native side via `us_execution_for_competitor`). Same-direction
-legs never pair. Unequal sizes still pair but set `contracts_mismatch`. New
-`PositionCard.paired_by` (`bot_trade` / `market_match`) drives the badge
-tooltip and a "· manual" suffix. A verified mapped pair is persisted in a new
-`hedge_pairs` table (`storage/hedge_pairs_repo.rs`, `CREATE IF NOT EXISTS`)
-because a game leaves the matched set when it closes — before it settles — and
-the hedge must not flip back to "unhedged" then or across a restart; a row is
-only a fact about the markets, a card is "paired" only while both legs are held.
-Limit: a manual hedge on a game the matcher never matched (e.g. non-sports
-markets like the Senate/president positions) can't be recognised and stays
-standalone. 105 lib tests pass; `examples/probe_positions_view.rs` prints the
-raw held legs (read-only).
-
-## Next up (planned 2026-09-30): extend market coverage beyond NBA + tennis
-
-**Status: not started — user's stated next piece of work.** Today the bot
-only matches NBA and tennis (ATP/WTA/etc.) match-winner markets
-(`get_supported_events_and_markets` in `clients/polymarket.rs`, parsers
-`parse_nba_market` / `parse_tennis_match_winner_market`, plus the Kalshi-side
-discovery and `core/matcher.rs`, `nba_teams.rs`, `competitors.rs`). Notes
-gathered while checking live flags, so tomorrow doesn't re-derive them:
-- Polymarket US `/v1/sports` lists (seen live): nba, cbb, nhl, epl, ucl, mls,
-  ufc, uefa, mlb, f1, boxing, wta/atp (tennis), poly-open. Per-sport series
-  ids come from that response (`series`); events via
-  `/v1/events?seriesId=<id>&active=true&closed=false&limit=100`.
-- Live event counts at the time: nhl 60, mlb 32, atp 92, wta 52, nba 8,
-  cbb 1 — NHL and MLB are the biggest unmatched pools, and both had
-  in-play games (`live: true`, period "P2"/"Bot 4th").
-- Two-outcome moneyline sports (nhl, mlb, cbb, ufc, boxing) should fit the
-  existing binary "two competitors, long/short sides" model. Soccer (epl,
-  ucl, mls, uefa) is three-way (draw) — a Kalshi-YES/Polymarket-NO pairing
-  is NOT a clean hedge there, so treat it separately or skip it.
-- Each new sport needs: a Polymarket parser, Kalshi event/market discovery
-  and name normalization, team/competitor alias mapping for the matcher, and
-  a check that both exchanges' "win" market means the same thing (regulation
-  vs. including overtime/extra innings is the classic mismatch that turns an
-  "arb" into a naked bet). Verify settlement rules per sport before enabling.
-- Scale: 186 games / 372 matched markets today → the WS subscription cap is
-  100 slugs per subscription (already chunked in `polymarket_ws.rs`);
-  Kalshi REST quote batches are 100 tickers. More sports = more polling
-  requests per cycle; watch for 429s.
-- Suggested order: mlb/nhl first (biggest live pools, binary moneyline),
-  confirm the overtime/extra-innings settlement rules match on both
-  exchanges, then decide on soccer. Keep it read-only (detection/display)
-  until settlement equivalence is verified — the auto-trade safeguards do
-  not check this.
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

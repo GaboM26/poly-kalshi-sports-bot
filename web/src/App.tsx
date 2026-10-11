@@ -261,18 +261,26 @@ function App() {
                               {selectedMarket.profit_margin.toFixed(2)}%
                             </div>
                             <div className="text-[10px] text-green-400 mt-0.5">
-                              Net Profit: ${selectedMarket.expected_profit.toFixed(2)}
+                              Net Profit: {signedMoney(selectedMarket.expected_profit)}
+                            </div>
+                          </div>
+                        ) : selectedMarket.arbitrage_type ? (
+                          <div className="bg-[--bg-tertiary] rounded p-1.5 border border-gray-500/20">
+                            <div className="text-[10px] text-[--text-muted] mb-1" title="The better hedge at current prices, after both exchanges' fees">
+                              Best Hedge (after fees)
+                            </div>
+                            <div className={`text-base font-bold leading-tight ${selectedMarket.profit_margin >= 0 ? 'text-gray-300' : 'text-red-400'}`}>
+                              {selectedMarket.profit_margin.toFixed(2)}%
+                            </div>
+                            <div className={`text-[10px] mt-0.5 ${selectedMarket.expected_profit >= 0 ? 'text-gray-400' : 'text-red-400'}`}>
+                              Net Profit: {signedMoney(selectedMarket.expected_profit)}
                             </div>
                           </div>
                         ) : (
                           <div className="bg-[--bg-tertiary] rounded p-1.5 border border-gray-500/20">
                             <div className="text-[10px] text-[--text-muted] mb-1">Arbitrage Result</div>
-                            <div className="text-base font-bold text-gray-400 leading-tight">
-                              {selectedMarket.profit_margin.toFixed(2)}%
-                            </div>
-                            <div className="text-[10px] text-gray-400 mt-0.5">
-                              Net Profit: ${selectedMarket.expected_profit.toFixed(2)}
-                            </div>
+                            <div className="text-base font-bold text-gray-500 leading-tight">—</div>
+                            <div className="text-[10px] text-gray-500 mt-0.5">Waiting for prices on both exchanges</div>
                           </div>
                         )}
                       </div>
@@ -378,6 +386,11 @@ function App() {
                             <div className={`text-xs font-mono ${selectedMarket.has_opportunity ? 'text-[--text-primary]' : 'text-gray-400'}`}>
                               {selectedMarket.arbitrage_type}
                             </div>
+                            {!selectedMarket.has_opportunity && (
+                              <div className="text-[9px] text-[--text-muted] mt-0.5">
+                                Best hedge at current prices; not an opportunity at your minimum margin
+                              </div>
+                            )}
                           </div>
                         )}
                         
@@ -397,18 +410,24 @@ function App() {
                                 <span className="text-orange-400 font-mono">-${selectedMarket.kalshi_fee.toFixed(2)}</span>
                               </div>
                             )}
+                            {selectedMarket.polymarket_fee !== undefined && (
+                              <div className="flex justify-between">
+                                <span className="text-[--text-muted]">Polymarket Fee</span>
+                                <span className="text-orange-400 font-mono">-${selectedMarket.polymarket_fee.toFixed(2)}</span>
+                              </div>
+                            )}
                             {selectedMarket.gross_profit !== undefined && (
                               <div className="flex justify-between">
                                 <span className="text-[--text-muted]">Gross Profit</span>
                                 <span className={`font-mono ${selectedMarket.gross_profit >= 0 ? 'text-[--text-secondary]' : 'text-red-400'}`}>
-                                  ${selectedMarket.gross_profit.toFixed(2)}
+                                  {signedMoney(selectedMarket.gross_profit)}
                                 </span>
                               </div>
                             )}
                             <div className="flex justify-between pt-1 border-t border-[--border-color]">
                               <span className="text-[--text-muted] font-medium">Net Profit</span>
                               <span className={`font-mono font-medium ${selectedMarket.expected_profit >= 0 ? (selectedMarket.has_opportunity ? 'text-green-400' : 'text-gray-400') : 'text-red-400'}`}>
-                                ${selectedMarket.expected_profit.toFixed(2)}
+                                {signedMoney(selectedMarket.expected_profit)}
                               </span>
                             </div>
                           </div>
@@ -472,6 +491,11 @@ function App() {
       </button>
     </div>
   );
+}
+
+/** "$1.23" / "-$0.27" (the sign goes before the dollar sign). */
+function signedMoney(value: number): string {
+  return `${value < 0 ? '-' : ''}$${Math.abs(value).toFixed(2)}`;
 }
 
 function formatDateTime(dateString: string): string {

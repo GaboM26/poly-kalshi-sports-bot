@@ -19,13 +19,23 @@ async fn main() -> anyhow::Result<()> {
     let raw = kalshi.get_positions().await?;
     for p in raw["market_positions"].as_array().cloned().unwrap_or_default() {
         if let Some(leg) = kalshi_leg(&p, None) {
-            println!("  {} {} x{} cost {:.2}", leg.market_id, leg.side, leg.contracts, leg.cost);
+            println!(
+                "  {} {} x{}  entry {:?} | all-in cost {:.4} | fees {:?}",
+                leg.market_id, leg.side, leg.contracts, leg.entry_price, leg.cost, leg.fees
+            );
+            // Raw numeric fields, to see what each one includes (fees, etc.).
+            if std::env::var("PROBE_RAW").is_ok() {
+                println!("      raw: {}", p);
+            }
         }
     }
     println!("== Polymarket legs");
     if let Value::Array(items) = poly.get_positions().await? {
         for p in items.iter().filter_map(polymarket_leg) {
-            println!("  {} {} x{} cost {:.2}", p.market_id, p.side, p.contracts, p.cost);
+            println!(
+                "  {} {} x{}  entry {:?} | all-in cost {:.4} | fees {:?} | value {:?} | pnl {:?}",
+                p.market_id, p.side, p.contracts, p.entry_price, p.cost, p.fees, p.value, p.unrealized_pnl
+            );
         }
     }
     Ok(())

@@ -16,6 +16,5 @@ Service architecture:
 - Rust backend: handles arbitrage scanning, WebSockets, the API, and both
   exchanges' order placement (Kalshi RSA-PSS-signed, Polymarket US
   Ed25519-signed) - there is no separate Python order service.
-  poly-order-service/ is kept in this bundle for reference only.
 
 Stop the application: Ctrl+C or kill the process.

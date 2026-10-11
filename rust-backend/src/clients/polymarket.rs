@@ -103,6 +103,11 @@ pub struct PolymarketOrderResult {
     pub error: Option<String>,
     pub latency_ms: Option<i64>,
     pub average_fill_price: Option<f64>,
+    /// Taker commission Polymarket actually collected on this order
+    /// (`order.commissionNotionalTotalCollected`), in dollars. Only present
+    /// on a fill; used to check the fee model in `core::fees` against the
+    /// exchange's own number.
+    pub commission_collected: Option<f64>,
 }
 
 /// Position data for aggregation (internal use)
@@ -842,8 +847,14 @@ fn normalize_positions(response: &Value) -> Result<Value> {
             "size": position.get("netPosition").cloned().unwrap_or_else(|| json!("0")),
             "value": position.get("cashValue").and_then(amount_as_f64),
             // Total cost basis; with `cashValue` it yields avg entry, mark
-            // and unrealized P&L without any extra API call.
+            // and unrealized P&L without any extra API call. Verified on
+            // live positions: `cost` = `baseCost` + `fees`, i.e. it already
+            // includes the taker fees paid on the position.
             "cost": position.get("cost").and_then(amount_as_f64),
+            "base_cost": position.get("baseCost").and_then(amount_as_f64),
+            // Fees paid on this position, as reported by the exchange
+            // (null/absent -> unknown, never a fake zero).
+            "fees": position.get("fees").and_then(amount_as_f64),
             "pnl": position.get("realized").and_then(amount_as_f64),
             "outcome": metadata.and_then(|m| m.get("outcome")).cloned().unwrap_or(Value::Null),
         }));
@@ -1019,6 +1030,7 @@ fn parse_polymarket_order_result(
             })),
             latency_ms: Some(latency_ms),
             average_fill_price: None,
+            commission_collected: None,
         };
     };
 
@@ -1037,6 +1049,7 @@ fn parse_polymarket_order_result(
             error: Some("Polymarket US execution did not include order details".to_string()),
             latency_ms: Some(latency_ms),
             average_fill_price: None,
+            commission_collected: None,
         };
     };
 
@@ -1080,6 +1093,8 @@ fn parse_polymarket_order_result(
             },
             latency_ms: Some(latency_ms),
             average_fill_price,
+            commission_collected: amount_as_f64(&order["commissionNotionalTotalCollected"])
+                .filter(|fee| fee.is_finite() && *fee >= 0.0),
         };
     }
 
@@ -1097,6 +1112,7 @@ fn parse_polymarket_order_result(
         error: Some(error),
         latency_ms: Some(latency_ms),
         average_fill_price: None,
+        commission_collected: None,
     }
 }
 
@@ -1685,6 +1701,76 @@ mod tests {
             PolymarketPositionSide::Long,
         );
         assert!((long.average_fill_price.unwrap() - 0.49).abs() < 1e-9);
+    }
+
+    #[test]
+    fn normalized_positions_carry_the_exchange_reported_fees_and_base_cost() {
+        // The real /v1/portfolio/positions record for the 2026-10-02 AZKSIN
+        // SHORT x2 (marketMetadata omitted): cost 0.98 = baseCost 0.94 + fees 0.04.
+        let response = json!({"positions": {
+            "aec-itfme-ardazk-digsin-2026-10-02": {
+                "avgPx": {"currency": "USD", "value": "0.4900"},
+                "baseCost": {"currency": "USD", "value": "0.9400"},
+                "cashValue": {"currency": "USD", "value": "0.9400"},
+                "cost": {"currency": "USD", "value": "0.9800"},
+                "fees": {"currency": "USD", "value": "0.0400"},
+                "netPosition": "-2",
+                "realized": {"currency": "USD", "value": "0.0000"},
+                "marketMetadata": {"title": "Arda Azkara vs. Digvijay Pratap Singh", "outcome": "Digvijay Pratap Singh"}
+            },
+            "resolved-position": {
+                "baseCost": {"currency": "USD", "value": "1.0000"},
+                "cashValue": {"currency": "USD", "value": "0"},
+                "cost": {"currency": "USD", "value": "1.0000"},
+                "fees": null,
+                "netPosition": "1",
+                "marketMetadata": {}
+            }
+        }});
+        let positions = normalize_positions(&response).unwrap();
+        let positions = positions.as_array().unwrap();
+        let find = |id: &str| positions.iter().find(|p| p["id"] == id).unwrap();
+
+        let azksin = find("aec-itfme-ardazk-digsin-2026-10-02");
+        assert_eq!(azksin["cost"], 0.98);
+        assert_eq!(azksin["base_cost"], 0.94);
+        assert_eq!(azksin["fees"], 0.04);
+        assert_eq!(azksin["value"], 0.94);
+
+        // A null fee stays null (unknown), never a fake zero.
+        assert!(find("resolved-position")["fees"].is_null());
+    }
+
+    #[test]
+    fn the_collected_commission_is_read_from_a_fill_and_absent_otherwise() {
+        // Order CSDJ599XAYBY (2026-09-29): 10 contracts, $0.17 collected.
+        let filled = json!({"executions": [{
+            "order": {
+                "id": "CSDJ599XAYBY",
+                "cumQuantity": 10,
+                "state": "ORDER_STATE_FILLED",
+                "avgPx": {"currency": "USD", "value": "0.5000"},
+                "commissionNotionalTotalCollected": {"currency": "USD", "value": "0.1700"}
+            },
+            "type": "EXECUTION_TYPE_FILL"
+        }]});
+        let result = parse_polymarket_order_result(
+            &filled,
+            138,
+            &limit_request("0.50"),
+            PolymarketPositionSide::Short,
+        );
+        assert_eq!(result.filled_contracts, 10);
+        assert_eq!(result.commission_collected, Some(0.17));
+
+        // An unfilled IOC charges nothing, and reports no commission.
+        let unfilled = parse_polymarket_order_result(
+            &expired_ioc_response(),
+            134,
+            &limit_request("0.50"),
+            PolymarketPositionSide::Long,
+        );
+        assert_eq!(unfilled.commission_collected, None);
     }
 
     #[test]

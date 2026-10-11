@@ -1292,6 +1292,7 @@ impl WebSocketManager {
                     gross_profit,
                     kalshi_contracts,
                     kalshi_fee,
+                    polymarket_fee,
                     arbitrage_type,
                 ) = if let Some(opp) = opportunity {
                     (
@@ -1300,14 +1301,47 @@ impl WebSocketManager {
                         Some(opp.gross_profit),
                         Some(opp.kalshi_contracts),
                         Some(opp.kalshi_fee),
+                        Some(opp.polymarket_fee),
                         Some(format!(
                             "Kalshi{}Polymarket{}",
                             capitalize(&opp.kalshi_side),
                             capitalize(&opp.polymarket_side)
                         )),
                     )
+                } else if kalshi_ready && poly_ready {
+                    // Not an opportunity at the configured minimum margin, but
+                    // the details page should still show what the better hedge
+                    // costs and earns at the current prices, net of BOTH
+                    // exchanges' fees (a loss shows as a loss), instead of a
+                    // placeholder 0.00%. Display only: `has_opportunity` stays
+                    // false, and nothing trades on this.
+                    match self.calculator.preview_single(
+                        &mm.event_name,
+                        &mm.team_name,
+                        &mm.kalshi_market,
+                        k_yes,
+                        k_no,
+                        &mm.polymarket_market,
+                        p_yes,
+                        p_no,
+                    ) {
+                        Some(preview) => (
+                            preview.profit_margin,
+                            preview.expected_profit,
+                            Some(preview.gross_profit),
+                            Some(preview.kalshi_contracts),
+                            Some(preview.kalshi_fee),
+                            Some(preview.polymarket_fee),
+                            Some(format!(
+                                "Kalshi{}Polymarket{}",
+                                capitalize(&preview.kalshi_side),
+                                capitalize(&preview.polymarket_side)
+                            )),
+                        ),
+                        None => (0.0, 0.0, None, None, None, None, None),
+                    }
                 } else {
-                    (0.0, 0.0, None, None, None, None)
+                    (0.0, 0.0, None, None, None, None, None)
                 };
 
                 let end_time = mm.kalshi_market.start_time.map(|t| t.to_rfc3339());
@@ -1339,6 +1373,7 @@ impl WebSocketManager {
                     gross_profit,
                     kalshi_contracts,
                     kalshi_fee,
+                    polymarket_fee,
                     arbitrage_type,
                 })
             })
@@ -1675,6 +1710,77 @@ mod tests {
     async fn polymarket_slugs_are_unique() {
         let manager = test_manager();
         assert_eq!(manager.get_polymarket_slugs(), vec!["lal-mem-2026-08-17".to_string()]);
+    }
+
+    /// Manager with the LAL fixture market and fresh quotes on both sides.
+    fn manager_with_quotes(kalshi_yes: f64, kalshi_no: f64, poly_a: f64, poly_b: f64) -> WebSocketManager {
+        let manager = test_manager();
+        assert_eq!(
+            manager.update_kalshi_rest_quotes(&[KalshiMarketQuote {
+                market_id: "KXLAL".to_string(),
+                yes_ask: kalshi_yes,
+                no_ask: kalshi_no,
+                status: "open".to_string(),
+            }]),
+            1
+        );
+        let fresh = PolymarketMarket {
+            price_a: poly_a,
+            price_b: poly_b,
+            ..matched_market().polymarket_market
+        };
+        assert_eq!(manager.update_polymarket_rest_quotes(&[fresh]), 1);
+        assert!(manager.is_market_ready(0));
+        manager
+    }
+
+    #[tokio::test]
+    async fn a_market_without_an_opportunity_still_reports_both_fees_and_a_real_margin() {
+        // Min margin is 1.0 (test_manager). Kalshi YES 55c / NO 46c, Poly LAL
+        // 52c / MEM 49c: neither hedge clears it (best is -1.48% after fees).
+        let manager = manager_with_quotes(0.55, 0.46, 0.52, 0.49);
+        assert!(manager.calculate_all().is_empty());
+        let market = manager.get_matched_markets_for_frontend().into_iter().next().unwrap();
+        assert!(!market.has_opportunity, "a preview is never an opportunity");
+        assert_eq!(market.arbitrage_type.as_deref(), Some("KalshiNoPolymarketYes"));
+        assert_eq!(market.kalshi_contracts, Some(10.0));
+        assert!((market.kalshi_fee.unwrap() - 0.18).abs() < 1e-9);
+        assert!((market.polymarket_fee.unwrap() - 0.17).abs() < 1e-9);
+        assert!((market.gross_profit.unwrap() - 0.20).abs() < 1e-9);
+        assert!((market.expected_profit - (-0.15)).abs() < 1e-9, "{}", market.expected_profit);
+        assert!(market.profit_margin < 0.0);
+    }
+
+    #[tokio::test]
+    async fn an_opportunity_reports_the_same_fees_as_before() {
+        // Kalshi YES 26c + Poly MEM 58c is a real edge.
+        let manager = manager_with_quotes(0.26, 0.75, 0.42, 0.58);
+        let opportunity = manager.calculate_all().into_iter().next().expect("opportunity");
+        let market = manager.get_matched_markets_for_frontend().into_iter().next().unwrap();
+        assert!(market.has_opportunity);
+        assert_eq!(market.kalshi_fee, Some(opportunity.kalshi_fee));
+        assert_eq!(market.polymarket_fee, Some(opportunity.polymarket_fee));
+        assert_eq!(market.expected_profit, opportunity.expected_profit);
+        assert_eq!(market.profit_margin, opportunity.profit_margin);
+    }
+
+    #[tokio::test]
+    async fn no_preview_is_invented_without_fresh_prices_on_both_sides() {
+        // Only Kalshi has a quote: nothing to evaluate, so no fees either.
+        let manager = test_manager();
+        manager.update_kalshi_rest_quotes(&[KalshiMarketQuote {
+            market_id: "KXLAL".to_string(),
+            yes_ask: 0.55,
+            no_ask: 0.46,
+            status: "open".to_string(),
+        }]);
+        let market = manager.get_matched_markets_for_frontend().into_iter().next().unwrap();
+        assert!(market.kalshi_ready && !market.poly_ready);
+        assert!(!market.has_opportunity);
+        assert_eq!(market.kalshi_fee, None);
+        assert_eq!(market.polymarket_fee, None);
+        assert_eq!(market.arbitrage_type, None);
+        assert_eq!(market.profit_margin, 0.0);
     }
 
     #[tokio::test]

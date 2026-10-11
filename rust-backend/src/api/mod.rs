@@ -21,10 +21,11 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{error, info, warn, Level};
 
 use crate::config::Config;
+use crate::core::SubscriptionInfo;
 use crate::models::PriceUpdate;
 use crate::services::paired_execution::{
     calculate_contracts_to_trade, executable_depth, executable_polymarket_book,
-    find_profitable_contract_size, kalshi_buy_levels, polymarket_buy_levels, submit_paired_order,
+    find_profitable_contract_size, is_game_suspended, kalshi_buy_levels, polymarket_buy_levels, submit_paired_order,
     EXECUTABLE_BOOK_MAX_AGE,
 };
 use crate::services::{ArbitrageService, PairedOrderParams, PerformanceMetrics, TelegramClient};
@@ -144,9 +145,29 @@ pub async fn create_app(config: Config) -> Result<Router> {
             info!("🔄 Starting periodic market scan #{}...", scan_count);
 
             // Scan for new markets
-            let scan_result = {
-                let mut service = state_for_scanner.service.write().await;
-                service.scan_for_new_markets().await
+            // Fetch without the service lock: the network calls can take tens
+            // of seconds, and holding the lock would stall every API handler.
+            let (kalshi_client, polymarket_client) = {
+                let service = state_for_scanner.service.read().await;
+                (
+                    service.kalshi_client.clone(),
+                    service.polymarket_client.clone(),
+                )
+            };
+            let scan_result = match ArbitrageService::fetch_market_snapshot(
+                &kalshi_client,
+                &polymarket_client,
+            )
+            .await
+            {
+                Ok(snapshot) => {
+                    let mut service = state_for_scanner.service.write().await;
+                    service.apply_market_snapshot(snapshot)
+                }
+                Err(e) => {
+                    error!("❌ Market scan fetch failed: {:#}", e);
+                    Ok((Vec::new(), SubscriptionInfo::empty()))
+                }
             };
 
             match scan_result {
@@ -579,6 +600,18 @@ async fn execute_single_auto_trade(
         );
         return;
     };
+    if is_game_suspended(matched_market.polymarket_market.period.as_deref()) {
+        save_auto_trade_skip(
+            service,
+            key,
+            &record,
+            &opportunity,
+            auto_state.min_contracts,
+            duration_ms,
+            "Polymarket reports the game as suspended",
+        );
+        return;
+    }
     let polymarket_competitor = match opportunity.polymarket_side.as_str() {
         "yes" => record.team_name.as_str(),
         "no" => match matched_market
@@ -682,11 +715,12 @@ async fn execute_single_auto_trade(
         return;
     };
 
-    let Some((contracts, kalshi_price_cents, poly_price, kalshi_fee, profit_margin)) =
+    let Some(sized) =
         find_profitable_contract_size(
             size_cap,
             auto_state.min_contracts,
             auto_state.max_amount,
+            service.ws_manager.calculator.min_profit_margin(),
             poly_book.minimum_trade_qty,
             &kalshi_levels,
             &poly_levels,
@@ -695,7 +729,7 @@ async fn execute_single_auto_trade(
         let reason = if poly_book.minimum_trade_qty.is_none() {
             "Polymarket US market minimum trade quantity is unavailable"
         } else {
-            "No fresh executable size remains profitable after fees, worst-case prices, Polymarket's minimum trade quantity, and amount limit"
+            "No fresh executable size clears the minimum profit margin after fees, worst-case prices, Polymarket's minimum trade quantity, and amount limit"
         };
         save_auto_trade_skip(service, key, &record, &opportunity, size_cap, duration_ms, reason);
         return;
@@ -711,11 +745,12 @@ async fn execute_single_auto_trade(
             kalshi_side: opportunity.kalshi_side.clone(),
             polymarket_market_slug: poly_execution.market_slug.clone(),
             polymarket_position_side: poly_execution.position_side,
-            contracts,
-            kalshi_price_cents,
-            poly_price,
-            kalshi_fee,
-            profit_margin,
+            contracts: sized.contracts,
+            kalshi_price_cents: sized.kalshi_price_cents,
+            poly_price: sized.poly_price,
+            kalshi_fee: sized.kalshi_fee,
+            poly_fee: sized.poly_fee,
+            profit_margin: sized.profit_margin,
             duration_ms,
             poly_book_fetched_at_ms: poly_book.fetched_at_ms,
             poly_book_source,

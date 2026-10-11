@@ -144,7 +144,7 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
         setResult({
           success: true,
           message: dryRun
-            ? `DRY RUN: would trade ${response.contracts ?? '?'} contracts @ K ${response.kalshi_price != null ? (response.kalshi_price * 100).toFixed(0) + '¢' : '?'} / P ${response.polymarket_price != null ? (response.polymarket_price * 100).toFixed(0) + '¢' : '?'} — nothing was submitted`
+            ? `DRY RUN: would trade ${response.contracts ?? '?'} contracts @ K ${response.kalshi_price != null ? (response.kalshi_price * 100).toFixed(0) + '¢' : '?'} / P ${response.polymarket_price != null ? (response.polymarket_price * 100).toFixed(0) + '¢' : '?'}, fees K $${response.kalshi_fee?.toFixed(2) ?? '?'} + P $${response.polymarket_fee?.toFixed(2) ?? '?'}, net margin ${response.profit_margin != null ? response.profit_margin.toFixed(2) + '%' : '?'} — nothing was submitted`
             : `Arbitrage succeeded! Kalshi: ${response.kalshi?.success ? '✓' : '✗'}, Poly: ${response.polymarket?.success ? '✓' : '✗'}`,
           elapsed_ms: (response.kalshi?.elapsed_ms || 0) + (response.polymarket?.elapsed_ms || 0),
         });

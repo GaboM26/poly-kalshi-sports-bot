@@ -17,6 +17,7 @@ use crate::clients::polymarket::yes_book_price;
 use crate::clients::{
     KalshiOrderResult, PolymarketBookLevel, PolymarketMarketBook, PolymarketOrderResult,
 };
+use crate::core::fees::{kalshi_taker_fee, polymarket_taker_fee};
 use crate::models::PolymarketPositionSide;
 use crate::services::websocket_manager::POLYMARKET_WS_MAX_SILENCE;
 use crate::services::{ArbitrageService, AutoTradeExecutionRecord, TelegramClient};
@@ -124,6 +125,7 @@ pub fn failed_poly_order(error: String) -> PolymarketOrderResult {
         error: Some(error),
         latency_ms: None,
         average_fill_price: None,
+        commission_collected: None,
     }
 }
 
@@ -265,10 +267,6 @@ pub fn worst_price<T: Copy>(levels: &[(T, i32)], contracts: i32) -> Option<T> {
     None
 }
 
-pub fn kalshi_fee(contracts: i32, price: f64) -> f64 {
-    (0.07 * contracts as f64 * price * (1.0 - price) * 100.0).ceil() / 100.0
-}
-
 /// Calculate the number of contracts to trade based on depth and settings
 ///
 /// Returns None if depth is insufficient (below min_contracts)
@@ -304,6 +302,32 @@ pub fn calculate_contracts_to_trade(
     Some(contracts.min(max_contracts))
 }
 
+/// One sized trade: the contract count plus the worst-case prices and the
+/// fees of BOTH exchanges that determined it. A named struct (not a tuple)
+/// so the two fees - adjacent `f64`s - can never be swapped by a caller.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SizedTrade {
+    pub contracts: i32,
+    pub kalshi_price_cents: i32,
+    pub poly_price: f64,
+    pub kalshi_fee: f64,
+    pub poly_fee: f64,
+    /// Net profit over total cost, in percent, after both exchanges' fees.
+    pub profit_margin: f64,
+}
+
+/// Largest profitable size within the depth, minimums and amount cap.
+/// Profitable means net of BOTH exchanges' taker fees (every order here is
+/// an immediate-or-cancel taker order), assuming every contract fills at the
+/// worst price on each venue; `max_amount` caps the total cost including
+/// both fees.
+///
+/// `min_profit_margin` is the net margin (percent) the sized trade must still
+/// clear on these fresh books. Detection applies the same threshold to a
+/// possibly stale quote, so without re-checking here a trade could execute at
+/// a margin below the configured minimum. Larger sizes walk deeper into the
+/// books and lose margin, so the largest size that still clears it wins.
+///
 /// `poly_min_trade_qty` is the Polymarket market's own minimum tradeable
 /// quantity (docs.polymarket.us/api-reference/orders/overview: "constraints
 /// are market-dependent - retrieve minimumTradeQty ... before order
@@ -314,11 +338,12 @@ pub fn find_profitable_contract_size(
     size_cap: i32,
     min_contracts: i32,
     max_amount: f64,
+    min_profit_margin: f64,
     poly_min_trade_qty: Option<f64>,
     kalshi_levels: &[(i32, i32)],
     poly_levels: &[(f64, i32)],
-) -> Option<(i32, i32, f64, f64, f64)> {
-    if !max_amount.is_finite() || max_amount <= 0.0 {
+) -> Option<SizedTrade> {
+    if !max_amount.is_finite() || max_amount <= 0.0 || !min_profit_margin.is_finite() {
         return None;
     }
     let Some(poly_min_trade_qty) = poly_min_trade_qty else {
@@ -336,14 +361,61 @@ pub fn find_profitable_contract_size(
             continue;
         }
         let kalshi_price = kalshi_price_cents as f64 / 100.0;
-        let fee = kalshi_fee(contracts, kalshi_price);
-        let total_cost = contracts as f64 * (kalshi_price + poly_price) + fee;
+        let kalshi_fee = kalshi_taker_fee(contracts as f64, kalshi_price);
+        let poly_fee = polymarket_taker_fee(contracts as f64, poly_price);
+        let total_cost =
+            contracts as f64 * (kalshi_price + poly_price) + kalshi_fee + poly_fee;
         if total_cost.is_finite() && total_cost <= max_amount && total_cost < contracts as f64 {
-            let margin = ((contracts as f64 - total_cost) / total_cost) * 100.0;
-            return Some((contracts, kalshi_price_cents, poly_price, fee, margin));
+            let profit_margin = ((contracts as f64 - total_cost) / total_cost) * 100.0;
+            if profit_margin < min_profit_margin {
+                continue;
+            }
+            return Some(SizedTrade {
+                contracts,
+                kalshi_price_cents,
+                poly_price,
+                kalshi_fee,
+                poly_fee,
+                profit_margin,
+            });
         }
     }
     None
+}
+
+/// Compare the commission Polymarket actually collected for a fill with what
+/// the fee model predicted. Returns `(modeled, within_tolerance)`. The
+/// tolerance (1 cent or 1.5% of the fee) covers cumulative-vs-per-fill
+/// rounding on multi-level fills but would catch a changed fee schedule,
+/// which would otherwise silently skew every margin again.
+pub fn polymarket_fee_check(contracts: i32, price: f64, collected: f64) -> (f64, bool) {
+    let modeled = polymarket_taker_fee(contracts as f64, price);
+    let tolerance = (0.015 * modeled).max(0.011);
+    (modeled, (collected - modeled).abs() <= tolerance)
+}
+
+/// Whether closing at `close_price` stays within `max_loss_cents` per
+/// contract of the actual entry price. The closing sell is a taker order and
+/// pays `close_fee` (total, dollars), so the bound is checked against the
+/// proceeds net of that fee, not the bare price.
+pub fn close_within_loss_bound(
+    entry_price: f64,
+    close_price: f64,
+    contracts: i32,
+    close_fee: f64,
+    max_loss_cents: i32,
+) -> bool {
+    if contracts <= 0 {
+        return false;
+    }
+    let net_close_price = close_price - close_fee / contracts as f64;
+    net_close_price + f64::EPSILON >= entry_price - max_loss_cents as f64 / 100.0
+}
+
+/// Polymarket sets `period` to "SUS" while a game is suspended; its book is
+/// frozen or unreliable then, so nothing may be auto-traded against it.
+pub fn is_game_suspended(period: Option<&str>) -> bool {
+    period.is_some_and(|p| p.trim().eq_ignore_ascii_case("SUS"))
 }
 
 pub async fn neutralize_polymarket(
@@ -363,10 +435,11 @@ pub async fn neutralize_polymarket(
         .map_err(|error| format!("Unable to get a fresh Polymarket close book: {error}"))?;
     let close_price = worst_price(&polymarket_sell_levels(&book, position_side), contracts)
         .ok_or_else(|| "Fresh Polymarket close book lacks required executable depth".to_string())?;
-    if close_price + f64::EPSILON < entry_price - max_loss_cents as f64 / 100.0 {
+    let close_fee = polymarket_taker_fee(contracts as f64, close_price);
+    if !close_within_loss_bound(entry_price, close_price, contracts, close_fee, max_loss_cents) {
         return Err(format!(
-            "Polymarket close price {:.4} exceeds configured {}¢ loss bound from actual entry {:.4}",
-            close_price, max_loss_cents, entry_price
+            "Polymarket close price {:.4} (closing fee ${:.2}) exceeds configured {}¢ loss bound from actual entry {:.4}",
+            close_price, close_fee, max_loss_cents, entry_price
         ));
     }
     let result = service
@@ -399,10 +472,11 @@ pub async fn neutralize_kalshi(
     let close_price_cents = worst_price(&kalshi_sell_levels(&book, side), contracts)
         .ok_or_else(|| "Fresh Kalshi close book lacks required executable depth".to_string())?;
     let close_price = close_price_cents as f64 / 100.0;
-    if close_price + f64::EPSILON < entry_price - max_loss_cents as f64 / 100.0 {
+    let close_fee = kalshi_taker_fee(contracts as f64, close_price);
+    if !close_within_loss_bound(entry_price, close_price, contracts, close_fee, max_loss_cents) {
         return Err(format!(
-            "Kalshi close price {:.4} exceeds configured {}¢ loss bound from actual entry {:.4}",
-            close_price, max_loss_cents, entry_price
+            "Kalshi close price {:.4} (closing fee ${:.2}) exceeds configured {}¢ loss bound from actual entry {:.4}",
+            close_price, close_fee, max_loss_cents, entry_price
         ));
     }
     let result = service
@@ -431,6 +505,8 @@ pub struct PairedOrderParams {
     pub kalshi_price_cents: i32,
     pub poly_price: f64,
     pub kalshi_fee: f64,
+    /// Modeled Polymarket taker fee for this size (see `core::fees`).
+    pub poly_fee: f64,
     pub profit_margin: f64,
     pub duration_ms: i64,
     /// `PolymarketMarketBook::fetched_at_ms` of the book `poly_price` was
@@ -464,6 +540,7 @@ fn dry_run_record(params: &PairedOrderParams) -> AutoTradeExecutionRecord {
         contracts: params.contracts,
         kalshi_price: params.kalshi_price_cents as f64 / 100.0,
         kalshi_fee: params.kalshi_fee,
+        polymarket_fee: params.poly_fee,
         polymarket_price: params.poly_price,
         profit_margin: params.profit_margin,
         duration_ms: params.duration_ms,
@@ -524,6 +601,7 @@ pub async fn submit_paired_order(
             contracts: params.contracts,
             kalshi_price: params.kalshi_price_cents as f64 / 100.0,
             kalshi_fee: params.kalshi_fee,
+            polymarket_fee: params.poly_fee,
             polymarket_price: params.poly_price,
             profit_margin: params.profit_margin,
             duration_ms: params.duration_ms,
@@ -599,6 +677,28 @@ pub async fn submit_paired_order(
     let poly_latency = poly_result
         .latency_ms
         .or(Some(poly_started.elapsed().as_millis() as i64));
+
+    // Ground-truth check on the fee model: Polymarket reports the commission
+    // it collected on the order. If that stops matching `core::fees`, every
+    // margin is silently wrong again, so say so loudly.
+    if poly_result.filled_contracts > 0 {
+        if let Some(collected) = poly_result.commission_collected {
+            let price = poly_result.average_fill_price.unwrap_or(params.poly_price);
+            let (modeled, within_tolerance) =
+                polymarket_fee_check(poly_result.filled_contracts, price, collected);
+            if within_tolerance {
+                info!(
+                    "Polymarket fee check: market_slug={} filled={} @ {:.4} modeled=${:.2} collected=${:.2}",
+                    params.polymarket_market_slug, poly_result.filled_contracts, price, modeled, collected
+                );
+            } else {
+                warn!(
+                    "Polymarket fee model drift: market_slug={} filled={} @ {:.4} modeled=${:.2} but collected=${:.2} - the fee schedule may have changed; update POLYMARKET_TAKER_FEE_RATE in core/fees.rs",
+                    params.polymarket_market_slug, poly_result.filled_contracts, price, modeled, collected
+                );
+            }
+        }
+    }
 
     // Diagnostic only, fires after the order already resolved: an
     // independent origin REST fetch (never the CDN cache, never the WS book
@@ -825,6 +925,7 @@ pub async fn submit_paired_order(
         contracts: params.contracts,
         kalshi_price: params.kalshi_price_cents as f64 / 100.0,
         kalshi_fee: params.kalshi_fee,
+        polymarket_fee: params.poly_fee,
         polymarket_price: params.poly_price,
         profit_margin: params.profit_margin,
         duration_ms: params.duration_ms,
@@ -863,7 +964,7 @@ pub async fn submit_paired_order(
     // can be grepped and cross-checked against the exchanges directly.
     if kalshi_result.filled_contracts > 0 || poly_result.filled_contracts > 0 {
         info!(
-            "Paired order {}: {} {} | kalshi order_id={:?} filled={}/{} limit {}c avg_fill={:?} | polymarket order_id={:?} {} filled={}/{} limit {:.4} avg_fill={:?} | neutralization={:?} residual={}",
+            "Paired order {}: {} {} | kalshi order_id={:?} filled={}/{} limit {}c avg_fill={:?} | polymarket order_id={:?} {} filled={}/{} limit {:.4} avg_fill={:?} | modeled fees kalshi=${:.2} polymarket=${:.2} | neutralization={:?} residual={}",
             status,
             params.event_name,
             params.team_name,
@@ -878,6 +979,8 @@ pub async fn submit_paired_order(
             params.contracts,
             params.poly_price,
             poly_result.average_fill_price,
+            params.kalshi_fee,
+            params.poly_fee,
             neutralization_success,
             residual_contracts,
         );
@@ -965,17 +1068,72 @@ mod tests {
     fn rejects_size_when_worst_case_fee_removes_profit() {
         let kalshi = vec![(50, 10)];
         let poly = vec![(0.50, 10)];
-        assert!(find_profitable_contract_size(10, 1, 100.0, Some(1.0), &kalshi, &poly).is_none());
+        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly).is_none());
     }
 
     #[test]
     fn uses_worst_level_and_respects_total_amount_limit() {
         let kalshi = vec![(40, 2), (42, 3)];
         let poly = vec![(0.45, 2), (0.47, 3)];
-        let result = find_profitable_contract_size(5, 1, 5.0, Some(1.0), &kalshi, &poly).unwrap();
-        assert_eq!(result.0, 5);
-        assert_eq!(result.1, 42);
-        assert_eq!(result.2, 0.47);
+        let result = find_profitable_contract_size(5, 1, 5.0, 0.0, Some(1.0), &kalshi, &poly).unwrap();
+        assert_eq!(result.contracts, 5);
+        assert_eq!(result.kalshi_price_cents, 42);
+        assert_eq!(result.poly_price, 0.47);
+    }
+
+    #[test]
+    fn sizing_charges_both_exchanges_fees() {
+        // 10 contracts, Kalshi 40c, Polymarket 45c:
+        //   Kalshi     ceil(0.07 * 10 * 0.40 * 0.60) = 0.17
+        //   Polymarket 0.0695 * 10 * 0.45 * 0.55 = 0.1720 -> 0.17
+        //   total = 10 * 0.85 + 0.17 + 0.17 = 8.84
+        let kalshi = vec![(40, 10)];
+        let poly = vec![(0.45, 10)];
+        let trade = find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly).unwrap();
+        assert_eq!(trade.contracts, 10);
+        assert!((trade.kalshi_fee - 0.17).abs() < 1e-9);
+        assert!((trade.poly_fee - 0.17).abs() < 1e-9);
+        let expected_margin = (10.0 - 8.84) / 8.84 * 100.0;
+        assert!((trade.profit_margin - expected_margin).abs() < 1e-9, "{}", trade.profit_margin);
+    }
+
+    #[test]
+    fn rejects_an_edge_that_only_existed_before_the_polymarket_fee() {
+        // Kalshi 48c + Polymarket 50c at 10 contracts: with Kalshi's fee
+        // alone this looks profitable (9.80 + 0.18 = 9.98 < 10), but
+        // Polymarket's 0.17 makes it a 0.15 loss.
+        let kalshi = vec![(48, 10)];
+        let poly = vec![(0.50, 10)];
+        let kalshi_fee = kalshi_taker_fee(10.0, 0.48);
+        assert!(10.0 * (0.48 + 0.50) + kalshi_fee < 10.0, "profitable on Kalshi's fee alone");
+        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly).is_none());
+    }
+
+    #[test]
+    fn the_amount_cap_includes_both_fees() {
+        let kalshi = vec![(40, 10)];
+        let poly = vec![(0.45, 10)];
+        // Total cost is 8.84 (see above): a cap between the notional (8.50) and
+        // the all-in cost must reject this size and fall back to a smaller one.
+        let capped = find_profitable_contract_size(10, 1, 8.60, 0.0, Some(1.0), &kalshi, &poly).unwrap();
+        assert!(capped.contracts < 10, "{capped:?}");
+        let total = capped.contracts as f64 * (0.40 + 0.45) + capped.kalshi_fee + capped.poly_fee;
+        assert!(total <= 8.60 + 1e-9, "{total}");
+    }
+
+    #[test]
+    fn fee_check_accepts_the_modeled_fee_and_flags_a_changed_schedule() {
+        // 10 @ 0.50 -> modeled $0.17 (what Polymarket really collected).
+        let (modeled, ok) = polymarket_fee_check(10, 0.50, 0.17);
+        assert!((modeled - 0.17).abs() < 1e-9 && ok);
+        // One cent either way is rounding, not drift.
+        assert!(polymarket_fee_check(10, 0.50, 0.18).1);
+        assert!(polymarket_fee_check(10, 0.50, 0.16).1);
+        // A 100-lot at 0.50 models $1.74; the old, lower schedule (~0.06)
+        // would have collected ~$1.50 and must be flagged.
+        assert!(polymarket_fee_check(100, 0.50, 1.74).1);
+        assert!(!polymarket_fee_check(100, 0.50, 1.50).1);
+        assert!(!polymarket_fee_check(100, 0.50, 2.00).1);
     }
 
     #[test]
@@ -984,7 +1142,7 @@ mod tests {
         // $1 notional floor (POLYMARKET_MIN_NOTIONAL_USD).
         let kalshi = vec![(63, 10)];
         let poly = vec![(0.22, 10)];
-        assert!(find_profitable_contract_size(1, 1, 100.0, Some(1.0), &kalshi, &poly).is_none());
+        assert!(find_profitable_contract_size(1, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly).is_none());
     }
 
     #[test]
@@ -992,8 +1150,8 @@ mod tests {
         let kalshi = vec![(40, 10)];
         let poly = vec![(0.22, 10)];
         // 5 contracts * $0.22 = $1.10, clears the $1 floor.
-        let result = find_profitable_contract_size(10, 5, 100.0, Some(1.0), &kalshi, &poly).unwrap();
-        assert_eq!(result.0, 10);
+        let result = find_profitable_contract_size(10, 5, 100.0, 0.0, Some(1.0), &kalshi, &poly).unwrap();
+        assert_eq!(result.contracts, 10);
     }
 
     #[test]
@@ -1003,7 +1161,7 @@ mod tests {
         // look that minimum up, we must not guess it's zero.
         let kalshi = vec![(50, 10)];
         let poly = vec![(0.50, 10)];
-        assert!(find_profitable_contract_size(10, 1, 100.0, None, &kalshi, &poly).is_none());
+        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, None, &kalshi, &poly).is_none());
     }
 
     #[test]
@@ -1012,7 +1170,7 @@ mod tests {
         let poly = vec![(0.50, 5)];
         // Only 5 contracts of depth are available, but the market requires
         // at least 8 per order - no size can ever clear both constraints.
-        assert!(find_profitable_contract_size(5, 1, 100.0, Some(8.0), &kalshi, &poly).is_none());
+        assert!(find_profitable_contract_size(5, 1, 100.0, 0.0, Some(8.0), &kalshi, &poly).is_none());
     }
 
     #[test]
@@ -1020,8 +1178,8 @@ mod tests {
         let kalshi = vec![(40, 10)];
         let poly = vec![(0.45, 10)];
         let result =
-            find_profitable_contract_size(10, 1, 100.0, Some(8.0), &kalshi, &poly).unwrap();
-        assert_eq!(result.0, 10);
+            find_profitable_contract_size(10, 1, 100.0, 0.0, Some(8.0), &kalshi, &poly).unwrap();
+        assert_eq!(result.contracts, 10);
     }
 
     #[test]
@@ -1029,5 +1187,58 @@ mod tests {
         assert!(!can_submit_kalshi_after_polymarket(0));
         assert!(!can_submit_kalshi_after_polymarket(-1));
         assert!(can_submit_kalshi_after_polymarket(1));
+    }
+
+    #[test]
+    fn a_margin_below_the_configured_minimum_is_not_sized() {
+        // Same books as the positive-margin sizing test: margin is positive
+        // but far under a 50% floor, so nothing may be sized.
+        let kalshi = [(40, 100)];
+        let poly = [(0.50, 100)];
+        let any = find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly)
+            .expect("positive margin sizes with no floor");
+        assert!(find_profitable_contract_size(
+            10,
+            1,
+            100.0,
+            any.profit_margin + 0.01,
+            Some(1.0),
+            &kalshi,
+            &poly
+        )
+        .is_none());
+        let at_floor =
+            find_profitable_contract_size(10, 1, 100.0, any.profit_margin, Some(1.0), &kalshi, &poly)
+                .expect("a margin equal to the floor passes");
+        assert!(at_floor.profit_margin >= any.profit_margin);
+    }
+
+    #[test]
+    fn a_non_finite_margin_floor_blocks_sizing() {
+        let kalshi = [(40, 100)];
+        let poly = [(0.50, 100)];
+        assert!(
+            find_profitable_contract_size(10, 1, 100.0, f64::NAN, Some(1.0), &kalshi, &poly)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn closing_fee_counts_against_the_loss_bound() {
+        // Entry 0.50, 5c bound: bare close at 0.45 passes, but a $0.40 fee
+        // on 10 contracts is 4c each, so net 0.41 breaches it.
+        assert!(close_within_loss_bound(0.50, 0.45, 10, 0.0, 5));
+        assert!(!close_within_loss_bound(0.50, 0.45, 10, 0.40, 5));
+        assert!(close_within_loss_bound(0.50, 0.50, 10, 0.40, 5));
+        assert!(!close_within_loss_bound(0.50, 0.50, 0, 0.0, 5));
+    }
+
+    #[test]
+    fn only_suspended_games_block_auto_trade() {
+        assert!(is_game_suspended(Some("SUS")));
+        assert!(is_game_suspended(Some(" sus ")));
+        assert!(!is_game_suspended(Some("P2")));
+        assert!(!is_game_suspended(Some("NS")));
+        assert!(!is_game_suspended(None));
     }
 }

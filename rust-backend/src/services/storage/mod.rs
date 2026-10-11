@@ -229,6 +229,13 @@ impl ArbitrageStorage {
             "ALTER TABLE auto_trade_history ADD COLUMN kalshi_fee REAL DEFAULT 0",
             [],
         );
+        // Nullable on purpose: rows written before Polymarket's taker fee was
+        // modeled have no value, which the UI shows as "n/a" rather than a
+        // fake $0.00.
+        let _ = conn.execute(
+            "ALTER TABLE auto_trade_history ADD COLUMN polymarket_fee REAL",
+            [],
+        );
         let _ = conn.execute(
             "ALTER TABLE auto_trade_history ADD COLUMN status TEXT DEFAULT 'executed'",
             [],

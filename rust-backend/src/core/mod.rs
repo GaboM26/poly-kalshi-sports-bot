@@ -1,9 +1,11 @@
 //! Core business logic
 //!
-//! Contains the arbitrage calculator, market matcher, and team normalization.
+//! Contains the arbitrage calculator, exchange fee models, market matcher, and
+//! team normalization.
 
 pub mod calculator;
 pub mod competitors;
+pub mod fees;
 pub mod matcher;
 pub mod nba_teams;
 

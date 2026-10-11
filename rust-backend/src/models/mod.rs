@@ -356,6 +356,9 @@ pub struct ArbitrageOpportunity {
     /// "yes" or "no"
     pub polymarket_side: String,
     pub polymarket_bet: f64,
+    /// Polymarket US taker fee for this trade (see `core::fees`)
+    #[serde(default)]
+    pub polymarket_fee: f64,
     /// Display: Yes price (own ask)
     #[serde(default)]
     pub polymarket_yes_price: f64,
@@ -497,6 +500,8 @@ pub struct MatchedMarketFrontend {
     pub kalshi_contracts: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kalshi_fee: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub polymarket_fee: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arbitrage_type: Option<String>,
 }

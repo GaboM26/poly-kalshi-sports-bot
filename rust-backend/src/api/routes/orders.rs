@@ -391,11 +391,13 @@ pub async fn execute_arbitrage(
     // click should fill whatever profitable size is available up to the
     // requested amount, not bail out under a floor meant to decide whether
     // an opportunity is worth automating.
-    let Some((contracts, kalshi_price_cents, poly_price, fee, profit_margin)) =
+    let Some(sized) =
         find_profitable_contract_size(
             size_cap,
             1,
             auto_state.max_amount,
+            // Manual click: the user decides; only require a positive net margin.
+            0.0,
             poly_book.minimum_trade_qty,
             &kalshi_levels,
             &poly_levels,
@@ -426,11 +428,12 @@ pub async fn execute_arbitrage(
             kalshi_side: req.kalshi_side.clone(),
             polymarket_market_slug: execution.market_slug.clone(),
             polymarket_position_side: execution.position_side,
-            contracts,
-            kalshi_price_cents,
-            poly_price,
-            kalshi_fee: fee,
-            profit_margin,
+            contracts: sized.contracts,
+            kalshi_price_cents: sized.kalshi_price_cents,
+            poly_price: sized.poly_price,
+            kalshi_fee: sized.kalshi_fee,
+            poly_fee: sized.poly_fee,
+            profit_margin: sized.profit_margin,
             duration_ms: 0,
             poly_book_fetched_at_ms: poly_book.fetched_at_ms,
             poly_book_source,
@@ -479,6 +482,8 @@ pub async fn execute_arbitrage(
             "contracts": record.contracts,
             "kalshi_price": record.kalshi_price,
             "polymarket_price": record.polymarket_price,
+            "kalshi_fee": record.kalshi_fee,
+            "polymarket_fee": record.polymarket_fee,
             "profit_margin": record.profit_margin,
             "kalshi": {
                 "success": record.kalshi_success,

@@ -14,12 +14,20 @@ use crate::clients::{KalshiClient, PolymarketClient};
 use crate::config::Config;
 use crate::core::{EventMatcher, SubscriptionInfo};
 use crate::models::{
-    ArbitrageOpportunity, MatchedEvent, MatchedMarket, PolymarketPositionSide, PriceUpdate,
-    SystemStats,
+    ArbitrageOpportunity, KalshiEvent, KalshiMarket, MatchedEvent, MatchedMarket, PolymarketEvent,
+    PolymarketMarket, PolymarketPositionSide, PriceUpdate, SystemStats,
 };
 use crate::services::{ArbitrageStorage, Operation, PerformanceMetrics, WebSocketManager};
 
 const MIN_REST_QUOTE_REFRESH_SECS: u64 = 1;
+
+/// Raw market lists from one scan of both venues.
+pub struct MarketSnapshot {
+    kalshi_events: Vec<KalshiEvent>,
+    kalshi_markets: Vec<KalshiMarket>,
+    polymarket_events: Vec<PolymarketEvent>,
+    polymarket_markets: Vec<PolymarketMarket>,
+}
 
 /// Arbitrage service
 pub struct ArbitrageService {
@@ -456,9 +464,38 @@ impl ArbitrageService {
     /// and returns only the NEW matched markets that weren't in the previous set.
     ///
     /// Returns: (new_matched_markets, new_subscription_info)
-    pub async fn scan_for_new_markets(&mut self) -> Result<(Vec<MatchedMarket>, SubscriptionInfo)> {
+    /// Fetch both venues' market lists. Takes the clients, not `&self`, so the
+    /// caller can run this without holding the service lock: it makes many
+    /// network calls (each up to the client timeout) and holding the lock
+    /// across them stalls every API handler that reads the service.
+    pub async fn fetch_market_snapshot(
+        kalshi_client: &KalshiClient,
+        polymarket_client: &PolymarketClient,
+    ) -> Result<MarketSnapshot> {
+        let (kalshi, polymarket) = tokio::join!(
+            kalshi_client.get_supported_events_and_markets(),
+            polymarket_client.get_supported_events_and_markets()
+        );
+        let (kalshi_events, kalshi_markets) = kalshi
+            .map_err(|e| e.context("Failed to fetch Kalshi market data"))?;
+        let (polymarket_events, polymarket_markets) = polymarket
+            .map_err(|e| e.context("Failed to fetch Polymarket market data"))?;
+        Ok(MarketSnapshot {
+            kalshi_events,
+            kalshi_markets,
+            polymarket_events,
+            polymarket_markets,
+        })
+    }
+
+    /// Re-run matching on a fetched snapshot and update internal state.
+    /// CPU-only; safe to call under the service write lock.
+    pub fn apply_market_snapshot(
+        &mut self,
+        snapshot: MarketSnapshot,
+    ) -> Result<(Vec<MatchedMarket>, SubscriptionInfo)> {
         info!("============================================================");
-        info!("🔄 Starting scan for new markets...");
+        info!("🔄 Applying scanned market data...");
         info!("============================================================");
 
         // 1. Save old matched market IDs
@@ -471,27 +508,12 @@ impl ArbitrageService {
         let old_count = self.matched_markets.len();
         info!("   Scan state before scan: {} matched markets", old_count);
 
-        // 2. Fetch fresh market data
-        let (kalshi_events, kalshi_markets) =
-            match self.kalshi_client.get_supported_events_and_markets().await {
-                Ok(data) => data,
-                Err(e) => {
-                    error!("❌ Failed to fetch Kalshi market data: {:#}", e);
-                    return Ok((Vec::new(), SubscriptionInfo::empty()));
-                }
-            };
-
-        let (polymarket_events, polymarket_markets) = match self
-            .polymarket_client
-            .get_supported_events_and_markets()
-            .await
-        {
-            Ok(data) => data,
-            Err(e) => {
-                error!("❌ Failed to fetch Polymarket market data: {:#}", e);
-                return Ok((Vec::new(), SubscriptionInfo::empty()));
-            }
-        };
+        let MarketSnapshot {
+            kalshi_events,
+            kalshi_markets,
+            polymarket_events,
+            polymarket_markets,
+        } = snapshot;
 
         info!(
             "   Scan state after scan: Kalshi {} events/{} markets, Polymarket {} events/{} markets",
