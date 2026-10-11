@@ -694,6 +694,8 @@ impl KalshiClient {
         let orderbook_cache = self.orderbook_cache.clone();
         // Last `seq` seen per subscription id, scoped to this connection.
         let mut last_seq_by_sid: HashMap<u64, u64> = HashMap::new();
+        let mut gaps_logged = 0u32;
+        let mut headers_logged = 0u32;
 
         // Process messages with dynamic subscription/unsubscription support
         loop {
@@ -703,6 +705,15 @@ impl KalshiClient {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
                             *self.last_message_at.write() = Some(Instant::now());
+                            if headers_logged < 25 {
+                                headers_logged += 1;
+                                if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                                    info!(
+                                        "Kalshi ws header: type={} sid={} seq={} ticker={}",
+                                        v["type"], v["sid"], v["seq"], v["msg"]["market_ticker"]
+                                    );
+                                }
+                            }
                             Self::record_subscription(
                                 &text,
                                 &mut pending_subscription_ids,
@@ -716,13 +727,18 @@ impl KalshiClient {
                                     }
                                 }
                                 Some(Err(gap)) => {
-                                    // Reconnecting re-subscribes every market
-                                    // and replaces all books with snapshots.
-                                    warn!(
-                                        "Kalshi order book sequence gap on {} (expected seq {}, got {}); reconnecting to resnapshot",
-                                        gap.ticker, gap.expected, gap.got
-                                    );
-                                    break;
+                                    // Observation only: the live feed's `seq`
+                                    // semantics are not yet understood (false
+                                    // gaps on every connect), so a gap must not
+                                    // reconnect or untrust books. Log the first
+                                    // few per connection for diagnosis.
+                                    gaps_logged += 1;
+                                    if gaps_logged <= 5 {
+                                        warn!(
+                                            "Kalshi seq discontinuity (not acted on): {} expected {}, got {}",
+                                            gap.ticker, gap.expected, gap.got
+                                        );
+                                    }
                                 }
                                 None => {}
                             }
@@ -878,9 +894,6 @@ impl KalshiClient {
                             .and_then(Value::as_str)
                             .unwrap_or("?")
                             .to_string();
-                        if let Some(book) = orderbook_cache.write().get_mut(&ticker) {
-                            book.epoch = 0;
-                        }
                         return Some(Err(SeqGap {
                             ticker,
                             expected: last + 1,
@@ -1817,7 +1830,7 @@ mod tests {
     }
 
     #[test]
-    fn a_skipped_seq_reports_a_gap_and_untrusts_the_book() {
+    fn a_skipped_seq_is_reported_as_a_gap() {
         let cache = ws_cache();
         let mut seqs = HashMap::new();
         parse(&snapshot(1, 5, "T"), &cache, &mut seqs);
@@ -1833,7 +1846,7 @@ mod tests {
                 got: 8
             }
         );
-        // Epoch 0 never matches a real connection, so the book is refused.
-        assert_eq!(cache.read().get("T").unwrap().epoch, 0);
+        // Observation only for now: the book stays trusted.
+        assert_eq!(cache.read().get("T").unwrap().epoch, 1);
     }
 }
