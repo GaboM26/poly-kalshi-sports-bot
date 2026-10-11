@@ -66,6 +66,10 @@ impl WebSocketManager {
                 opp.poly_ask_depth, opp.poly_ask_size, opp.kalshi_ask_depth
             );
 
+            if let Some(discord) = self.discord_client.get() {
+                discord.notify_opportunity(opp);
+            }
+
             self.storage.track_start(record.clone());
             tracking.insert(key.clone(), record);
 

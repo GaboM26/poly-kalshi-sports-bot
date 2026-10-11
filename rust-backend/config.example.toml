@@ -65,15 +65,13 @@ secret_key = "your-secret-key-change-this-in-production-min-32-chars-long"
 # Token expiration time (hours)
 token_expire_hours = 24
 
-[telegram]
-# Telegram notification configuration (automated-trade notifications)
-# Disabled by default; enable when needed.
+[discord]
+# Discord webhook notifications: trade results and new opportunities.
+# Disabled by default. Create a webhook in Discord (channel settings >
+# Integrations > Webhooks) and paste its URL. Keep it secret: anyone with the
+# URL can post to the channel.
 enabled = false
+webhook_url = "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN"
 
-# Telegram Bot Token (obtain it from @BotFather)
-bot_token = "YOUR_BOT_TOKEN_HERE"
-
-# Telegram Chat ID (group or channel ID)
-# To obtain it, add the bot to a group, send a message, then visit
-# https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
-chat_id = "YOUR_CHAT_ID_HERE"
+# Minimum profit margin (%) for an opportunity alert (one per market per minute)
+opportunity_min_margin = 1.0

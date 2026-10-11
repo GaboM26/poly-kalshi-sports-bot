@@ -187,6 +187,8 @@ pub struct WebSocketManager {
     /// fetched for it, so a market flapping in and out of tracking doesn't
     /// re-hit Polymarket's real book endpoint on every restart.
     pub(crate) poly_depth_snapshot_cooldown: Arc<RwLock<HashMap<String, Instant>>>,
+    /// Set once at startup when Discord notifications are enabled.
+    discord_client: std::sync::OnceLock<Arc<crate::services::DiscordClient>>,
     /// Auto-trade queue: market keys waiting to be executed
     pub auto_trade_queue: Arc<RwLock<VecDeque<String>>>,
     /// Flag indicating if an auto-trade is currently being executed
@@ -194,6 +196,11 @@ pub struct WebSocketManager {
 }
 
 impl WebSocketManager {
+    /// Enable Discord alerts for newly tracked opportunities (set once).
+    pub fn set_discord_client(&self, client: Arc<crate::services::DiscordClient>) {
+        let _ = self.discord_client.set(client);
+    }
+
     /// Create a new WebSocket manager
     pub fn new(
         min_profit_margin: f64,
@@ -252,6 +259,7 @@ impl WebSocketManager {
             recorded_skip_reasons: Arc::new(RwLock::new(std::collections::HashSet::new())),
             excluded_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
             poly_depth_snapshot_cooldown: Arc::new(RwLock::new(HashMap::new())),
+            discord_client: std::sync::OnceLock::new(),
             auto_trade_queue: Arc::new(RwLock::new(VecDeque::new())),
             is_auto_trading: Arc::new(AtomicBool::new(false)),
         }

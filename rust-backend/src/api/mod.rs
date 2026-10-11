@@ -28,7 +28,7 @@ use crate::services::paired_execution::{
     find_profitable_contract_size, is_game_suspended, kalshi_buy_levels, polymarket_buy_levels, submit_paired_order,
     EXECUTABLE_BOOK_MAX_AGE,
 };
-use crate::services::{ArbitrageService, PairedOrderParams, PerformanceMetrics, TelegramClient};
+use crate::services::{ArbitrageService, PairedOrderParams, PerformanceMetrics, DiscordClient};
 
 /// Market scan interval in seconds (5 minutes)
 const MARKET_SCAN_INTERVAL_SECS: u64 = 300;
@@ -37,7 +37,7 @@ const MARKET_SCAN_INTERVAL_SECS: u64 = 300;
 pub struct AppState {
     pub service: RwLock<ArbitrageService>,
     pub config: Config,
-    pub telegram_client: Arc<TelegramClient>,
+    pub discord_client: Arc<DiscordClient>,
 }
 
 /// Create the Axum application
@@ -81,19 +81,20 @@ pub async fn create_app(config: Config) -> Result<Router> {
         Err(e) => error!("Polymarket WebSocket disabled, REST polling only: {:#}", e),
     }
 
-    // Initialize Telegram client
-    let telegram_client = Arc::new(TelegramClient::new(config.telegram.clone()));
-    if telegram_client.is_enabled() {
-        info!("✅ Telegram notifications enabled");
+    // Initialize Discord client
+    let discord_client = Arc::new(DiscordClient::new(config.discord.clone()));
+    if discord_client.is_enabled() {
+        info!("✅ Discord notifications enabled");
+        service.ws_manager.set_discord_client(discord_client.clone());
     } else {
-        info!("ℹ️ Telegram notifications disabled");
+        info!("ℹ️ Discord notifications disabled");
     }
 
     // Create shared state
     let state = Arc::new(AppState {
         service: RwLock::new(service),
         config: config.clone(),
-        telegram_client,
+        discord_client,
     });
 
     // Spawn price update handler
@@ -738,7 +739,7 @@ async fn execute_single_auto_trade(
 
     let outcome = submit_paired_order(
         service,
-        &state.telegram_client,
+        &state.discord_client,
         PairedOrderParams {
             event_name: record.event_name.clone(),
             team_name: record.team_name.clone(),
@@ -762,7 +763,7 @@ async fn execute_single_auto_trade(
     .await;
 
     // submit_paired_order already halts auto-trading (and, for a fill
-    // mismatch it can't fully neutralize, sends the Telegram alert) on any
+    // mismatch it can't fully neutralize, sends the Discord alert) on any
     // of these outcomes, so there is nothing further to react to here.
     match outcome.status.as_str() {
         "persistence_failed_before_submission"

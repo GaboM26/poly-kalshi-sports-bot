@@ -20,7 +20,7 @@ use crate::clients::{
 use crate::core::fees::{kalshi_taker_fee, polymarket_taker_fee};
 use crate::models::PolymarketPositionSide;
 use crate::services::websocket_manager::POLYMARKET_WS_MAX_SILENCE;
-use crate::services::{ArbitrageService, AutoTradeExecutionRecord, TelegramClient};
+use crate::services::{ArbitrageService, AutoTradeExecutionRecord, DiscordClient};
 
 /// For Kalshi: a connection-liveness backstop, checked against the last
 /// WebSocket message received on *any* subscribed ticker (see
@@ -572,12 +572,12 @@ fn dry_run_record(params: &PairedOrderParams) -> AutoTradeExecutionRecord {
 /// Polymarket leg, persist its acknowledgement, then (only if Polymarket
 /// filled a positive quantity) place the Kalshi leg and persist its
 /// acknowledgement, then neutralize any unequal fill within the configured
-/// bound. Halts auto-trading and alerts via Telegram if either exchange
+/// bound. Halts auto-trading and alerts via Discord if either exchange
 /// acknowledgement can't be durably recorded, or if a residual, un-neutralized
 /// exposure remains.
 pub async fn submit_paired_order(
     service: &ArbitrageService,
-    telegram_client: &Arc<TelegramClient>,
+    discord_client: &Arc<DiscordClient>,
     params: PairedOrderParams,
 ) -> PairedOrderOutcome {
     if params.dry_run {
@@ -996,22 +996,9 @@ pub async fn submit_paired_order(
                 reason
             );
         }
-        telegram_client
-            .send_auto_trade_notification(
-                &params.event_name,
-                &params.team_name,
-                params.profit_margin,
-                execution_record.kalshi_success,
-                execution_record.polymarket_success,
-                execution_record.kalshi_error.as_deref(),
-                execution_record.polymarket_error.as_deref(),
-                params.contracts as f64
-                    * (params.kalshi_price_cents as f64 / 100.0 + params.poly_price)
-                    + params.kalshi_fee,
-                0.0,
-            )
-            .await;
     }
+
+    discord_client.notify_trade(&execution_record, unsafe_fill_quantity || residual_contracts > 0);
 
     PairedOrderOutcome {
         status: status.to_string(),

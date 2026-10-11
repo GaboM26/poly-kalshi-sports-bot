@@ -139,32 +139,22 @@ impl Default for AuthConfig {
     }
 }
 
-/// Telegram notification configuration
-#[derive(Debug, Clone, Deserialize)]
-pub struct TelegramConfig {
-    /// Whether Telegram notifications are enabled
-    #[serde(default = "default_telegram_enabled")]
+/// Discord webhook notification configuration
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct DiscordConfig {
+    /// Whether Discord notifications are enabled
+    #[serde(default)]
     pub enabled: bool,
-    /// Telegram bot token
+    /// Incoming webhook URL (https://discord.com/api/webhooks/...)
     #[serde(default)]
-    pub bot_token: String,
-    /// Telegram chat ID (group or channel)
-    #[serde(default)]
-    pub chat_id: String,
+    pub webhook_url: String,
+    /// Minimum profit margin (%) for an opportunity alert
+    #[serde(default = "default_opportunity_min_margin")]
+    pub opportunity_min_margin: f64,
 }
 
-fn default_telegram_enabled() -> bool {
-    false
-}
-
-impl Default for TelegramConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_telegram_enabled(),
-            bot_token: String::new(),
-            chat_id: String::new(),
-        }
-    }
+fn default_opportunity_min_margin() -> f64 {
+    1.0
 }
 
 /// Main configuration struct
@@ -177,7 +167,7 @@ pub struct Config {
     #[serde(default)]
     pub auth: AuthConfig,
     #[serde(default)]
-    pub telegram: TelegramConfig,
+    pub discord: DiscordConfig,
 }
 
 impl Config {

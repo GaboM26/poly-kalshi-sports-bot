@@ -420,7 +420,7 @@ pub async fn execute_arbitrage(
 
     let outcome = submit_paired_order(
         &service,
-        &state.telegram_client,
+        &state.discord_client,
         PairedOrderParams {
             event_name: req.event_name.clone(),
             team_name: req.team_name.clone(),

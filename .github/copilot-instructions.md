@@ -63,7 +63,7 @@
 - On unequal fills, attempt a bounded IOC/FAK neutralization only within the
   persisted `neutralization_max_loss_cents` setting (default: 5 cents per
   contract). If it cannot fully close the residual, record it durably, disable
-  auto-trading, and alert through the configured Telegram client.
+  auto-trading, and alert through the configured Discord client.
 
 ## Follow-ups
 

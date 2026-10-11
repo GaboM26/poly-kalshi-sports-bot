@@ -8,7 +8,7 @@ A high-performance, real-time prediction market arbitrage opportunity monitoring
 - **Real-time monitoring**: Synchronized market data from both platforms with intelligent event matching
 - **Automated arbitrage**: Calculates profit margins and expected returns, with optional automated order execution
 - **Data tracking**: Arbitrage history, position management, and performance monitoring
-- **Telegram notifications**: Notifications for automated trades
+- **Discord notifications**: Webhook alerts for trade results and new opportunities
 
 ## System Architecture
 
@@ -109,10 +109,10 @@ max_trade_count = 2           # Maximum execution count
 min_duration_ms = 500         # Minimum opportunity duration
 neutralization_max_loss_cents = 5 # Maximum emergency-close loss per contract
 
-[telegram]
+[discord]
 enabled = false
-bot_token = "YOUR_BOT_TOKEN"
-chat_id = "YOUR_CHAT_ID"
+webhook_url = "https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN"
+opportunity_min_margin = 1.0
 ```
 
 ### 3. Start All Services
@@ -185,7 +185,7 @@ cp config.example.toml config.toml
 - For mismatched fills, attempts an IOC/FAK offset only within the configured
   `neutralization_max_loss_cents` bound (5 cents per contract by default).
   If it cannot safely close the residual, it disables auto-trading and sends
-  the configured Telegram alert.
+  a Discord alert.
 - Disables auto-trading at startup if an execution was interrupted while its
   status was `submitting`. Reconcile that record and every residual position
   before manually re-enabling the bot.

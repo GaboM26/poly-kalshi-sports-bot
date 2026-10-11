@@ -28,7 +28,7 @@ executing real trades on detected opportunities with confidence. Priorities:
   $10 per trade, 1-100 contracts, neutralization bound 5¢. The user chose this.
   `min_profit_margin` is **0%** (the user's choice "until we have a reason";
   sizing still requires a strictly positive net margin after both fees). Do not
-  change either without being asked. Check `trade_count` / the Telegram alerts
+  change either without being asked. Check `trade_count` / the Discord alerts
   for what the bot actually did.
 - **Running it**: `./start_rust_stack.sh` (builds release, starts backend on
   8000 and Vite on 5175) inside the tmux session `stack`. Attach with
@@ -77,7 +77,7 @@ Two services, started together via `./start_rust_stack.sh`:
     economics and hedge pairing), `websocket_manager/` (live delivery to the
     frontend, quote caches, `auto_trade.rs`, `market_lifecycle.rs`),
     `storage/` (SQLite; `auto_trade_repo.rs` tracks the execution state
-    machine, `hedge_pairs_repo.rs` persists verified hedges), `telegram.rs`.
+    machine, `hedge_pairs_repo.rs` persists verified hedges), `discord.rs` (webhook alerts; off until `[discord]` is configured).
   - `api/`: HTTP routes and the `mod.rs` request/response wiring.
 - **`web/`** (Vite + React + TS, port `5175`, set in `web/vite.config.ts`), the dashboard: live
   opportunities, order forms, position/history views, WebSocket client
@@ -137,7 +137,7 @@ may be more current than this summary. Read it too.
 - **Neutralization**: on unequal fills, attempt a bounded IOC/FAK offset only
   within `neutralization_max_loss_cents` (default 5¢/contract). If it cannot
   fully close, record the residual durably, disable auto-trading, and alert
-  via Telegram. Do not silently retry or hide it.
+  via Discord. Do not silently retry or hide it.
 - **Safeguards**: never weaken order-size, profit-margin, duration,
   duplicate-trade, or execution-count limits without being asked.
 - **Error logging**: log `anyhow::Error` with `{:#}`, never `{}`. Bare `{}`
