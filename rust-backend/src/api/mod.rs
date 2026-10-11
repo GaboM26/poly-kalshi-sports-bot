@@ -403,6 +403,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
             "/api/auto-trade/history",
             get(routes::get_auto_trade_history),
         )
+        .route("/api/auto-trade/pnl", get(routes::get_auto_trade_pnl))
         .route(
             "/api/auto-trade/excluded",
             get(routes::get_excluded_markets),

@@ -10,6 +10,7 @@
 pub mod arbitrage;
 pub mod metrics;
 pub mod paired_execution;
+pub mod pnl;
 pub mod positions;
 pub mod storage;
 pub mod telegram;

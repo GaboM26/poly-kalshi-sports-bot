@@ -224,6 +224,32 @@ pub async fn get_auto_trade_history(
     }
 }
 
+/// Estimated P&L from auto-trade history (see `services::pnl` for limits)
+pub async fn get_auto_trade_pnl(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let storage = {
+        let service = state.service.read().await;
+        service.ws_manager.get_storage().clone()
+    };
+    let report = storage.get_auto_trade_state().and_then(|auto| {
+        let records = storage.get_auto_trade_history(usize::MAX >> 1)?;
+        Ok(crate::services::pnl::build_report(
+            &records,
+            f64::from(auto.neutralization_max_loss_cents),
+        ))
+    });
+    match report {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => {
+            error!("Failed to build P&L report: {:#}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+    }
+}
+
 // ==================== Market Exclusion APIs ====================
 
 /// Market exclusion request
