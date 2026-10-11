@@ -93,10 +93,6 @@ pub struct OrderBook {
     /// (the Default) never matches a real connection's epoch (which starts
     /// at 1), so a book that was never epoch-tagged is correctly untrusted.
     epoch: u64,
-    /// `seq` of the last snapshot/delta applied to this book. Kalshi numbers
-    /// every message of a subscription consecutively; a skipped number means
-    /// a delta was lost and this book has silently drifted.
-    last_seq: Option<u64>,
 }
 
 /// A missing `orderbook_delta` (non-consecutive `seq`) for one ticker.
@@ -696,6 +692,8 @@ impl KalshiClient {
         info!("Subscribed to {} Kalshi markets", tickers.len());
 
         let orderbook_cache = self.orderbook_cache.clone();
+        // Last `seq` seen per subscription id, scoped to this connection.
+        let mut last_seq_by_sid: HashMap<u64, u64> = HashMap::new();
 
         // Process messages with dynamic subscription/unsubscription support
         loop {
@@ -710,7 +708,7 @@ impl KalshiClient {
                                 &mut pending_subscription_ids,
                                 &mut subscription_ids,
                             );
-                            match Self::parse_ws_message(&text, &orderbook_cache, current_epoch) {
+                            match Self::parse_ws_message(&text, &orderbook_cache, current_epoch, &mut last_seq_by_sid) {
                                 Some(Ok(update)) => {
                                     if price_tx.send(update).await.is_err() {
                                         warn!("Price update channel has closed");
@@ -857,9 +855,41 @@ impl KalshiClient {
         text: &str,
         orderbook_cache: &Arc<RwLock<HashMap<String, OrderBook>>>,
         epoch: u64,
+        last_seq_by_sid: &mut HashMap<u64, u64>,
     ) -> Option<Result<PriceUpdate, SeqGap>> {
         let data: Value = serde_json::from_str(text).ok()?;
         let msg_type = data.get("type")?.as_str()?;
+
+        // `seq` counts every message of one subscription (`sid`), across all
+        // the tickers that subscription carries - it is NOT per ticker. A
+        // per-ticker check reported ~1 false gap every 3s on the live feed.
+        // A skipped number on a sid means a message was lost.
+        if matches!(msg_type, "orderbook_snapshot" | "orderbook_delta") {
+            if let (Some(sid), Some(got)) = (
+                data.get("sid").and_then(Value::as_u64),
+                data.get("seq").and_then(Value::as_u64),
+            ) {
+                let previous = last_seq_by_sid.insert(sid, got);
+                if let Some(last) = previous {
+                    if got != last + 1 {
+                        let ticker = data
+                            .get("msg")
+                            .and_then(|m| m.get("market_ticker"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("?")
+                            .to_string();
+                        if let Some(book) = orderbook_cache.write().get_mut(&ticker) {
+                            book.epoch = 0;
+                        }
+                        return Some(Err(SeqGap {
+                            ticker,
+                            expected: last + 1,
+                            got,
+                        }));
+                    }
+                }
+            }
+        }
 
         match msg_type {
             "orderbook_snapshot" => {
@@ -875,7 +905,6 @@ impl KalshiClient {
                 book.no.sort_by_key(|(p, _)| *p);
                 book.updated_at = Some(Instant::now());
                 book.epoch = epoch;
-                book.last_seq = data.get("seq").and_then(Value::as_u64);
 
                 orderbook_cache
                     .write()
@@ -929,26 +958,6 @@ impl KalshiClient {
                 if book.epoch != epoch {
                     return None;
                 }
-                // Consecutive `seq` per subscription: anything else means a
-                // delta was lost and this book can no longer be trusted. A
-                // message without `seq` can't be checked and is applied as
-                // before.
-                if let (Some(last), Some(got)) =
-                    (book.last_seq, data.get("seq").and_then(Value::as_u64))
-                {
-                    if got != last + 1 {
-                        book.epoch = 0;
-                        return Some(Err(SeqGap {
-                            ticker: ticker.to_string(),
-                            expected: last + 1,
-                            got,
-                        }));
-                    }
-                }
-                if let Some(got) = data.get("seq").and_then(Value::as_u64) {
-                    book.last_seq = Some(got);
-                }
-
                 let book_side = if side == "yes" {
                     &mut book.yes
                 } else {
@@ -1764,43 +1773,56 @@ mod tests {
         Arc::new(RwLock::new(HashMap::new()))
     }
 
-    fn snapshot(seq: u64) -> String {
+    fn snapshot(sid: u64, seq: u64, ticker: &str) -> String {
         format!(
-            r#"{{"type":"orderbook_snapshot","sid":1,"seq":{seq},"msg":{{"market_ticker":"T","yes_dollars_fp":[["0.40","10.00"]],"no_dollars_fp":[["0.55","10.00"]]}}}}"#
+            r#"{{"type":"orderbook_snapshot","sid":{sid},"seq":{seq},"msg":{{"market_ticker":"{ticker}","yes_dollars_fp":[["0.40","10.00"]],"no_dollars_fp":[["0.55","10.00"]]}}}}"#
         )
     }
 
-    fn delta(seq: u64) -> String {
+    fn delta(sid: u64, seq: u64, ticker: &str) -> String {
         format!(
-            r#"{{"type":"orderbook_delta","sid":1,"seq":{seq},"msg":{{"market_ticker":"T","price_dollars":"0.41","delta_fp":"5.00","side":"yes"}}}}"#
+            r#"{{"type":"orderbook_delta","sid":{sid},"seq":{seq},"msg":{{"market_ticker":"{ticker}","price_dollars":"0.41","delta_fp":"5.00","side":"yes"}}}}"#
         )
+    }
+
+    fn parse(
+        text: &str,
+        cache: &Arc<RwLock<HashMap<String, OrderBook>>>,
+        seqs: &mut HashMap<u64, u64>,
+    ) -> Option<Result<PriceUpdate, SeqGap>> {
+        KalshiClient::parse_ws_message(text, cache, 1, seqs)
     }
 
     #[test]
-    fn consecutive_seq_applies_deltas() {
+    fn seq_is_consecutive_per_subscription_across_tickers() {
+        // One sid carries several tickers; its seq advances on every message
+        // regardless of ticker. This is what the live feed does.
         let cache = ws_cache();
-        assert!(matches!(
-            KalshiClient::parse_ws_message(&snapshot(5), &cache, 1),
-            Some(Ok(_))
-        ));
-        assert!(matches!(
-            KalshiClient::parse_ws_message(&delta(6), &cache, 1),
-            Some(Ok(_))
-        ));
-        assert!(matches!(
-            KalshiClient::parse_ws_message(&delta(7), &cache, 1),
-            Some(Ok(_))
-        ));
-        assert_eq!(cache.read().get("T").unwrap().epoch, 1);
+        let mut seqs = HashMap::new();
+        assert!(matches!(parse(&snapshot(1, 5, "A"), &cache, &mut seqs), Some(Ok(_))));
+        assert!(matches!(parse(&snapshot(1, 6, "B"), &cache, &mut seqs), Some(Ok(_))));
+        assert!(matches!(parse(&delta(1, 7, "A"), &cache, &mut seqs), Some(Ok(_))));
+        assert!(matches!(parse(&delta(1, 8, "B"), &cache, &mut seqs), Some(Ok(_))));
+        assert_eq!(cache.read().get("A").unwrap().epoch, 1);
+    }
+
+    #[test]
+    fn separate_subscriptions_keep_separate_sequences() {
+        let cache = ws_cache();
+        let mut seqs = HashMap::new();
+        assert!(matches!(parse(&snapshot(1, 1, "A"), &cache, &mut seqs), Some(Ok(_))));
+        assert!(matches!(parse(&snapshot(2, 1, "B"), &cache, &mut seqs), Some(Ok(_))));
+        assert!(matches!(parse(&delta(1, 2, "A"), &cache, &mut seqs), Some(Ok(_))));
+        assert!(matches!(parse(&delta(2, 2, "B"), &cache, &mut seqs), Some(Ok(_))));
     }
 
     #[test]
     fn a_skipped_seq_reports_a_gap_and_untrusts_the_book() {
         let cache = ws_cache();
-        KalshiClient::parse_ws_message(&snapshot(5), &cache, 1);
-        KalshiClient::parse_ws_message(&delta(6), &cache, 1);
-        let gap = KalshiClient::parse_ws_message(&delta(8), &cache, 1);
-        let Some(Err(gap)) = gap else {
+        let mut seqs = HashMap::new();
+        parse(&snapshot(1, 5, "T"), &cache, &mut seqs);
+        parse(&delta(1, 6, "T"), &cache, &mut seqs);
+        let Some(Err(gap)) = parse(&delta(1, 8, "T"), &cache, &mut seqs) else {
             panic!("expected a sequence gap");
         };
         assert_eq!(
@@ -1813,16 +1835,5 @@ mod tests {
         );
         // Epoch 0 never matches a real connection, so the book is refused.
         assert_eq!(cache.read().get("T").unwrap().epoch, 0);
-    }
-
-    #[test]
-    fn a_new_snapshot_resets_the_sequence() {
-        let cache = ws_cache();
-        KalshiClient::parse_ws_message(&snapshot(5), &cache, 1);
-        KalshiClient::parse_ws_message(&snapshot(2), &cache, 2);
-        assert!(matches!(
-            KalshiClient::parse_ws_message(&delta(3), &cache, 2),
-            Some(Ok(_))
-        ));
     }
 }

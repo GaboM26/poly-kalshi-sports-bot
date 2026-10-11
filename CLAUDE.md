@@ -122,8 +122,9 @@ may be more current than this summary. Read it too.
 - **Kalshi**: the WebSocket book feeds `apply_kalshi_ws_quote`, which
   triggers detection when best prices change. Kalshi REST market data is
   served from a server-side cache (values step every ~8–10s). The Kalshi WS
-  book checks `seq` per ticker: a skipped number marks the book untrusted and
-  forces a reconnect (fresh snapshots). While a trusted WS book backs a
+  checks `seq` per subscription id (`sid`), NOT per ticker (a per-ticker check
+  produced a false gap every ~3s live): a skipped number marks the book
+  untrusted and forces a reconnect (fresh snapshots). While a trusted WS book backs a
   ticker, REST quotes never overwrite its prices (REST still applies
   closed/settled status). Every reconnect re-reads the current matched-market tickers, so
   markets hot-added by a scan survive it.
