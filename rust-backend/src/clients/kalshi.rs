@@ -48,6 +48,26 @@ const SUPPORTED_KALSHI_SERIES: &[(&str, &str)] = &[
     ("KXATPCHALLENGERMATCH", "TENNIS"),
 ];
 
+/// Human-readable sport for a Kalshi market ticker, from its series prefix
+/// (e.g. `KXATPCHALLENGERMATCH-...` -> "ATP Challenger"). Unknown series
+/// return an empty string so the UI shows a blank, not a guess.
+pub fn sport_label(kalshi_ticker: &str) -> &'static str {
+    const LABELS: &[(&str, &str)] = &[
+        ("KXATPCHALLENGERMATCH", "ATP Challenger"),
+        ("KXATPMATCH", "ATP"),
+        ("KXWTAMATCH", "WTA"),
+        ("KXITFWMATCH", "ITF W"),
+        ("KXITFMATCH", "ITF M"),
+        ("KXNBAGAME", "NBA"),
+        ("KXNHLGAME", "NHL"),
+        ("KXMLBGAME", "MLB"),
+    ];
+    LABELS
+        .iter()
+        .find(|(prefix, _)| kalshi_ticker.starts_with(prefix))
+        .map_or("", |(_, label)| label)
+}
+
 /// Subscription command for Kalshi WebSocket
 #[derive(Debug, Clone)]
 pub enum KalshiWsCommand {
@@ -1868,5 +1888,16 @@ mod tests {
         );
         // Observation only for now: the book stays trusted.
         assert_eq!(cache.read().get("T").unwrap().epoch, 1);
+    }
+
+    #[test]
+    fn sport_label_maps_each_supported_series() {
+        assert_eq!(sport_label("KXNBAGAME-26OCT11LALMEM-LAL"), "NBA");
+        assert_eq!(sport_label("KXATPMATCH-26OCT10MEDSVR-MED"), "ATP");
+        assert_eq!(sport_label("KXATPCHALLENGERMATCH-26OCT11RIBZEI-RIB"), "ATP Challenger");
+        assert_eq!(sport_label("KXWTAMATCH-26OCT11ANNZHE-ZHE"), "WTA");
+        assert_eq!(sport_label("KXITFWMATCH-26OCT11SNETHI-THI"), "ITF W");
+        assert_eq!(sport_label("KXITFMATCH-26OCT11AZKSIN-SIN"), "ITF M");
+        assert_eq!(sport_label("KXSOMETHINGNEW-1"), "");
     }
 }

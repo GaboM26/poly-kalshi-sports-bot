@@ -8,7 +8,7 @@ interface OpportunityListProps {
   apiBaseUrl?: string;
 }
 
-type SortOption = 'profit' | 'event' | 'team';
+type SortOption = 'profit' | 'event' | 'team' | 'sport';
 
 export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '' }: OpportunityListProps) {
   // Track price changes for highlight animations.
@@ -230,6 +230,10 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
         // Alphabetically by event name.
         return a.event_name.localeCompare(b.event_name);
       
+      case 'sport':
+        // Group by sport, then by event within a sport.
+        return (a.sport || '').localeCompare(b.sport || '') || a.event_name.localeCompare(b.event_name);
+
       case 'team':
         // Alphabetically by team name.
         return (a.team_name || '').localeCompare(b.team_name || '');
@@ -276,6 +280,16 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
             🏀 Team
           </button>
           <button
+            onClick={() => setSortBy('sport')}
+            className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+              sortBy === 'sport'
+                ? 'bg-[--accent-purple] text-white'
+                : 'bg-[--bg-secondary] text-[--text-secondary] hover:bg-[--bg-primary]'
+            }`}
+          >
+            🏟️ Sport
+          </button>
+          <button
             onClick={toggleLiveOnly}
             title="Show only games Polymarket reports as in play"
             className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
@@ -295,6 +309,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
           <thead className="sticky top-0 bg-[--bg-secondary] z-10 text-[10px]">
             <tr>
               <th className="py-1 px-2 font-medium text-[--text-secondary]">Event</th>
+              <th className="py-1 px-2 text-center font-medium text-[--text-secondary]">Sport</th>
               <th className="py-1 px-2 text-center font-medium text-[--text-secondary]">Team</th>
               <th className="py-1 px-2 text-center font-medium text-[--text-secondary]">Kalshi</th>
               <th className="py-1 px-2 text-center font-medium text-[--text-secondary]">Polymarket</th>
@@ -345,6 +360,13 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                         </span>
                       ) : null}
                     </div>
+                  </td>
+
+                  {/* Sport */}
+                  <td className="text-center py-1 px-2">
+                    <span className="text-[10px] text-[--text-secondary] whitespace-nowrap">
+                      {market.sport || '-'}
+                    </span>
                   </td>
 
                   {/* Team */}

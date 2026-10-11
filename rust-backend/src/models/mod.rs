@@ -460,6 +460,8 @@ pub struct ArbitrageTrackingRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchedMarketFrontend {
     pub event_name: String,
+    /// Sport / tour label for display ("NBA", "ATP", "WTA", ...); empty if unknown.
+    pub sport: String,
     pub team_name: String,
     /// Game date (for distinguishing same-team games on different dates)
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -1365,6 +1365,7 @@ impl WebSocketManager {
 
                 Some(MatchedMarketFrontend {
                     event_name: mm.event_name.clone(),
+                    sport: crate::clients::kalshi::sport_label(&mm.kalshi_market.market_id).to_string(),
                     team_name: mm.team_name.clone(),
                     game_date: mm.game_date.map(|d| d.format("%Y-%m-%d").to_string()),
                     kalshi_market_id: mm.kalshi_market.market_id.clone(),

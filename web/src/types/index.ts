@@ -66,6 +66,8 @@ export interface MetricsReport {
 // Matched market data, including real-time prices
 export interface MatchedMarketData {
   event_name: string;
+  /** Sport / tour label from the Kalshi series ("NBA", "ATP", "WTA", ...); empty if unknown. */
+  sport?: string;
   team_name: string;
   game_date?: string;               // Game date in YYYY-MM-DD format
   kalshi_market_id: string;
