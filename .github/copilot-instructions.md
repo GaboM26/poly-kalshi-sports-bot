@@ -15,9 +15,18 @@
 - Follow existing error-handling patterns. Surface exchange, signing, storage, and network failures rather than hiding them with fallback data.
 - Preserve WebSocket message compatibility for the React client when changing the Rust WebSocket manager or opportunity models.
 
+## Current Operating State
+
+- Auto-trading is enabled in the database by the user (max 6 trades, $10 each, 5¢ neutralization bound) and `min_profit_margin` is 0%. Do not change either unasked. Never enable auto-trading or submit test orders yourself.
+- UI-edited settings (`min_profit_margin`, `default_bet_amount`, `tracking_threshold`) live in the SQLite `app_settings` table, apply to the running calculator immediately, and win over `config.toml` at startup.
+- The backend binds `0.0.0.0:8000` and its API auth has not been reviewed: never expose it beyond this machine.
+- After a change that needs it, restart with `./start_rust_stack.sh`, but only when no `auto_trade_history` row has status `submitting`.
+- Do not hold the `service` lock across network calls (the market scan once stalled every API handler for 10-20s); fetch first, then lock briefly.
+
 ## Exchange Integration Status
 
 - Kalshi uses the v2 API. Sign authenticated requests with the path only; exclude query parameters from the signed payload.
+- Kalshi WebSocket: one subscription id (`sid`) carries every ticker and `seq` counts all messages, including `ok` acknowledgements. The `seq` gap check is observe-only until it shows zero false gaps over hours of live running. While a trusted WS book backs a ticker, REST quotes must not overwrite its prices. Every reconnect re-reads the current matched-market tickers.
 - Polymarket US order submission (`POST /v1/orders`) returns an execution envelope with `executions[].order`; do not read an order ID, state, or fills from the top-level response. Send `manualOrderIndicator: MANUAL_ORDER_INDICATOR_AUTOMATIC` (the exchange records every API order as AUTOMATIC regardless).
 - `orderRejectReason` is serialized on every execution and its zero value is `ORD_REJECT_REASON_EXCHANGE_OPTION`. It is only a real reason on an `EXECUTION_TYPE_REJECTED` execution; an accepted IOC that finds no liquidity goes `NEW` → `EXPIRED` and must be reported as expired unfilled, never as an exchange rejection.
 - Polymarket US prices every order, and every fill's `avgPx`, on the YES (long) book: buying NO at $0.40 is selling YES at $0.60. Convert SHORT-side prices to the YES book before sending and convert `avgPx` back (`clients/polymarket.rs::yes_book_price`). Snap prices to the market tick and send them as plain decimal strings — never a raw `f64` like `0.43999999999999995`.
@@ -38,6 +47,7 @@
 - Preserve contract, profit-margin, duration, duplicate-trade, maximum amount,
   and execution-count limits. Kalshi depth is fixed-point: floor it when
   ordering whole contracts; never round up.
+- Sizing (`find_profitable_contract_size`) must re-check the configured `min_profit_margin` on the fresh executable books; the manual Execute click only requires a positive net margin. Skip games Polymarket reports as suspended (period `SUS`). Neutralization's loss bound is checked net of the closing sell's taker fee (`close_within_loss_bound`).
 - Execute complementary outcomes only. For a tracked competitor, Kalshi YES
   pairs with Polymarket NO, and Kalshi NO pairs with Polymarket YES. Resolve
   the exact Polymarket native LONG/SHORT side from that selected competitor
@@ -54,6 +64,10 @@
   persisted `neutralization_max_loss_cents` setting (default: 5 cents per
   contract). If it cannot fully close the residual, record it durably, disable
   auto-trading, and alert through the configured Telegram client.
+
+## Follow-ups
+
+See `CLAUDE.md` ("Open issues and follow-ups", "Roadmap") for the ordered list: enforce the Kalshi seq check once verified, audit the `exposed` trades, review API auth and the bind address, NHL/MLB coverage then a P&L report, and restart-by-chat.
 
 ## Validation
 
