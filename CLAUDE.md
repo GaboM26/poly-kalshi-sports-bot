@@ -122,7 +122,12 @@ may be more current than this summary. Read it too.
 - **Kalshi**: the WebSocket book feeds `apply_kalshi_ws_quote`, which
   triggers detection when best prices change. Kalshi REST market data is
   served from a server-side cache (values step every ~8–10s). The Kalshi WS
-  book has no `seq` gap detection.
+  book checks `seq` per ticker: a skipped number marks the book untrusted and
+  forces a reconnect (fresh snapshots). While a trusted WS book backs a
+  ticker, REST quotes never overwrite its prices (REST still applies
+  closed/settled status). After a reconnect, only the tickers from the
+  original start are resubscribed; markets hot-added by a later scan are
+  missed until restart (found 2026-10-11, not fixed).
 - WS-derived depth shown on the detail page and in tracking is display-only.
   Order sizing always fetches its own fresh book.
 - Closed markets: Kalshi `closed`/`settled` status ends a market immediately;
@@ -163,21 +168,18 @@ may be more current than this summary. Read it too.
 
 Ordered by money risk. (Fixed 2026-10-11: sizing now re-checks `min_profit_margin` on the fresh books, neutralization's loss bound includes the closing taker fee, and auto-trade skips `SUS` games.)
 
-1. Kalshi REST can overwrite a newer WS quote (detection-only phantom risk;
-   execution re-sizes from the WS book). Add `seq`-gap detection and a
-   resnapshot before making the WS own prices.
-2. Not yet verified live: the `SELL_SHORT` price conversion (inferred from the
+1. Not yet verified live: the `SELL_SHORT` price conversion (inferred from the
    docs and BUY_SHORT evidence; none sent yet) and WS-driven detection
    end-to-end in the app's own logs.
-3. `orderPriceMinTickSize` is now used to snap prices; `minimumTradeQty` is
+2. `orderPriceMinTickSize` is now used to snap prices; `minimumTradeQty` is
    `0.01` on every market checked, so the minimum-quantity gate in
    `find_profitable_contract_size` is effectively a no-op.
-4. Log noise: every UI API call logs at INFO (`TraceLayer`). Revisit if too
+3. Log noise: every UI API call logs at INFO (`TraceLayer`). Revisit if too
    verbose.
-5. `polymarket.rs` and `positions.rs` have low graph cohesion (~0.06) and
+4. `polymarket.rs` and `positions.rs` have low graph cohesion (~0.06) and
    `WebSocketManager` is a 68-edge hub. Candidates for splitting; do not
    refactor without being asked.
-6. The user reported something "seems to disconnect every few seconds"
+5. The user reported something "seems to disconnect every few seconds"
     (2026-09-27). Never triaged: could be the Kalshi WS, the frontend WS
     client, or a backend restart.
 
@@ -233,6 +235,12 @@ equivalence is verified; auto-trade safeguards do not check it.
   `config.example.toml` is the template to update when adding settings.
   `POLYMARKET_KEY_ID` / `POLYMARKET_SECRET_KEY` env vars take precedence over
   config.
+- Settings edited in the UI (`min_profit_margin`, `default_bet_amount`,
+  `tracking_threshold`) are stored in the SQLite `app_settings` table, apply
+  to the running calculator immediately, and WIN over `config.toml` at
+  startup (config only matters for a database that has no value). Edit them
+  in the UI, not `config.toml`. `refresh_interval` is persisted but needs a
+  restart (the API reports it in `restart_required`).
 - Default dev ports: frontend `5173`, Rust API `8000`. Keep them aligned
   across services if changed.
 

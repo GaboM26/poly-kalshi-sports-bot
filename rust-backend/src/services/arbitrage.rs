@@ -60,11 +60,31 @@ impl ArbitrageService {
         // Create matcher
         let matcher = EventMatcher::new(24);
 
+        // Settings edited in the UI are persisted in the database, so they win
+        // over config.toml (which only seeds the very first run). Falling back
+        // to config when the read fails keeps startup working.
+        let (min_profit_margin, default_bet_amount, tracking_threshold) =
+            match storage.get_app_settings() {
+                Ok(db) => (db.min_profit_margin, db.default_bet_amount, db.tracking_threshold),
+                Err(e) => {
+                    error!("Failed to read stored app settings, using config.toml: {:#}", e);
+                    (
+                        config.settings.min_profit_margin,
+                        config.settings.default_bet_amount,
+                        config.settings.tracking_threshold,
+                    )
+                }
+            };
+        info!(
+            "⚙️ Settings in effect: min_profit_margin={}%, default_bet_amount=${}, tracking_threshold={}%",
+            min_profit_margin, default_bet_amount, tracking_threshold
+        );
+
         // Create WebSocket manager with metrics
         let mut ws_manager = WebSocketManager::new(
-            config.settings.min_profit_margin,
-            config.settings.default_bet_amount,
-            config.settings.tracking_threshold,
+            min_profit_margin,
+            default_bet_amount,
+            tracking_threshold,
             storage.clone(),
             metrics.clone(),
             Duration::from_secs(
@@ -193,6 +213,10 @@ impl ArbitrageService {
                         e
                     );
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                } else {
+                    // Clean return (closed stream, sequence gap): pause briefly
+                    // instead of reconnecting in a tight loop.
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
             }
         });

@@ -61,14 +61,34 @@ impl WebSocketManager {
         Ok(())
     }
 
-    /// Update application settings (hot-updatable)
+    /// Update application settings: persist, then apply to the running
+    /// calculator. `refresh_interval` is persisted only; it sizes the quote
+    /// staleness window and the REST cadence at startup. Returns the names of
+    /// the settings that need a restart to take effect.
     pub fn update_app_settings(
         &self,
         refresh_interval: Option<u64>,
         min_profit_margin: Option<f64>,
         default_bet_amount: Option<f64>,
         tracking_threshold: Option<f64>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Vec<&'static str>> {
+        // Validate before persisting so a rejected value is never stored.
+        if let Some(v) = min_profit_margin {
+            anyhow::ensure!(
+                v.is_finite() && v >= 0.0,
+                "min_profit_margin must be a finite number >= 0"
+            );
+        }
+        if let Some(v) = default_bet_amount {
+            anyhow::ensure!(
+                v.is_finite() && v > 0.0,
+                "default_bet_amount must be a finite number > 0"
+            );
+        }
+        if let Some(v) = tracking_threshold {
+            anyhow::ensure!(v.is_finite(), "tracking_threshold must be a finite number");
+        }
+
         self.storage.update_app_settings(
             refresh_interval,
             min_profit_margin,
@@ -76,8 +96,22 @@ impl WebSocketManager {
             tracking_threshold,
         )?;
 
-        info!("📝 Application settings updated in the database");
-        Ok(())
+        if let Some(v) = min_profit_margin {
+            self.calculator.set_min_profit_margin(v);
+        }
+        if let Some(v) = default_bet_amount {
+            self.calculator.set_fixed_contract_count(v);
+        }
+        if let Some(v) = tracking_threshold {
+            self.tracking_threshold.set(v);
+        }
+
+        info!("📝 Application settings updated and applied to the running calculator");
+        Ok(if refresh_interval.is_some() {
+            vec!["refresh_interval"]
+        } else {
+            Vec::new()
+        })
     }
 
     /// Check if an opportunity is eligible for auto-trade

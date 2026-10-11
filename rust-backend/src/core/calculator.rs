@@ -22,17 +22,37 @@
 //! "opportunity" into a real ~0.5%.
 
 use chrono::{NaiveDate, Utc};
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use tracing::debug;
 
 use crate::core::fees::{kalshi_taker_fee, polymarket_taker_fee};
 use crate::models::{ArbitrageOpportunity, KalshiMarket, PolymarketMarket};
 
+/// An `f64` setting that can be changed while readers on other threads use
+/// it. Backs the settings the UI edits at runtime.
+pub struct LiveF64(AtomicU64);
+
+impl LiveF64 {
+    pub fn new(value: f64) -> Self {
+        Self(AtomicU64::new(value.to_bits()))
+    }
+
+    pub fn get(&self) -> f64 {
+        f64::from_bits(self.0.load(Ordering::Relaxed))
+    }
+
+    pub fn set(&self, value: f64) {
+        self.0.store(value.to_bits(), Ordering::Relaxed);
+    }
+}
+
 /// Arbitrage calculator using Fixed Contract Strategy
 pub struct ArbitrageCalculator {
     /// Minimum profit margin to report
-    min_profit_margin: f64,
+    min_profit_margin: LiveF64,
     /// Fixed contract count for both platforms (e.g., 10 contracts)
-    fixed_contract_count: f64,
+    fixed_contract_count: LiveF64,
 }
 
 impl ArbitrageCalculator {
@@ -43,13 +63,21 @@ impl ArbitrageCalculator {
     /// * `fixed_contract_count` - Fixed number of contracts to buy on each platform (e.g., 10)
     /// Minimum net margin (percent) an opportunity must clear to be reported.
     pub fn min_profit_margin(&self) -> f64 {
-        self.min_profit_margin
+        self.min_profit_margin.get()
+    }
+
+    pub fn set_min_profit_margin(&self, value: f64) {
+        self.min_profit_margin.set(value);
+    }
+
+    pub fn set_fixed_contract_count(&self, value: f64) {
+        self.fixed_contract_count.set(value);
     }
 
     pub fn new(min_profit_margin: f64, fixed_contract_count: f64) -> Self {
         Self {
-            min_profit_margin,
-            fixed_contract_count,
+            min_profit_margin: LiveF64::new(min_profit_margin),
+            fixed_contract_count: LiveF64::new(fixed_contract_count),
         }
     }
 
@@ -249,7 +277,7 @@ impl ArbitrageCalculator {
         );
 
         // Check if minimum profit margin is met (after fees)
-        if opportunity.profit_margin < self.min_profit_margin {
+        if opportunity.profit_margin < self.min_profit_margin.get() {
             return None;
         }
 
@@ -306,7 +334,7 @@ impl ArbitrageCalculator {
         polymarket_no_price: f64,
     ) -> ArbitrageOpportunity {
         // Fixed Contract Strategy: buy same number of contracts on both platforms
-        let fixed_contracts = self.fixed_contract_count;
+        let fixed_contracts = self.fixed_contract_count.get();
 
         // Calculate actual costs
         let kalshi_bet = fixed_contracts * kalshi_price;
@@ -551,5 +579,15 @@ mod tests {
         assert!(!calc.validate_prices(0.01, 0.5, 0.5, 0.5)); // too low
         assert!(!calc.validate_prices(0.5, 0.99, 0.5, 0.5)); // too high
         assert!(!calc.validate_prices(0.5, 0.5, 0.0, 0.5)); // zero
+    }
+
+    #[test]
+    fn live_settings_change_without_rebuilding_the_calculator() {
+        let calc = ArbitrageCalculator::new(1.0, 10.0);
+        assert_eq!(calc.min_profit_margin(), 1.0);
+        calc.set_min_profit_margin(0.0);
+        assert_eq!(calc.min_profit_margin(), 0.0);
+        calc.set_fixed_contract_count(25.0);
+        assert_eq!(calc.fixed_contract_count.get(), 25.0);
     }
 }

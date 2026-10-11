@@ -75,9 +75,10 @@ pub async fn update_app_settings(
         req.default_bet_amount,
         req.tracking_threshold,
     ) {
-        Ok(_) => Json(serde_json::json!({
+        Ok(restart_required) => Json(serde_json::json!({
             "success": true,
-            "message": "应用设置已更新"
+            "message": "应用设置已更新",
+            "restart_required": restart_required
         }))
         .into_response(),
         Err(e) => {

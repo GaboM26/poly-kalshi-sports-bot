@@ -31,6 +31,7 @@ use crate::models::{
     PolymarketMarket, PriceUpdate, ScanStats, SystemStats,
 };
 use crate::services::metrics::{Operation, PerformanceMetrics};
+use crate::services::paired_execution::EXECUTABLE_BOOK_MAX_AGE as KALSHI_WS_MAX_SILENCE;
 use crate::services::storage::ArbitrageStorage;
 
 /// Extreme price threshold for Kalshi (99¢ = 0.99)
@@ -138,7 +139,7 @@ pub struct WebSocketManager {
     /// Polymarket client for real CLOB depth lookups when tracking starts
     pub(crate) polymarket_client: Option<PolymarketClient>,
     /// Tracking threshold for high-profit opportunities (percentage)
-    pub(crate) tracking_threshold: f64,
+    pub(crate) tracking_threshold: crate::core::calculator::LiveF64,
     /// Set of opportunity IDs that have been auto-traded (to prevent duplicates)
     pub(crate) auto_traded_opportunities: Arc<RwLock<std::collections::HashSet<String>>>,
     /// Extreme price detection: market_key -> first_detected_time
@@ -233,7 +234,7 @@ impl WebSocketManager {
             metrics,
             kalshi_client: None,
             polymarket_client: None,
-            tracking_threshold,
+            tracking_threshold: crate::core::calculator::LiveF64::new(tracking_threshold),
             auto_traded_opportunities: Arc::new(RwLock::new(std::collections::HashSet::new())),
             ended_market_detection: Arc::new(RwLock::new(HashMap::new())),
             confirmed_ended_markets: Arc::new(RwLock::new(std::collections::HashSet::new())),
@@ -379,11 +380,27 @@ impl WebSocketManager {
                     continue;
                 }
 
-                if ws_quote_at
-                    .get(&matched.kalshi_market.market_id)
-                    .is_some_and(|at| *at > fetched_at)
+                // Kalshi serves REST market data from a server-side cache
+                // (values step every ~8-10s), so a REST snapshot fetched
+                // after a WS quote can still hold older prices and would
+                // overwrite them, producing a phantom opportunity. While a
+                // book from the live, sequence-checked connection backs this
+                // ticker, the WebSocket owns its prices.
+                let ws_owns_prices = ws_quote_at.contains_key(&matched.kalshi_market.market_id)
+                    && self.kalshi_client.as_ref().is_some_and(|client| {
+                        client
+                            .get_fresh_orderbook(
+                                &matched.kalshi_market.market_id,
+                                KALSHI_WS_MAX_SILENCE,
+                            )
+                            .is_some()
+                    });
+                if ws_owns_prices
+                    || ws_quote_at
+                        .get(&matched.kalshi_market.market_id)
+                        .is_some_and(|at| *at > fetched_at)
                 {
-                    // Keep the newer WebSocket prices; only re-stamp.
+                    // Keep the WebSocket prices; only re-stamp.
                     kept_ws += 1;
                     quotes_to_cache
                         .entry(matched.kalshi_market.market_id.clone())
@@ -1044,7 +1061,7 @@ impl WebSocketManager {
 
             let _ = self.opportunity_tx.send(opp.clone());
 
-            if opp.profit_margin >= self.tracking_threshold {
+            if opp.profit_margin >= self.tracking_threshold.get() {
                 self.track_opportunity(&opp, poly_execution);
             }
 
