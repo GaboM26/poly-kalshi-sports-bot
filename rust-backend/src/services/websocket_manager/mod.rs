@@ -1972,4 +1972,19 @@ mod tests {
         assert!(!manager.confirmed_ended_markets.read().contains(&key));
         assert_eq!(*manager.poly_missing_streak.read().get(&key).unwrap(), 1);
     }
+
+    #[tokio::test]
+    async fn hot_added_markets_are_in_the_reconnect_ticker_list() {
+        let manager = test_manager();
+        let mut added = matched_market();
+        added.team_name = "MEM".to_string();
+        added.kalshi_market.market_id = "HOT-ADDED".to_string();
+        assert!(!manager
+            .get_kalshi_subscription_ids()
+            .contains(&"HOT-ADDED".to_string()));
+        manager.add_matched_markets(vec![added], HashMap::new());
+        assert!(manager
+            .get_kalshi_subscription_ids()
+            .contains(&"HOT-ADDED".to_string()));
+    }
 }

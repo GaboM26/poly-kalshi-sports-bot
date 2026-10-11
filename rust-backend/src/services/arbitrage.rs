@@ -200,12 +200,14 @@ impl ArbitrageService {
 
         let price_tx_kalshi = price_tx.clone();
 
-        // Spawn Kalshi WebSocket
-        let kalshi_tickers_clone = kalshi_tickers.clone();
+        // Spawn Kalshi WebSocket. The ticker list is re-read from the live
+        // matched markets on every (re)connect: a fixed copy from startup
+        // would drop every market a later scan hot-subscribed.
+        let ws_manager = self.ws_manager.clone();
         tokio::spawn(async move {
             loop {
                 if let Err(e) = kalshi_client
-                    .connect_websocket(kalshi_tickers_clone.clone(), price_tx_kalshi.clone())
+                    .connect_websocket(ws_manager.get_kalshi_subscription_ids(), price_tx_kalshi.clone())
                     .await
                 {
                     error!(

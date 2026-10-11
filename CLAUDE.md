@@ -125,9 +125,8 @@ may be more current than this summary. Read it too.
   book checks `seq` per ticker: a skipped number marks the book untrusted and
   forces a reconnect (fresh snapshots). While a trusted WS book backs a
   ticker, REST quotes never overwrite its prices (REST still applies
-  closed/settled status). After a reconnect, only the tickers from the
-  original start are resubscribed; markets hot-added by a later scan are
-  missed until restart (found 2026-10-11, not fixed).
+  closed/settled status). Every reconnect re-reads the current matched-market tickers, so
+  markets hot-added by a scan survive it.
 - WS-derived depth shown on the detail page and in tracking is display-only.
   Order sizing always fetches its own fresh book.
 - Closed markets: Kalshi `closed`/`settled` status ends a market immediately;
