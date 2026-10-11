@@ -3,7 +3,7 @@
 //! A high-performance arbitrage scanner for Kalshi and Polymarket prediction markets.
 
 use anyhow::Result;
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 mod api;
@@ -58,6 +58,8 @@ async fn main() -> Result<()> {
     let config = Config::from_file("config.toml")?;
     info!("✅ Configuration file loaded");
 
+    spawn_hang_watchdog();
+
     // Initialize and run the application
     let app = api::create_app(config).await?;
 
@@ -68,4 +70,41 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+/// The backend once froze with every thread parked and no log output for
+/// ~50 minutes. A std thread (independent of the async runtime) reports the
+/// two ways that can happen: a `parking_lot` lock cycle (with each thread's
+/// backtrace) and an async runtime that stops making progress.
+fn spawn_hang_watchdog() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn now_secs() -> u64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    }
+
+    let heartbeat = Arc::new(AtomicU64::new(now_secs()));
+    let beat = heartbeat.clone();
+    tokio::spawn(async move {
+        loop {
+            beat.store(now_secs(), Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    });
+
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(10));
+        for (i, threads) in parking_lot::deadlock::check_deadlock().iter().enumerate() {
+            error!("DEADLOCK #{}: {} threads in a lock cycle", i, threads.len());
+            for t in threads {
+                error!("deadlocked thread {:?}:\n{:?}", t.thread_id(), t.backtrace());
+            }
+        }
+        let stalled = now_secs().saturating_sub(heartbeat.load(Ordering::Relaxed));
+        if stalled >= 30 {
+            error!("Async runtime made no progress for {}s", stalled);
+        }
+    });
 }

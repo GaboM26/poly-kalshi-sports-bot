@@ -48,7 +48,7 @@ uuid = { version = "1", features = ["v4"] }
 thiserror = "1"
 anyhow = "1"
 async-trait = "0.1"
-parking_lot = "0.12"
+parking_lot = { version = "0.12", features = ["deadlock_detection"] }
 dashmap = "6"
 url = "2"
 rand = "0.8"
