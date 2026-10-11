@@ -31,16 +31,16 @@ executing real trades on detected opportunities with confidence. Priorities:
   change either without being asked. Check `trade_count` / the Telegram alerts
   for what the bot actually did.
 - **Running it**: `./start_rust_stack.sh` (builds release, starts backend on
-  8000 and Vite on 5173) inside the tmux session `stack`. Attach with
+  8000 and Vite on 5175) inside the tmux session `stack`. Attach with
   `tmux attach -t stack`. The backend is only reachable on this machine by
   convention, but `main.rs` binds `0.0.0.0:8000`; it is not yet exposed and
   has not had its API auth reviewed. Do not expose it.
 - **Restart rule**: after a change that needs it, restart the stack yourself
-  (kill session `stack`, `pkill -x polytaoli`, free ports 5173-5175 with
+  (kill session `stack`, `pkill -x polytaoli`, free ports 5175 and 8000 with
   `fuser -k`, wait until they are free, start the script again). Never restart
   if an `auto_trade_history` row has status `submitting`. Never `pkill -f`
-  with a pattern that matches your own command line. If Vite lands on 5174 or
-  5175, a port was still held: restart again after the ports are free.
+  with a pattern that matches your own command line. The frontend is at
+  http://localhost:5175 (fixed in `web/vite.config.ts`).
 - **Discord**: the user talks to this Claude session through Discord. Start it
   with the `claudiscord` alias (`~/.bashrc`): `claude --channels
   plugin:discord@claude-plugins-official`. Only run ONE session with the
@@ -79,7 +79,7 @@ Two services, started together via `./start_rust_stack.sh`:
     `storage/` (SQLite; `auto_trade_repo.rs` tracks the execution state
     machine, `hedge_pairs_repo.rs` persists verified hedges), `telegram.rs`.
   - `api/`: HTTP routes and the `mod.rs` request/response wiring.
-- **`web/`** (Vite + React + TS, port `5173`), the dashboard: live
+- **`web/`** (Vite + React + TS, port `5175`, set in `web/vite.config.ts`), the dashboard: live
   opportunities, order forms, position/history views, WebSocket client
   (`hooks/useWebSocket.ts`).
 
@@ -328,7 +328,7 @@ equivalence is verified; auto-trade safeguards do not check it.
   startup (config only matters for a database that has no value). Edit them
   in the UI, not `config.toml`. `refresh_interval` is persisted but needs a
   restart (the API reports it in `restart_required`).
-- Default dev ports: frontend `5173`, Rust API `8000`. Keep them aligned
+- Default dev ports: frontend `5175`, Rust API `8000`. Keep them aligned
   across services if changed.
 
 ## Lessons from past debugging (so they are not repeated)

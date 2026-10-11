@@ -4,7 +4,7 @@
 
 - `rust-backend/` is the Axum/Tokio API, arbitrage engine, exchange clients, SQLite storage, and WebSocket server. It calls both Kalshi and Polymarket US directly (RSA-PSS and Ed25519-signed requests respectively) — there is no separate order-submission process for either exchange.
 - `web/` is the Vite, React, and TypeScript user interface.
-- Root scripts start the development stack and build deployment packages. Keep the service ports aligned with the configuration: frontend `5173`, Rust API `8000`.
+- Root scripts start the development stack and build deployment packages. Keep the service ports aligned with the configuration: frontend `5175`, Rust API `8000`.
 
 ## Change Guidelines
 

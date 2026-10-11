@@ -15,7 +15,7 @@ A high-performance, real-time prediction market arbitrage opportunity monitoring
 ```text
 +-------------------------------------------------------------+
 |                    Frontend (React + TS)                    |
-|                  http://localhost:5173                      |
+|                  http://localhost:5175                      |
 |  - Live arbitrage opportunities - Position management       |
 |  - Historical data analysis                                  |
 +--------------------+----------------------------------------+
@@ -124,11 +124,11 @@ chat_id = "YOUR_CHAT_ID"
 The script starts:
 
 - The Rust backend on port 8000
-- The React frontend on port 5173
+- The React frontend on port 5175
 
 ### 4. Access the Application
 
-- **Frontend**: http://localhost:5173
+- **Frontend**: http://localhost:5175
 - **Backend API**: http://localhost:8000
 - **Health check**: http://localhost:8000/api/health
 

@@ -82,7 +82,7 @@ echo "✅ Rust backend health check passed"
 # Start the frontend.
 cd ../web
 echo ""
-echo "🌐 Starting frontend (port 5173)..."
+echo "🌐 Starting frontend (port 5175)..."
 
 # Check for node_modules.
 if [ ! -d "node_modules" ]; then
@@ -101,7 +101,7 @@ echo "=================================="
 echo "✅ Startup complete!"
 echo ""
 echo "📊 Rust backend: http://localhost:8000"
-echo "🌐 Frontend: http://localhost:5173"
+echo "🌐 Frontend: http://localhost:5175"
 echo ""
 echo "Press Ctrl+C to stop all services"
 echo "=================================="
