@@ -561,6 +561,20 @@ impl KalshiClient {
         self.get("/portfolio/positions").await
     }
 
+    /// Fills (executions) for one ticker, newest first. Read-only; the exact
+    /// price, count, side and fee of every fill, unlike the order echo.
+    pub async fn get_fills(&self, ticker: &str) -> Result<Value> {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        query.append_pair("ticker", ticker);
+        query.append_pair("limit", "200");
+        self.get(&format!("/portfolio/fills?{}", query.finish())).await
+    }
+
+    /// Settlements (payout per resolved market). Read-only.
+    pub async fn get_settlements(&self) -> Result<Value> {
+        self.get("/portfolio/settlements?limit=200").await
+    }
+
     /// Cancel an order
     pub async fn cancel_order(&self, order_id: &str) -> Result<Value> {
         let timestamp = Self::get_timestamp_ms();
