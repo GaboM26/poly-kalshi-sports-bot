@@ -105,42 +105,51 @@ impl WebSocketManager {
     pub fn remove_ended_markets(&self) -> Vec<String> {
         let mut kalshi_to_unsub = Vec::new();
         let mut poly_market_ids_to_remove = Vec::new();
-        let mut indices_to_remove = Vec::new();
         let mut market_keys_to_remove = Vec::new();
 
-        {
-            let markets = self.matched_markets.read();
-            for (idx, mm) in markets.iter().enumerate() {
-                let market_key = mm.market_key();
+        // Snapshot identifiers under a short read lock. `check_market_ended`
+        // takes its own read lock, and a nested read on a parking_lot RwLock
+        // deadlocks as soon as a writer is queued between the two reads.
+        let snapshot: Vec<(String, String, String)> = self
+            .matched_markets
+            .read()
+            .iter()
+            .map(|mm| {
+                (
+                    mm.market_key(),
+                    mm.kalshi_market.market_id.clone(),
+                    mm.polymarket_market.market_id.clone(),
+                )
+            })
+            .collect();
 
-                if self.check_market_ended(idx) {
-                    indices_to_remove.push(idx);
-                    market_keys_to_remove.push(market_key);
-
-                    kalshi_to_unsub.push(mm.kalshi_market.market_id.clone());
-                    poly_market_ids_to_remove.push(mm.polymarket_market.market_id.clone());
-                }
+        for (idx, (market_key, kalshi_id, poly_id)) in snapshot.into_iter().enumerate() {
+            if self.check_market_ended(idx) {
+                market_keys_to_remove.push(market_key);
+                kalshi_to_unsub.push(kalshi_id);
+                poly_market_ids_to_remove.push(poly_id);
             }
         }
 
-        if indices_to_remove.is_empty() {
+        if market_keys_to_remove.is_empty() {
             return kalshi_to_unsub;
         }
 
         info!(
             "🧹 清理已结束的市场: {} 个 (Kalshi: {} 个)",
-            indices_to_remove.len(),
+            market_keys_to_remove.len(),
             kalshi_to_unsub.len(),
         );
 
         {
             let mut markets = self.matched_markets.write();
-            for &idx in indices_to_remove.iter().rev() {
-                if idx < markets.len() {
-                    let removed = markets.remove(idx);
-                    info!("   移除: {} - {}", removed.event_name, removed.team_name);
+            markets.retain(|mm| {
+                let ended = market_keys_to_remove.contains(&mm.market_key());
+                if ended {
+                    info!("   移除: {} - {}", mm.event_name, mm.team_name);
                 }
-            }
+                !ended
+            });
         }
 
         {
