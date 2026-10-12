@@ -141,10 +141,6 @@ pub fn failed_kalshi_order(error: String) -> KalshiOrderResult {
     }
 }
 
-pub fn can_submit_kalshi_after_polymarket(polymarket_filled_contracts: i32) -> bool {
-    polymarket_filled_contracts > 0
-}
-
 pub fn kalshi_buy_levels(book: &crate::clients::kalshi::OrderBook, side: &str) -> Vec<(i32, i32)> {
     let mut levels = match side {
         "yes" => book
@@ -569,10 +565,8 @@ fn dry_run_record(params: &PairedOrderParams) -> AutoTradeExecutionRecord {
 }
 
 /// Attempt one paired order: persist a durable `submitting` record, place the
-/// Polymarket leg, persist its acknowledgement, then (only if Polymarket
-/// filled a positive quantity) place the Kalshi leg and persist its
-/// acknowledgement, then neutralize any unequal fill within the configured
-/// bound. Halts auto-trading and alerts via Discord if either exchange
+/// Polymarket and Kalshi legs concurrently, persist both acknowledgements,
+/// then neutralize any unequal fill within the configured bound. Halts auto-trading and alerts via Discord if either exchange
 /// acknowledgement can't be durably recorded, or if a residual, un-neutralized
 /// exposure remains.
 pub async fn submit_paired_order(
@@ -661,17 +655,37 @@ pub async fn submit_paired_order(
         book_age_at_submit_ms
     );
     let poly_submitted_at_ms = Utc::now().timestamp_millis();
-    let mut poly_result = match service
-        .polymarket_client
-        .submit_limit_order(
-            &params.polymarket_market_slug,
-            params.polymarket_position_side,
-            "buy",
-            params.contracts,
-            params.poly_price,
-        )
-        .await
-    {
+    // Both IOC legs go out at the same moment. Submitting Kalshi only after
+    // Polymarket filled gave faster traders 0.1-0.9s to take the Kalshi
+    // price first, which left the Polymarket leg unhedged. Any unequal fill
+    // is handled by the bounded neutralization below, for either leg.
+    let kalshi_leg = async {
+        let started = Instant::now();
+        let result = match service
+            .kalshi_client
+            .submit_order(
+                &params.kalshi_market_id,
+                "buy",
+                &params.kalshi_side,
+                params.contracts,
+                params.kalshi_price_cents,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(reason) => failed_kalshi_order(reason.to_string()),
+        };
+        (result, Some(started.elapsed().as_millis() as i64))
+    };
+    let poly_leg = service.polymarket_client.submit_limit_order(
+        &params.polymarket_market_slug,
+        params.polymarket_position_side,
+        "buy",
+        params.contracts,
+        params.poly_price,
+    );
+    let (poly_submit, (kalshi_result, kalshi_latency)) = tokio::join!(poly_leg, kalshi_leg);
+    let mut poly_result = match poly_submit {
         Ok(result) => result,
         Err(reason) => failed_poly_order(reason.to_string()),
     };
@@ -791,6 +805,13 @@ pub async fn submit_paired_order(
             "Halting auto-trading because Polymarket acknowledgement could not be persisted: {:#}",
             reason
         );
+        error!(
+            "Unpersisted Kalshi leg for lifecycle {}: order_id={:?} filled={} status={:?}",
+            lifecycle_id,
+            kalshi_result.order_id,
+            kalshi_result.filled_contracts,
+            kalshi_result.status
+        );
         if let Err(disable_reason) = service.ws_manager.disable_auto_trade() {
             error!(
                 "Failed to halt auto-trading after persistence failure: {:#}",
@@ -807,37 +828,6 @@ pub async fn submit_paired_order(
         };
     }
 
-    // Never create Kalshi exposure after a zero-fill Polymarket response.
-    // The Polymarket acknowledgement is durable above, so this rejection is
-    // also auditable without submitting a second leg.
-    let (kalshi_result, kalshi_latency) = if !can_submit_kalshi_after_polymarket(
-        poly_result.filled_contracts,
-    ) {
-        (
-            failed_kalshi_order(
-                "Kalshi leg was not submitted because Polymarket did not fill a positive contract quantity"
-                    .to_string(),
-            ),
-            None,
-        )
-    } else {
-        let kalshi_started = Instant::now();
-        let result = match service
-            .kalshi_client
-            .submit_order(
-                &params.kalshi_market_id,
-                "buy",
-                &params.kalshi_side,
-                params.contracts,
-                params.kalshi_price_cents,
-            )
-            .await
-        {
-            Ok(result) => result,
-            Err(reason) => failed_kalshi_order(reason.to_string()),
-        };
-        (result, Some(kalshi_started.elapsed().as_millis() as i64))
-    };
     if let Err(reason) = service.ws_manager.get_storage().update_auto_trade_leg(
         lifecycle_id,
         "kalshi",
@@ -1208,13 +1198,6 @@ mod tests {
         let result =
             find_profitable_contract_size(10, 1, 100.0, 0.0, Some(8.0), &kalshi, &poly).unwrap();
         assert_eq!(result.contracts, 10);
-    }
-
-    #[test]
-    fn does_not_submit_kalshi_without_a_positive_polymarket_fill() {
-        assert!(!can_submit_kalshi_after_polymarket(0));
-        assert!(!can_submit_kalshi_after_polymarket(-1));
-        assert!(can_submit_kalshi_after_polymarket(1));
     }
 
     #[test]
