@@ -828,6 +828,28 @@ pub async fn submit_paired_order(
         };
     }
 
+    // Diagnostic only, after the order already resolved: when Kalshi filled
+    // nothing, log the WebSocket book we sized from next to Kalshi's own REST
+    // book, so a phantom or stale WebSocket level shows up directly.
+    if kalshi_result.filled_contracts <= 0 {
+        let ws_book = service.kalshi_client.get_orderbook(&params.kalshi_market_id);
+        let rest_book = service
+            .kalshi_client
+            .get_rest_orderbook(&params.kalshi_market_id)
+            .await;
+        warn!(
+            "Kalshi leg unfilled: ticker={} side={} limit_cents={} ws_yes_bids(top)={:?} ws_no_bids(top)={:?} rest_book={}",
+            params.kalshi_market_id,
+            params.kalshi_side,
+            params.kalshi_price_cents,
+            ws_book.as_ref().map(|b| b.yes.iter().rev().take(4).cloned().collect::<Vec<_>>()),
+            ws_book.as_ref().map(|b| b.no.iter().rev().take(4).cloned().collect::<Vec<_>>()),
+            match &rest_book {
+                Ok(v) => v.to_string(),
+                Err(e) => format!("unavailable: {e:#}"),
+            }
+        );
+    }
     if let Err(reason) = service.ws_manager.get_storage().update_auto_trade_leg(
         lifecycle_id,
         "kalshi",

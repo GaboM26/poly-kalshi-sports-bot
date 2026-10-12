@@ -543,6 +543,12 @@ impl KalshiClient {
         Ok(parse_kalshi_order_result(&response, outcome))
     }
 
+    /// Raw REST order book for one ticker. Diagnostic only: never used for
+    /// sizing or execution (those need the WebSocket book).
+    pub async fn get_rest_orderbook(&self, ticker: &str) -> Result<Value> {
+        self.get(&format!("/markets/{ticker}/orderbook")).await
+    }
+
     /// Get orders with optional status filter
     pub async fn get_orders(&self, status: Option<&str>) -> Result<Value> {
         let path = if let Some(s) = status {
