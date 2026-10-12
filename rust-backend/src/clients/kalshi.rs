@@ -543,10 +543,19 @@ impl KalshiClient {
         Ok(parse_kalshi_order_result(&response, outcome))
     }
 
-    /// Raw REST order book for one ticker. Diagnostic only: never used for
-    /// sizing or execution (those need the WebSocket book).
-    pub async fn get_rest_orderbook(&self, ticker: &str) -> Result<Value> {
-        self.get(&format!("/markets/{ticker}/orderbook")).await
+    /// Kalshi's own REST order book for one ticker (ascending levels, best
+    /// last, like the WebSocket book). Used only as an independent veto
+    /// against a stale WebSocket book, never as sizing or execution depth.
+    pub async fn get_rest_orderbook(&self, ticker: &str) -> Result<OrderBook> {
+        let response = self.get(&format!("/markets/{ticker}/orderbook")).await?;
+        let book = response
+            .get("orderbook_fp")
+            .ok_or_else(|| anyhow::anyhow!("Kalshi REST order book has no orderbook_fp"))?;
+        Ok(OrderBook {
+            yes: parse_price_levels(book, "yes_dollars", "yes"),
+            no: parse_price_levels(book, "no_dollars", "no"),
+            ..OrderBook::default()
+        })
     }
 
     /// Get orders with optional status filter

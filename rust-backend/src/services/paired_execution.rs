@@ -845,7 +845,11 @@ pub async fn submit_paired_order(
             ws_book.as_ref().map(|b| b.yes.iter().rev().take(4).cloned().collect::<Vec<_>>()),
             ws_book.as_ref().map(|b| b.no.iter().rev().take(4).cloned().collect::<Vec<_>>()),
             match &rest_book {
-                Ok(v) => v.to_string(),
+                Ok(b) => format!(
+                    "yes_bids(top)={:?} no_bids(top)={:?}",
+                    b.yes.iter().rev().take(4).collect::<Vec<_>>(),
+                    b.no.iter().rev().take(4).collect::<Vec<_>>()
+                ),
                 Err(e) => format!("unavailable: {e:#}"),
             }
         );

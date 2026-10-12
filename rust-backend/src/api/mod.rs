@@ -696,6 +696,52 @@ async fn execute_single_auto_trade(
     };
 
     let kalshi_levels = kalshi_buy_levels(&kalshi_book, &opportunity.kalshi_side);
+
+    // The WebSocket book can silently go stale for one ticker while the
+    // connection stays alive (live games move fast): it then showed
+    // liquidity Kalshi no longer had and every Kalshi IOC filled nothing.
+    // Veto when Kalshi's own REST book cannot cover the price we would send.
+    // REST is never used for sizing, only to refuse.
+    let rest_book = match service
+        .kalshi_client
+        .get_rest_orderbook(&record.kalshi_market_id)
+        .await
+    {
+        Ok(book) => book,
+        Err(reason) => {
+            save_auto_trade_skip(
+                service,
+                key,
+                &record,
+                &opportunity,
+                auto_state.min_contracts,
+                duration_ms,
+                &format!("Kalshi REST book cross-check unavailable: {reason:#}"),
+            );
+            return;
+        }
+    };
+    let rest_levels = kalshi_buy_levels(&rest_book, &opportunity.kalshi_side);
+    let rest_best = rest_levels.first().map(|(price, _)| *price);
+    let ws_best = kalshi_levels.first().map(|(price, _)| *price);
+    if rest_best.is_none_or(|rest| ws_best.is_none_or(|ws| rest > ws)) {
+        tracing::warn!(
+            "Kalshi WebSocket book disagrees with REST for {}: ws_best_ask_cents={:?} rest_best_ask_cents={:?}; skipping",
+            record.kalshi_market_id,
+            ws_best,
+            rest_best
+        );
+        save_auto_trade_skip(
+            service,
+            key,
+            &record,
+            &opportunity,
+            auto_state.min_contracts,
+            duration_ms,
+            "Kalshi WebSocket book disagrees with Kalshi's REST book (possible stale book)",
+        );
+        return;
+    }
     let poly_levels = polymarket_buy_levels(&poly_book, poly_execution.position_side);
     let max_depth = executable_depth(&kalshi_levels).min(executable_depth(&poly_levels));
     let Some(size_cap) = calculate_contracts_to_trade(
