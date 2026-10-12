@@ -733,6 +733,19 @@ async fn execute_single_auto_trade(
         } else {
             "No fresh executable size clears the minimum profit margin after fees, worst-case prices, Polymarket's minimum trade quantity, and amount limit"
         };
+        tracing::info!(
+            "Auto-trade sizing skip detail: {} kalshi_side={} poly_side={} size_cap={} poly_min_qty={:?} max_amount={} min_margin={} kalshi_levels(cents,qty)={:?} poly_levels(price,qty)={:?} poly_source={:?}",
+            record.event_name,
+            opportunity.kalshi_side,
+            opportunity.polymarket_side,
+            size_cap,
+            poly_book.minimum_trade_qty,
+            auto_state.max_amount,
+            service.ws_manager.calculator.min_profit_margin(),
+            &kalshi_levels[..kalshi_levels.len().min(4)],
+            &poly_levels[..poly_levels.len().min(4)],
+            poly_book_source,
+        );
         save_auto_trade_skip(service, key, &record, &opportunity, size_cap, duration_ms, reason);
         return;
     };
