@@ -426,6 +426,125 @@ pub fn is_game_suspended(period: Option<&str>) -> bool {
     period.is_some_and(|p| p.trim().eq_ignore_ascii_case("SUS"))
 }
 
+/// Whether completing a one-legged position by BUYING the missing leg keeps
+/// the locked-in result within `max_loss_cents` per contract. The pair pays
+/// $1 per contract at settlement, so the result is `1 - (entry + hedge +
+/// both fees / contracts)`; it may be a loss of at most the bound.
+pub fn forward_hedge_within_loss_bound(
+    filled_entry_price: f64,
+    hedge_price: f64,
+    contracts: i32,
+    filled_leg_fee: f64,
+    hedge_fee: f64,
+    max_loss_cents: i32,
+) -> bool {
+    if contracts <= 0 {
+        return false;
+    }
+    let cost_per_contract =
+        filled_entry_price + hedge_price + (filled_leg_fee + hedge_fee) / contracts as f64;
+    cost_per_contract - 1.0 <= max_loss_cents as f64 / 100.0 + 1e-9
+}
+
+/// Recovery hedge: one leg filled and the other did not (fully), so buy the
+/// missing `shortfall` on the other venue at the best price its FRESH book
+/// offers now (plus the standard limit cushion), as long as the locked-in
+/// result stays within the loss bound. `missing` is "polymarket" or "kalshi".
+/// Only ever a buy of the missing leg; never retried by the caller.
+pub async fn hedge_missing_leg(
+    service: &ArbitrageService,
+    params: &PairedOrderParams,
+    missing: &str,
+    shortfall: i32,
+    filled_entry_price: Option<f64>,
+) -> Result<RecoveryResult, String> {
+    let entry = filled_entry_price.ok_or_else(|| {
+        "Filled leg's actual entry price was not returned; bounded hedge cannot be verified"
+            .to_string()
+    })?;
+    if missing == "polymarket" {
+        let (book, _) = executable_polymarket_book(service, &params.polymarket_market_slug)
+            .await
+            .map_err(|error| format!("Unable to get a fresh Polymarket hedge book: {error}"))?;
+        let worst = worst_price(
+            &polymarket_buy_levels(&book, params.polymarket_position_side),
+            shortfall,
+        )
+        .ok_or_else(|| "Fresh Polymarket hedge book lacks the required depth".to_string())?;
+        let limit = (((worst * 100.0).round() + LIMIT_CUSHION_CENTS as f64) / 100.0).min(0.99);
+        if !forward_hedge_within_loss_bound(
+            entry,
+            limit,
+            shortfall,
+            kalshi_taker_fee(shortfall as f64, entry),
+            polymarket_taker_fee(shortfall as f64, limit),
+            params.neutralization_max_loss_cents,
+        ) {
+            return Err(format!(
+                "Polymarket hedge at {:.4} would lock in more than the {}¢ loss bound",
+                limit, params.neutralization_max_loss_cents
+            ));
+        }
+        let result = service
+            .polymarket_client
+            .submit_limit_order(
+                &params.polymarket_market_slug,
+                params.polymarket_position_side,
+                "buy",
+                shortfall,
+                limit,
+            )
+            .await
+            .map_err(|error| format!("Polymarket hedge submission failed: {error}"))?;
+        Ok(RecoveryResult {
+            filled_contracts: result.filled_contracts,
+            order_id: result.order_id,
+            error: result.error,
+        })
+    } else {
+        let book = service
+            .kalshi_client
+            .get_fresh_orderbook(&params.kalshi_market_id, EXECUTABLE_BOOK_MAX_AGE)
+            .ok_or_else(|| "Fresh Kalshi websocket hedge depth is unavailable".to_string())?;
+        let worst_cents = worst_price(
+            &kalshi_buy_levels(&book, &params.kalshi_side),
+            shortfall,
+        )
+        .ok_or_else(|| "Fresh Kalshi hedge book lacks the required depth".to_string())?;
+        let limit_cents = (worst_cents + LIMIT_CUSHION_CENTS).min(99);
+        let limit = limit_cents as f64 / 100.0;
+        if !forward_hedge_within_loss_bound(
+            entry,
+            limit,
+            shortfall,
+            polymarket_taker_fee(shortfall as f64, entry),
+            kalshi_taker_fee(shortfall as f64, limit),
+            params.neutralization_max_loss_cents,
+        ) {
+            return Err(format!(
+                "Kalshi hedge at {:.2} would lock in more than the {}¢ loss bound",
+                limit, params.neutralization_max_loss_cents
+            ));
+        }
+        let result = service
+            .kalshi_client
+            .submit_order(
+                &params.kalshi_market_id,
+                "buy",
+                &params.kalshi_side,
+                shortfall,
+                limit_cents,
+            )
+            .await
+            .map_err(|error| format!("Kalshi hedge submission failed: {error}"))?;
+        Ok(RecoveryResult {
+            filled_contracts: result.filled_contracts,
+            order_id: result.order_id,
+            error: result.error,
+        })
+    }
+}
+
 pub async fn neutralize_polymarket(
     service: &ArbitrageService,
     market_slug: &str,
@@ -728,6 +847,33 @@ pub async fn submit_paired_order(
                 poly_result.filled_contracts = confirmed;
                 poly_result.error = None;
             }
+            Err(reason) if {
+                // A terminal EXPIRED IOC can be gone from the order endpoint
+                // (404). Its account activity is an independent record: if
+                // that confirms the fill, the order is settled either way.
+                poly_result.status.as_deref() == Some("ORDER_STATE_EXPIRED")
+                    && match service
+                        .polymarket_client
+                        .confirm_filled_contracts(
+                            None,
+                            &params.polymarket_market_slug,
+                            poly_submitted_at_ms - 2_000,
+                        )
+                        .await
+                    {
+                        Ok(confirmed) => {
+                            poly_result.filled_contracts = confirmed;
+                            true
+                        }
+                        Err(_) => false,
+                    }
+            } =>
+            {
+                warn!(
+                    "Polymarket order lookup failed ({:#}) for an EXPIRED order; account activity shows {} filled on {}",
+                    reason, poly_result.filled_contracts, params.polymarket_market_slug
+                );
+            }
             Err(reason) => {
                 error!(
                     "Halting auto-trading: could not confirm the Polymarket fill for {}: {:#}",
@@ -925,46 +1071,73 @@ pub async fn submit_paired_order(
             )
         };
         neutralization_leg = Some(leg.to_string());
-        let recovery = if leg == "polymarket" {
-            neutralize_polymarket(
-                service,
-                &params.polymarket_market_slug,
-                params.polymarket_position_side,
-                excess,
-                poly_result.average_fill_price,
-                params.neutralization_max_loss_cents,
-            )
-            .await
+        // 1) Complete the pair by buying the missing leg at its next best
+        //    price (bounded); 2) unwind whatever is still unhedged.
+        let (missing_leg, excess_entry) = if leg == "polymarket" {
+            ("kalshi", poly_result.average_fill_price)
         } else {
-            neutralize_kalshi(
-                service,
-                &params.kalshi_market_id,
-                &params.kalshi_side,
-                excess,
-                kalshi_result.average_fill_price,
-                params.neutralization_max_loss_cents,
-            )
-            .await
+            ("polymarket", kalshi_result.average_fill_price)
         };
-        match recovery {
-            Ok(recovery) if recovery.filled_contracts >= excess => {
-                neutralization_success = Some(true);
-                neutralization_order_id = recovery.order_id;
-                neutralization_filled_contracts = recovery.filled_contracts;
-            }
-            Ok(recovery) => {
-                neutralization_success = Some(false);
-                neutralization_order_id = recovery.order_id;
-                neutralization_filled_contracts = recovery.filled_contracts;
-                neutralization_error = recovery.error;
-                residual_leg = Some(leg.to_string());
-                residual_contracts = excess - neutralization_filled_contracts;
+        let hedged = match hedge_missing_leg(service, &params, missing_leg, excess, excess_entry).await
+        {
+            Ok(hedge) => {
+                neutralization_order_id = hedge.order_id;
+                hedge.filled_contracts.clamp(0, excess)
             }
             Err(reason) => {
-                neutralization_success = Some(false);
+                warn!("Recovery hedge of the {missing_leg} leg not completed: {reason}");
                 neutralization_error = Some(reason);
-                residual_leg = Some(leg.to_string());
-                residual_contracts = excess;
+                0
+            }
+        };
+        neutralization_filled_contracts = hedged;
+        let remaining = excess - hedged;
+        if remaining == 0 {
+            neutralization_success = Some(true);
+            neutralization_error = None;
+        } else {
+            let recovery = if leg == "polymarket" {
+                neutralize_polymarket(
+                    service,
+                    &params.polymarket_market_slug,
+                    params.polymarket_position_side,
+                    remaining,
+                    poly_result.average_fill_price,
+                    params.neutralization_max_loss_cents,
+                )
+                .await
+            } else {
+                neutralize_kalshi(
+                    service,
+                    &params.kalshi_market_id,
+                    &params.kalshi_side,
+                    remaining,
+                    kalshi_result.average_fill_price,
+                    params.neutralization_max_loss_cents,
+                )
+                .await
+            };
+            match recovery {
+                Ok(recovery) if recovery.filled_contracts >= remaining => {
+                    neutralization_success = Some(true);
+                    neutralization_order_id = recovery.order_id.or(neutralization_order_id);
+                    neutralization_filled_contracts += recovery.filled_contracts;
+                    neutralization_error = None;
+                }
+                Ok(recovery) => {
+                    neutralization_success = Some(false);
+                    neutralization_order_id = recovery.order_id.or(neutralization_order_id);
+                    neutralization_filled_contracts += recovery.filled_contracts;
+                    neutralization_error = recovery.error.or(neutralization_error);
+                    residual_leg = Some(leg.to_string());
+                    residual_contracts = remaining - recovery.filled_contracts;
+                }
+                Err(reason) => {
+                    neutralization_success = Some(false);
+                    neutralization_error = Some(reason);
+                    residual_leg = Some(leg.to_string());
+                    residual_contracts = remaining;
+                }
             }
         }
     }
@@ -1182,6 +1355,18 @@ mod tests {
         // The same books with a wider gap (45c + 46c) still size.
         let poly = vec![(0.46, 10)];
         assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly).is_some());
+    }
+
+    #[test]
+    fn a_forward_hedge_is_bounded_by_the_locked_in_loss() {
+        // Bowers: Kalshi YES filled at 0.38, Polymarket now offers 0.64.
+        // Cost per contract 0.38 + 0.64 + fees(0.09 + 0.09)/5 = 1.056: a
+        // 5.6c locked-in loss, outside a 5c bound but inside 6c.
+        assert!(!forward_hedge_within_loss_bound(0.38, 0.64, 5, 0.09, 0.09, 5));
+        assert!(forward_hedge_within_loss_bound(0.38, 0.64, 5, 0.09, 0.09, 6));
+        // A hedge that still profits always passes.
+        assert!(forward_hedge_within_loss_bound(0.38, 0.53, 5, 0.09, 0.09, 0));
+        assert!(!forward_hedge_within_loss_bound(0.38, 0.53, 0, 0.09, 0.09, 5));
     }
 
     #[test]

@@ -134,6 +134,13 @@ may be more current than this summary. Read it too.
   leg fires; durably update each acknowledgement before submitting the second
   leg. On startup, halt if an unresolved `submitting` record exists until it
   is reconciled.
+- **Recovery hedge** (2026-10-13): on unequal fills, FIRST buy the missing leg
+  at its fresh book's next best price (+1c cushion) if the locked-in result
+  stays within `neutralization_max_loss_cents`; only what is still unhedged
+  goes to the unwind below. IOC limits are placed 1c beyond the worst sized
+  level (`LIMIT_CUSHION_CENTS`) and margin is sized at those limits. An EXPIRED
+  Polymarket IOC whose order lookup 404s is confirmed from account activity
+  before the fill is called unknown. Not yet exercised against live orders.
 - **Neutralization**: on unequal fills, attempt a bounded IOC/FAK offset only
   within `neutralization_max_loss_cents` (default 5¢/contract). If it cannot
   fully close, record the residual durably, disable auto-trading, and alert
