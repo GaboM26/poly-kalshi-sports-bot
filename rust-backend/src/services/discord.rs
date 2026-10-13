@@ -108,7 +108,7 @@ impl DiscordClient {
 
 fn format_opportunity(opp: &ArbitrageOpportunity) -> String {
     format!(
-        "📈 **Opportunity** {:.2}%\n{} — {}\nKalshi {} @ {:.2} | Polymarket {} @ {:.2}\nDepth: Kalshi {} | Polymarket ${:.2}",
+        "📈 **Opportunity** {:.2}%\n{} — {}\nKalshi {} @ {:.2} | Polymarket {} @ {:.2}\nDepth (contracts at quoted price or better): Kalshi {} | Polymarket {:.0}",
         opp.profit_margin,
         opp.event_name,
         opp.team_name,
@@ -117,7 +117,7 @@ fn format_opportunity(opp: &ArbitrageOpportunity) -> String {
         opp.polymarket_side,
         opp.polymarket_price,
         opp.kalshi_ask_depth,
-        opp.poly_ask_depth,
+        opp.poly_ask_size,
     )
 }
 

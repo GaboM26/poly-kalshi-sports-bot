@@ -277,19 +277,21 @@ impl WebSocketManager {
         self.polymarket_client = Some(polymarket);
     }
 
-    /// Get Kalshi best ask depth for a market and side
-    pub(crate) fn get_kalshi_ask_depth(&self, ticker: &str, side: &str) -> i32 {
-        if let Some(client) = &self.kalshi_client {
-            if let Some(book) = client.get_orderbook(ticker) {
-                let qty = match side.to_lowercase().as_str() {
-                    "yes" => book.no.last().map(|(_, qty)| *qty),
-                    "no" => book.yes.last().map(|(_, qty)| *qty),
-                    _ => None,
-                };
-                return qty.unwrap_or(0);
-            }
-        }
-        0
+    /// Kalshi contracts available at `price` (dollars, the quoted ask) or
+    /// better for a market and side: the same measure Polymarket depth uses.
+    pub(crate) fn get_kalshi_ask_depth(&self, ticker: &str, side: &str, price: f64) -> i32 {
+        let Some(book) = self
+            .kalshi_client
+            .as_ref()
+            .and_then(|client| client.get_orderbook(ticker))
+        else {
+            return 0;
+        };
+        let limit_cents = (price * 100.0).round() as i32;
+        crate::services::paired_execution::kalshi_buy_levels(&book, &side.to_lowercase())
+            .iter()
+            .filter(|(cents, _)| *cents <= limit_cents)
+            .fold(0_i32, |total, (_, qty)| total.saturating_add(*qty))
     }
 
     /// Subscribe to opportunity updates
@@ -1060,12 +1062,12 @@ impl WebSocketManager {
                 .as_ref()
                 .and_then(|exec| {
                     self.polymarket_live_book(&exec.market_slug)
-                        .map(|book| book.buy_depth(exec.position_side))
+                        .map(|book| book.buy_depth(exec.position_side, opp.polymarket_price))
                 })
                 .unwrap_or((0.0, 0.0));
             opp.poly_ask_depth = poly_usd;
             opp.poly_ask_size = poly_size;
-            opp.kalshi_ask_depth = self.get_kalshi_ask_depth(&kalshi_ticker, &opp.kalshi_side);
+            opp.kalshi_ask_depth = self.get_kalshi_ask_depth(&kalshi_ticker, &opp.kalshi_side, opp.kalshi_price);
 
             let _ = self.opportunity_tx.send(opp.clone());
 
@@ -1701,7 +1703,10 @@ mod tests {
             state: "MARKET_STATE_OPEN".to_string(),
             transact_time: None,
             fetched_at_ms: 0,
-            bids: vec![PolymarketBookLevel { price: 0.40, quantity: 10.0 }],
+            bids: vec![
+                PolymarketBookLevel { price: 0.42, quantity: 4.0 },
+                PolymarketBookLevel { price: 0.40, quantity: 10.0 },
+            ],
             offers: vec![PolymarketBookLevel { price: 0.45, quantity: 99.0 }],
             minimum_trade_qty: None,
             price_tick_size: None,
@@ -1710,8 +1715,10 @@ mod tests {
         manager.update_polymarket_ws_quote("lal-mem-2026-08-17", 0.42, 0.58);
         let opp = manager.get_opportunities().into_iter().next().expect("opportunity");
         assert_eq!(opp.kalshi_side, "yes");
-        assert_eq!(opp.poly_ask_size, 10.0);
-        assert!((opp.poly_ask_depth - 10.0 * 0.60).abs() < 1e-9);
+        // Only contracts at the quoted price (1 - 0.42 = 0.58) or better
+        // count; the 0.60 level behind it is excluded.
+        assert_eq!(opp.poly_ask_size, 4.0);
+        assert!((opp.poly_ask_depth - 4.0 * 0.58).abs() < 1e-9);
     }
 
     #[tokio::test]

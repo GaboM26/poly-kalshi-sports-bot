@@ -23,9 +23,9 @@ interface HistoryRecord {
   max_profit_time?: string;
   profit_history?: ProfitHistoryEntry[];
   // Depth info
-  poly_ask_depth?: number;  // Polymarket ask depth (USD = price * size)
-  poly_ask_size?: number;   // Polymarket ask size (token count)
-  kalshi_ask_depth?: number;  // Kalshi ask depth (contracts)
+  poly_ask_depth?: number;  // USD value of Polymarket contracts at the quoted price or better
+  poly_ask_size?: number;   // Polymarket contracts at the quoted price or better
+  kalshi_ask_depth?: number;  // Kalshi contracts at the quoted price or better
   // Price info
   kalshi_ask_price?: number;  // Kalshi ask price
   polymarket_ask_price?: number;  // Polymarket ask price

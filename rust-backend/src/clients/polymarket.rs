@@ -69,8 +69,11 @@ impl PolymarketMarketBook {
     /// Mirrors the buy-side selection and complement pricing the execution
     /// path applies: Long buys consume native LONG offers ascending; Short
     /// buys consume native LONG bids descending at complement price.
+    /// Only levels priced at or better than `limit_price` (the price the
+    /// opportunity was quoted at) count, so this is the same "contracts at
+    /// the quoted price or better" measure Kalshi depth uses.
     /// Returns (usd_notional, token_size).
-    pub fn buy_depth(&self, position_side: PolymarketPositionSide) -> (f64, f64) {
+    pub fn buy_depth(&self, position_side: PolymarketPositionSide, limit_price: f64) -> (f64, f64) {
         let levels: &[PolymarketBookLevel] = match position_side {
             PolymarketPositionSide::Long => &self.offers,
             PolymarketPositionSide::Short => &self.bids,
@@ -86,6 +89,9 @@ impl PolymarketMarketBook {
                     PolymarketPositionSide::Long => level.price,
                     PolymarketPositionSide::Short => 1.0 - level.price,
                 };
+                if price > limit_price + 1e-9 {
+                    return (usd, size);
+                }
                 (usd + quantity * price, size + quantity)
             })
     }
@@ -1538,7 +1544,7 @@ mod tests {
     #[test]
     fn long_buy_depth_sums_native_offers_at_native_price() {
         let book = book(vec![(0.50, 10.0)], vec![(0.22, 4.0), (0.25, 6.5)]);
-        let (usd, size) = book.buy_depth(PolymarketPositionSide::Long);
+        let (usd, size) = book.buy_depth(PolymarketPositionSide::Long, 1.0);
         // quantity floors to whole tokens: 4 + 6 = 10; usd = 4*0.22 + 6*0.25
         assert_eq!(size, 10.0);
         assert!((usd - (4.0 * 0.22 + 6.0 * 0.25)).abs() < 1e-9);
@@ -1547,7 +1553,7 @@ mod tests {
     #[test]
     fn short_buy_depth_sums_native_bids_at_complement_price() {
         let book = book(vec![(0.70, 3.0)], vec![(0.22, 4.0)]);
-        let (usd, size) = book.buy_depth(PolymarketPositionSide::Short);
+        let (usd, size) = book.buy_depth(PolymarketPositionSide::Short, 1.0);
         // Short buys consume native bids at 1 - price.
         assert_eq!(size, 3.0);
         assert!((usd - 3.0 * (1.0 - 0.70)).abs() < 1e-9);
@@ -1556,7 +1562,7 @@ mod tests {
     #[test]
     fn buy_depth_ignores_non_positive_quantity_levels() {
         let book = book(vec![], vec![(0.30, 0.0), (0.40, 2.0)]);
-        let (usd, size) = book.buy_depth(PolymarketPositionSide::Long);
+        let (usd, size) = book.buy_depth(PolymarketPositionSide::Long, 1.0);
         assert_eq!(size, 2.0);
         assert!((usd - 2.0 * 0.40).abs() < 1e-9);
     }

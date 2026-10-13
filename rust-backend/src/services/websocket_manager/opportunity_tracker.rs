@@ -86,6 +86,7 @@ impl WebSocketManager {
             // if this market was snapshotted recently, so a market flapping
             // in and out of tracking can't repeatedly hit Polymarket's real
             // gateway (see POLY_DEPTH_SNAPSHOT_COOLDOWN).
+            let poly_price = opp.polymarket_price;
             let recently_snapshotted = self
                 .poly_depth_snapshot_cooldown
                 .read()
@@ -103,7 +104,7 @@ impl WebSocketManager {
                         self.poly_depth_snapshot_cooldown
                             .write()
                             .insert(key.clone(), Instant::now());
-                        let (usd, size) = book.buy_depth(exec.position_side);
+                        let (usd, size) = book.buy_depth(exec.position_side, poly_price);
                         self.storage.track_depth(&key, usd, size);
                     } else if let Some(client) = self.polymarket_client.clone() {
                         self.poly_depth_snapshot_cooldown
@@ -113,7 +114,7 @@ impl WebSocketManager {
                         tokio::spawn(async move {
                             match client.get_market_book(&exec.market_slug).await {
                                 Ok(book) => {
-                                    let (usd, size) = book.buy_depth(exec.position_side);
+                                    let (usd, size) = book.buy_depth(exec.position_side, poly_price);
                                     storage.track_depth(&key, usd, size);
                                 }
                                 Err(error) => {

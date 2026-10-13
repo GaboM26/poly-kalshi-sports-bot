@@ -127,8 +127,8 @@ export interface TrackingRecord {
   max_profit_time: string | null;
   profit_history: ProfitHistoryEntry[];
   // Depth information
-  poly_ask_depth: number;  // Polymarket ask depth (USD)
-  kalshi_ask_depth: number;  // Kalshi ask depth (contracts)
+  poly_ask_depth: number;  // USD value of the Polymarket contracts at the quoted price or better
+  kalshi_ask_depth: number;  // Kalshi contracts at the quoted price or better
 }
 
 export interface ActiveTracking {
