@@ -300,6 +300,9 @@ pub fn calculate_contracts_to_trade(
     Some(contracts.min(max_contracts))
 }
 
+/// How far beyond the worst sized level each leg's IOC limit is placed.
+pub const LIMIT_CUSHION_CENTS: i32 = 1;
+
 /// One sized trade: the contract count plus the worst-case prices and the
 /// fees of BOTH exchanges that determined it. A named struct (not a tuple)
 /// so the two fees - adjacent `f64`s - can never be swapped by a caller.
@@ -353,11 +356,18 @@ pub fn find_profitable_contract_size(
         min_contracts
     };
     for contracts in (min_contracts..=size_cap).rev() {
-        let kalshi_price_cents = worst_price(kalshi_levels, contracts)?;
-        let poly_price = worst_price(poly_levels, contracts)?;
-        if contracts as f64 * poly_price < POLYMARKET_MIN_NOTIONAL_USD {
+        let kalshi_worst_cents = worst_price(kalshi_levels, contracts)?;
+        let poly_worst = worst_price(poly_levels, contracts)?;
+        if contracts as f64 * poly_worst < POLYMARKET_MIN_NOTIONAL_USD {
             continue;
         }
+        // The IOC limits sit LIMIT_CUSHION_CENTS beyond the worst level the
+        // sizing book needs, so a small move while the orders are in flight
+        // still fills (an IOC fills at the best available price, never at
+        // its limit unless the book is that deep). Size and margin are
+        // validated at the limits, i.e. the worst price the order can pay.
+        let kalshi_price_cents = (kalshi_worst_cents + LIMIT_CUSHION_CENTS).min(99);
+        let poly_price = (((poly_worst * 100.0).round() + LIMIT_CUSHION_CENTS as f64) / 100.0).min(0.99);
         let kalshi_price = kalshi_price_cents as f64 / 100.0;
         let kalshi_fee = kalshi_taker_fee(contracts as f64, kalshi_price);
         let poly_fee = polymarket_taker_fee(contracts as f64, poly_price);
@@ -1139,24 +1149,39 @@ mod tests {
         let poly = vec![(0.45, 2), (0.47, 3)];
         let result = find_profitable_contract_size(5, 1, 5.0, 0.0, Some(1.0), &kalshi, &poly).unwrap();
         assert_eq!(result.contracts, 5);
-        assert_eq!(result.kalshi_price_cents, 42);
-        assert_eq!(result.poly_price, 0.47);
+        // Limits sit one cent beyond the worst sized level.
+        assert_eq!(result.kalshi_price_cents, 43);
+        assert!((result.poly_price - 0.48).abs() < 1e-9);
     }
 
     #[test]
     fn sizing_charges_both_exchanges_fees() {
-        // 10 contracts, Kalshi 40c, Polymarket 45c:
-        //   Kalshi     ceil(0.07 * 10 * 0.40 * 0.60) = 0.17
-        //   Polymarket 0.0695 * 10 * 0.45 * 0.55 = 0.1720 -> 0.17
-        //   total = 10 * 0.85 + 0.17 + 0.17 = 8.84
+        // 10 contracts, Kalshi 40c, Polymarket 45c; limits are one cent
+        // beyond that (41c / 46c) and the margin is checked there:
+        //   Kalshi     ceil(0.07 * 10 * 0.41 * 0.59) = 0.17
+        //   Polymarket 0.0695 * 10 * 0.46 * 0.54 = 0.1726 -> 0.17
+        //   total = 10 * 0.87 + 0.17 + 0.17 = 9.04
         let kalshi = vec![(40, 10)];
         let poly = vec![(0.45, 10)];
         let trade = find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly).unwrap();
         assert_eq!(trade.contracts, 10);
         assert!((trade.kalshi_fee - 0.17).abs() < 1e-9);
         assert!((trade.poly_fee - 0.17).abs() < 1e-9);
-        let expected_margin = (10.0 - 8.84) / 8.84 * 100.0;
+        let expected_margin = (10.0 - 9.04) / 9.04 * 100.0;
         assert!((trade.profit_margin - expected_margin).abs() < 1e-9, "{}", trade.profit_margin);
+    }
+
+    #[test]
+    fn an_edge_smaller_than_fees_plus_the_limit_cushion_is_not_sized() {
+        // Kalshi 45c + Polymarket 50c = 5c gross. Fees ~0.4c at the quoted
+        // prices leave a positive edge, but the 1c cushion on each leg
+        // (46c + 51c) plus fees makes the worst case a loss.
+        let kalshi = vec![(45, 10)];
+        let poly = vec![(0.50, 10)];
+        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly).is_none());
+        // The same books with a wider gap (45c + 46c) still size.
+        let poly = vec![(0.46, 10)];
+        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly).is_some());
     }
 
     #[test]
