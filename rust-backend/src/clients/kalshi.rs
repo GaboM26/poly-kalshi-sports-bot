@@ -172,6 +172,9 @@ pub struct KalshiOrderResult {
     pub accepted: bool,
     pub filled_contracts: i32,
     pub fill_quantity_valid: bool,
+    /// Kalshi reported a fractional fill. `filled_contracts` is the whole part,
+    /// floored; the remainder is unhedgeable dust the caller must record.
+    pub fractional_fill: bool,
     pub order_id: Option<String>,
     pub status: Option<String>,
     pub error: Option<String>,
@@ -1089,13 +1092,13 @@ fn parse_kalshi_order_result(response: &Value, outcome: &str) -> KalshiOrderResu
     .iter()
     .find_map(|field| order.get(*field).and_then(value_to_f64));
     let fill_quantity_valid = reported_fill
-        .map(|value| {
-            value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= i32::MAX as f64
-        })
+        .map(|value| value.is_finite() && value >= 0.0 && value.floor() <= i32::MAX as f64)
         .unwrap_or(true);
+    let fractional_fill =
+        fill_quantity_valid && reported_fill.is_some_and(|value| value.fract() != 0.0);
     let filled_contracts = reported_fill
         .filter(|_| fill_quantity_valid)
-        .map(|value| value as i32)
+        .map(|value| value.floor() as i32)
         .unwrap_or(0);
     let average_fill_price = ["average_fill_price", "average_price", "avg_price"]
         .iter()
@@ -1112,7 +1115,15 @@ fn parse_kalshi_order_result(response: &Value, outcome: &str) -> KalshiOrderResu
         .map(ToOwned::to_owned)
         .or_else(|| {
             (!fill_quantity_valid)
-                .then(|| "Kalshi returned a non-whole or invalid fill quantity".to_string())
+                .then(|| "Kalshi returned an invalid fill quantity".to_string())
+        })
+        .or_else(|| {
+            fractional_fill.then(|| {
+                format!(
+                    "Kalshi filled a fractional quantity ({}); the fraction is unhedged",
+                    reported_fill.unwrap_or_default()
+                )
+            })
         })
         .or_else(|| {
             (filled_contracts == 0).then(|| {
@@ -1126,6 +1137,7 @@ fn parse_kalshi_order_result(response: &Value, outcome: &str) -> KalshiOrderResu
         accepted: order_id.is_some() || status.is_some(),
         filled_contracts,
         fill_quantity_valid,
+        fractional_fill,
         order_id,
         status,
         error,
@@ -1654,6 +1666,18 @@ mod tests {
 
         assert_eq!(result.filled_contracts, 2);
         assert!(result.fill_quantity_valid);
+    }
+
+    #[test]
+    fn a_fractional_kalshi_fill_reports_the_whole_part_and_flags_the_fraction() {
+        let result = parse_kalshi_order_result(
+            &json!({"order": {"order_id": "o", "status": "executed", "fill_count_fp": "2.50"}}),
+            "yes",
+        );
+        assert_eq!(result.filled_contracts, 2);
+        assert!(result.fill_quantity_valid);
+        assert!(result.fractional_fill);
+        assert!(result.error.unwrap().contains("2.5"));
     }
 
     #[test]

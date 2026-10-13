@@ -135,6 +135,7 @@ pub fn failed_kalshi_order(error: String) -> KalshiOrderResult {
         accepted: false,
         filled_contracts: 0,
         fill_quantity_valid: true,
+        fractional_fill: false,
         order_id: None,
         status: None,
         error: Some(error),
@@ -958,15 +959,20 @@ pub async fn submit_paired_order(
         }
     }
 
-    if poly_result.fractional_fill {
-        // The whole contracts were handled above; the fraction cannot be
-        // hedged or sold on a whole-contract path. Record it as one
-        // residual contract (rounded up) so it halts trading and alerts.
-        residual_leg.get_or_insert_with(|| "polymarket".to_string());
-        residual_contracts += 1;
-        neutralization_error.get_or_insert_with(|| {
-            "Polymarket filled a fractional quantity; the fraction is unhedged".to_string()
-        });
+    // Fractional fills: the whole contracts were handled above; the fraction
+    // cannot be hedged or sold on a whole-contract path. Record each as one
+    // residual contract (rounded up) so it halts trading and alerts.
+    for (leg, fractional) in [
+        ("polymarket", poly_result.fractional_fill),
+        ("kalshi", kalshi_result.fractional_fill),
+    ] {
+        if fractional {
+            residual_leg.get_or_insert_with(|| leg.to_string());
+            residual_contracts += 1;
+            neutralization_error.get_or_insert_with(|| {
+                format!("{leg} filled a fractional quantity; the fraction is unhedged")
+            });
+        }
     }
 
     let status = if unsafe_fill_quantity || residual_contracts > 0 {
