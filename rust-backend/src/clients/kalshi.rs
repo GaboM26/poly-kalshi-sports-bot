@@ -850,6 +850,16 @@ impl KalshiClient {
                                     sid
                                 })
                                 .collect();
+                            // All tickers share one sid on the live feed, so
+                            // unsubscribing it for an ended market would drop
+                            // every other market's updates and freeze their
+                            // books while the connection stays alive. Only
+                            // unsubscribe a sid no remaining ticker uses.
+                            let mut subscription_ids_to_remove = subscription_ids_to_remove;
+                            subscription_ids_to_remove
+                                .retain(|sid| !subscription_ids.values().any(|live| live == sid));
+                            subscription_ids_to_remove.sort_unstable();
+                            subscription_ids_to_remove.dedup();
 
                             if !subscription_ids_to_remove.is_empty() {
                                 let unsubscribe_msg = json!({
