@@ -98,6 +98,10 @@ pub struct PolymarketOrderResult {
     pub accepted: bool,
     pub filled_contracts: i32,
     pub fill_quantity_valid: bool,
+    /// The exchange filled a fractional quantity (e.g. 8.85 on a partial IOC
+    /// fill of a fractional book level). `filled_contracts` is then the whole
+    /// part, floored; the remainder is unhedgeable dust the caller must record.
+    pub fractional_fill: bool,
     pub order_id: Option<String>,
     pub status: Option<String>,
     pub error: Option<String>,
@@ -1056,6 +1060,7 @@ fn parse_polymarket_order_result(
             accepted: false,
             filled_contracts: 0,
             fill_quantity_valid: true,
+            fractional_fill: false,
             order_id: None,
             status: None,
             error: Some(upstream_error.unwrap_or_else(|| {
@@ -1077,6 +1082,7 @@ fn parse_polymarket_order_result(
             accepted: false,
             filled_contracts: 0,
             fill_quantity_valid: true,
+            fractional_fill: false,
             order_id: None,
             status: None,
             error: Some("Polymarket US execution did not include order details".to_string()),
@@ -1100,10 +1106,9 @@ fn parse_polymarket_order_result(
         // loss bound compare like with like.
         let average_fill_price = extract_average_fill_price(response)
             .map(|yes_price| yes_book_price(position_side, yes_price));
-        let fill_quantity_valid = filled.is_finite()
-            && filled >= 0.0
-            && filled.fract() == 0.0
-            && filled <= i32::MAX as f64;
+        let fill_quantity_valid =
+            filled.is_finite() && filled >= 0.0 && filled.floor() <= i32::MAX as f64;
+        let fractional_fill = fill_quantity_valid && filled.fract() != 0.0;
         info!(
             "Polymarket US order FILLED: order_id={:?} market={:?} status={:?} filled={} avg_price={:?} latency_ms={}",
             order_id,
@@ -1115,14 +1120,19 @@ fn parse_polymarket_order_result(
         );
         return PolymarketOrderResult {
             accepted: true,
-            filled_contracts: if fill_quantity_valid { filled as i32 } else { 0 },
+            filled_contracts: if fill_quantity_valid { filled.floor() as i32 } else { 0 },
             fill_quantity_valid,
+            fractional_fill,
             order_id,
             status,
-            error: if fill_quantity_valid {
-                None
+            error: if !fill_quantity_valid {
+                Some("Polymarket US returned an invalid fill quantity".to_string())
+            } else if fractional_fill {
+                Some(format!(
+                    "Polymarket US filled a fractional quantity ({filled}); the fraction is unhedged"
+                ))
             } else {
-                Some("Polymarket US returned a non-whole or invalid fill quantity".to_string())
+                None
             },
             latency_ms: Some(latency_ms),
             average_fill_price,
@@ -1140,6 +1150,7 @@ fn parse_polymarket_order_result(
         accepted: order_id.is_some(),
         filled_contracts: 0,
         fill_quantity_valid: true,
+        fractional_fill: false,
         order_id,
         status,
         error: Some(error),
@@ -1463,6 +1474,23 @@ fn extract_date_from_slug(slug: &str) -> Option<DateTime<Utc>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_fractional_partial_fill_reports_the_whole_part_and_flags_the_fraction() {
+        let response = json!({"executions": [{"order": {
+            "id": "o", "state": "ORDER_STATE_EXPIRED", "cumQuantity": 8.85, "avgPx": {"value": "0.53"}
+        }}]});
+        let result = parse_polymarket_order_result(
+            &response,
+            1,
+            &json!({}),
+            PolymarketPositionSide::Short,
+        );
+        assert_eq!(result.filled_contracts, 8);
+        assert!(result.fill_quantity_valid);
+        assert!(result.fractional_fill);
+        assert!(result.error.unwrap().contains("8.85"));
+    }
+
     #[test]
     fn an_order_lookup_reports_the_exchange_fill() {
         let filled = json!({"order": {"id": "o", "cumQuantity": "3", "state": "ORDER_STATE_FILLED"}});

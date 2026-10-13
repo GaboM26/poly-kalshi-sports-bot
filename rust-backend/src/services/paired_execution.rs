@@ -120,6 +120,7 @@ pub fn failed_poly_order(error: String) -> PolymarketOrderResult {
         accepted: false,
         filled_contracts: 0,
         fill_quantity_valid: true,
+        fractional_fill: false,
         order_id: None,
         status: None,
         error: Some(error),
@@ -736,7 +737,7 @@ pub async fn submit_paired_order(
     // Ground-truth check on the fee model: Polymarket reports the commission
     // it collected on the order. If that stops matching `core::fees`, every
     // margin is silently wrong again, so say so loudly.
-    if poly_result.filled_contracts > 0 {
+    if poly_result.filled_contracts > 0 && !poly_result.fractional_fill {
         if let Some(collected) = poly_result.commission_collected {
             let price = poly_result.average_fill_price.unwrap_or(params.poly_price);
             let (modeled, within_tolerance) =
@@ -955,6 +956,17 @@ pub async fn submit_paired_order(
                 residual_contracts = excess;
             }
         }
+    }
+
+    if poly_result.fractional_fill {
+        // The whole contracts were handled above; the fraction cannot be
+        // hedged or sold on a whole-contract path. Record it as one
+        // residual contract (rounded up) so it halts trading and alerts.
+        residual_leg.get_or_insert_with(|| "polymarket".to_string());
+        residual_contracts += 1;
+        neutralization_error.get_or_insert_with(|| {
+            "Polymarket filled a fractional quantity; the fraction is unhedged".to_string()
+        });
     }
 
     let status = if unsafe_fill_quantity || residual_contracts > 0 {
