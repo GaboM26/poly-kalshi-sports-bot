@@ -1015,7 +1015,7 @@ impl KalshiClient {
                         msg.get("price")
                             .and_then(Value::as_i64)
                             .map(|price| price as i32)
-                    })?;
+                    });
                 let delta = msg
                     .get("delta_fp")
                     .and_then(fixed_point_to_i32)
@@ -1023,12 +1023,21 @@ impl KalshiClient {
                         msg.get("delta")
                             .and_then(Value::as_i64)
                             .map(|delta| delta as i32)
-                    })?;
-                let side = msg.get("side")?.as_str()?;
+                    });
+                let side = msg.get("side").and_then(Value::as_str);
+                let (Some(price), Some(delta), Some(side)) = (price, delta, side) else {
+                    // A dropped delta leaves a removed level in the cached
+                    // book forever, so it must never be silent.
+                    warn!("Kalshi orderbook_delta dropped (unparsable) for {}: {}", ticker, msg);
+                    return None;
+                };
 
                 // Apply delta
                 let mut cache = orderbook_cache.write();
-                let book = cache.get_mut(ticker)?;
+                let Some(book) = cache.get_mut(ticker) else {
+                    warn!("Kalshi orderbook_delta for {} dropped: no snapshot cached", ticker);
+                    return None;
+                };
                 // Never build on a book left over from a previous connection
                 // - wait for the fresh snapshot this epoch's subscribe will
                 // bring instead of layering a delta on a stale base.
