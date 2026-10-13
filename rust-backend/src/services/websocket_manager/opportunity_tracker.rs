@@ -65,6 +65,12 @@ impl WebSocketManager {
                 opp.event_name, opp.team_name, opp.profit_margin,
                 opp.poly_ask_depth, opp.poly_ask_size, opp.kalshi_ask_depth
             );
+            info!(
+                "📈 Tracking prices: {} {} - kalshi {} @ {:.4}, polymarket {} @ {:.4}",
+                opp.event_name, opp.team_name,
+                opp.kalshi_side, opp.kalshi_price,
+                opp.polymarket_side, opp.polymarket_price
+            );
 
             if let Some(discord) = self.discord_client.get() {
                 discord.notify_opportunity(opp);
@@ -127,8 +133,9 @@ impl WebSocketManager {
 
         if let Some(record) = tracking.remove(key) {
             info!(
-                "📉 跟踪结束: {} {} - 最高 {:.2}%",
-                record.event_name, record.team_name, record.max_profit_margin
+                "📉 跟踪结束: {} {} - 最高 {:.2}%, lived {}ms, {} updates",
+                record.event_name, record.team_name, record.max_profit_margin,
+                (Utc::now() - record.start_time).num_milliseconds(), record.update_count
             );
             self.storage.track_end(key);
             drop(tracking);
