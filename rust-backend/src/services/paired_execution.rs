@@ -63,20 +63,39 @@ pub async fn executable_polymarket_book(
     service: &ArbitrageService,
     market_slug: &str,
 ) -> Result<(PolymarketMarketBook, PolymarketBookSource), String> {
-    let (mut book, source) = match service
+    // 2026-10-14: the WebSocket book (connection live, 300-400ms old) showed
+    // a NO ask of 0.51/0.57 on a market whose origin book said 0.62 (and
+    // Kalshi agreed), so two phantom 7-9% edges filled Kalshi and expired
+    // unfilled on Polymarket. Execution therefore always takes one origin
+    // book; the WS book is only compared, to find out why it was wrong.
+    let ws_book = service
         .ws_manager
-        .fresh_polymarket_book(market_slug, POLYMARKET_WS_MAX_SILENCE)
-    {
-        Some(book) => (book, PolymarketBookSource::WebSocket),
-        None => {
-            let book = service
-                .polymarket_client
-                .get_market_book(market_slug)
-                .await
-                .map_err(|error| format!("{error:#}"))?;
-            (book, PolymarketBookSource::Rest)
+        .fresh_polymarket_book(market_slug, POLYMARKET_WS_MAX_SILENCE);
+    let mut book = service
+        .polymarket_client
+        .get_market_book(market_slug)
+        .await
+        .map_err(|error| format!("{error:#}"))?;
+    let source = PolymarketBookSource::Rest;
+    if let Some(ws) = ws_book {
+        let best = |levels: &[crate::clients::polymarket::PolymarketBookLevel], high: bool| {
+            levels
+                .iter()
+                .map(|l| l.price)
+                .fold(None, |acc: Option<f64>, p| match acc {
+                    Some(a) if (a >= p) == high => Some(a),
+                    _ => Some(p),
+                })
+        };
+        let (ws_bid, ws_offer) = (best(&ws.bids, true), best(&ws.offers, false));
+        let (rest_bid, rest_offer) = (best(&book.bids, true), best(&book.offers, false));
+        if ws_bid != rest_bid || ws_offer != rest_offer {
+            warn!(
+                "Polymarket WS book disagrees with origin book for {}: ws bid/offer {:?}/{:?} (transact {:?}) vs origin {:?}/{:?} (transact {:?})",
+                market_slug, ws_bid, ws_offer, ws.transact_time, rest_bid, rest_offer, book.transact_time
+            );
         }
-    };
+    }
     if book.state != "MARKET_STATE_OPEN" {
         return Err(format!(
             "Polymarket US market is not open for trading (state: {})",
