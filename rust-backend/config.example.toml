@@ -73,5 +73,9 @@ token_expire_hours = 24
 enabled = false
 webhook_url = "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN"
 
+# Optional second webhook for executed-trade results only. Leave empty to post
+# trades to the webhook above.
+trades_webhook_url = ""
+
 # Minimum profit margin (%) for an opportunity alert (one per market per minute)
 opportunity_min_margin = 1.0

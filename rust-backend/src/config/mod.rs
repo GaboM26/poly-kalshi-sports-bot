@@ -148,6 +148,10 @@ pub struct DiscordConfig {
     /// Incoming webhook URL (https://discord.com/api/webhooks/...)
     #[serde(default)]
     pub webhook_url: String,
+    /// Separate webhook for executed-trade results. Empty: trades go to
+    /// `webhook_url` with the opportunity alerts.
+    #[serde(default)]
+    pub trades_webhook_url: String,
     /// Minimum profit margin (%) for an opportunity alert
     #[serde(default = "default_opportunity_min_margin")]
     pub opportunity_min_margin: f64,

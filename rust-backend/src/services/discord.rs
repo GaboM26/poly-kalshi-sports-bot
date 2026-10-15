@@ -50,6 +50,20 @@ impl DiscordClient {
         self.config.enabled && is_discord_webhook(&self.config.webhook_url)
     }
 
+    /// Where trade results go: the dedicated trades webhook when one is set,
+    /// otherwise the shared webhook. A set but invalid trades URL disables
+    /// trade alerts rather than silently falling back to another channel.
+    fn trades_webhook_url(&self) -> Option<&str> {
+        if !self.config.enabled {
+            return None;
+        }
+        let url = match self.config.trades_webhook_url.as_str() {
+            "" => self.config.webhook_url.as_str(),
+            trades => trades,
+        };
+        is_discord_webhook(url).then_some(url)
+    }
+
     /// Alert on a newly tracked opportunity at or above the configured margin.
     pub fn notify_opportunity(&self, opp: &ArbitrageOpportunity) {
         if !self.is_enabled() || opp.profit_margin < self.config.opportunity_min_margin {
@@ -63,27 +77,27 @@ impl DiscordClient {
             }
             last.insert(key, Instant::now());
         }
-        self.spawn_send(format_opportunity(opp));
+        self.spawn_send(self.config.webhook_url.clone(), format_opportunity(opp));
     }
 
     /// Report the outcome of a paired execution. `halted` is true when
     /// auto-trading was disabled because of residual exposure.
     pub fn notify_trade(&self, record: &AutoTradeExecutionRecord, halted: bool) {
-        if self.is_enabled() {
-            self.spawn_send(format_trade(record, halted));
+        if let Some(url) = self.trades_webhook_url() {
+            self.spawn_send(url.to_string(), format_trade(record, halted));
         }
     }
 
-    fn spawn_send(&self, text: String) {
+    fn spawn_send(&self, url: String, text: String) {
         let this = self.clone();
         tokio::spawn(async move {
-            if let Err(e) = this.send(&text).await {
+            if let Err(e) = this.send(&url, &text).await {
                 error!("Discord notification failed: {:#}", e);
             }
         });
     }
 
-    async fn send(&self, text: &str) -> Result<()> {
+    async fn send(&self, url: &str, text: &str) -> Result<()> {
         // `allowed_mentions.parse = []` keeps market names from pinging anyone.
         let payload = json!({
             "content": text,
@@ -91,7 +105,7 @@ impl DiscordClient {
         });
         let response = self
             .http
-            .post(&self.config.webhook_url)
+            .post(url)
             .json(&payload)
             .send()
             .await?;
@@ -172,6 +186,16 @@ mod tests {
         DiscordClient::new(DiscordConfig {
             enabled,
             webhook_url: url.into(),
+            trades_webhook_url: String::new(),
+            opportunity_min_margin: 1.0,
+        })
+    }
+
+    fn client_with_trades(url: &str, trades_url: &str) -> DiscordClient {
+        DiscordClient::new(DiscordConfig {
+            enabled: true,
+            webhook_url: url.into(),
+            trades_webhook_url: trades_url.into(),
             opportunity_min_margin: 1.0,
         })
     }
@@ -184,5 +208,16 @@ mod tests {
         assert!(!client(true, "").is_enabled());
         assert!(!client(true, "https://evil.example/api/webhooks/1/abc").is_enabled());
         assert!(!client(true, "http://discord.com/api/webhooks/1/abc").is_enabled());
+    }
+
+    #[test]
+    fn trades_use_the_dedicated_webhook_when_set() {
+        let main = "https://discord.com/api/webhooks/1/main";
+        let trades = "https://discord.com/api/webhooks/2/trades";
+        assert_eq!(client_with_trades(main, "").trades_webhook_url(), Some(main));
+        assert_eq!(client_with_trades(main, trades).trades_webhook_url(), Some(trades));
+        // A bad trades URL must not fall back to the opportunity channel.
+        assert_eq!(client_with_trades(main, "https://evil.example/api/webhooks/2/x").trades_webhook_url(), None);
+        assert_eq!(client(false, main).trades_webhook_url(), None);
     }
 }
