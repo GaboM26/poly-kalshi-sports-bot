@@ -118,15 +118,6 @@ pub async fn executable_polymarket_book(
     Ok((book, source))
 }
 
-/// A conservative floor on Polymarket leg notional (contracts * price), kept
-/// as an extra safety margin. Kalshi has no equivalent floor, so this only
-/// bounds the Polymarket leg's size search. (For the record: the long-running
-/// `ORD_REJECT_REASON_EXCHANGE_OPTION` "rejections" were never about size -
-/// that is the reject-reason enum's zero value, serialized on every
-/// execution; those orders were IOCs expiring unfilled against a book that
-/// was up to 30s stale. See CLAUDE.md, 2026-10-01.)
-pub const POLYMARKET_MIN_NOTIONAL_USD: f64 = 1.0;
-
 #[derive(Debug)]
 pub struct RecoveryResult {
     pub filled_contracts: i32,
@@ -377,9 +368,6 @@ pub fn find_profitable_contract_size(
     for contracts in (min_contracts..=size_cap).rev() {
         let kalshi_worst_cents = worst_price(kalshi_levels, contracts)?;
         let poly_worst = worst_price(poly_levels, contracts)?;
-        if contracts as f64 * poly_worst < POLYMARKET_MIN_NOTIONAL_USD {
-            continue;
-        }
         // The IOC limits sit LIMIT_CUSHION_CENTS beyond the worst level the
         // sizing book needs, so a small move while the orders are in flight
         // still fills (an IOC fills at the best available price, never at
@@ -1428,21 +1416,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_size_below_polymarket_minimum_notional() {
-        // 1 contract at $0.22 is $0.22 notional, below our conservative
-        // $1 notional floor (POLYMARKET_MIN_NOTIONAL_USD).
-        let kalshi = vec![(63, 10)];
-        let poly = vec![(0.22, 10)];
-        assert!(find_profitable_contract_size(1, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly).is_none());
-    }
-
-    #[test]
-    fn accepts_size_at_or_above_polymarket_minimum_notional() {
-        let kalshi = vec![(40, 10)];
-        let poly = vec![(0.22, 10)];
-        // 5 contracts * $0.22 = $1.10, clears the $1 floor.
-        let result = find_profitable_contract_size(10, 5, 100.0, 0.0, Some(1.0), &kalshi, &poly).unwrap();
-        assert_eq!(result.contracts, 10);
+    fn sizes_a_polymarket_leg_worth_less_than_a_dollar() {
+        // There is no verified exchange notional floor; only the market's own
+        // minimumTradeQty applies. 5 contracts at $0.04 is $0.20 notional.
+        let kalshi = vec![(93, 300)];
+        let poly = vec![(0.04, 300)];
+        let result = find_profitable_contract_size(5, 5, 5.0, 0.0, Some(0.01), &kalshi, &poly).unwrap();
+        assert_eq!(result.contracts, 5);
     }
 
     #[test]
