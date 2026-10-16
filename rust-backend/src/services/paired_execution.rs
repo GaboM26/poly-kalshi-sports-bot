@@ -427,6 +427,44 @@ pub fn close_within_loss_bound(
     net_close_price + f64::EPSILON >= entry_price - max_loss_cents as f64 / 100.0
 }
 
+/// Lowest whole-cent limit for a bounded closing sell. The book's displayed
+/// worst level (`displayed_worst_cents`) is only where the book stood a moment
+/// ago; an IOC priced exactly there misses when the bid drops while the order
+/// is in flight (a live game moves faster than the round trip), which left a
+/// naked leg open. An IOC fills at the best available prices and never below
+/// its limit, so the limit may sit as low as the loss bound allows without
+/// widening the bound. The fee is the highest the closing fill could pay
+/// anywhere between the limit and the displayed level. `None` when even the
+/// displayed level is outside the bound.
+pub fn loosest_close_limit_cents(
+    entry_price: f64,
+    displayed_worst_cents: i32,
+    contracts: i32,
+    max_loss_cents: i32,
+    fee: impl Fn(f64) -> f64,
+) -> Option<i32> {
+    let within_bound = |limit_cents: i32| {
+        let max_fee = (limit_cents..=displayed_worst_cents.min(99))
+            .map(|cents| fee(cents as f64 / 100.0))
+            .fold(0.0_f64, f64::max);
+        close_within_loss_bound(
+            entry_price,
+            limit_cents as f64 / 100.0,
+            contracts,
+            max_fee,
+            max_loss_cents,
+        )
+    };
+    if displayed_worst_cents < 1 || !within_bound(displayed_worst_cents) {
+        return None;
+    }
+    let mut limit = displayed_worst_cents;
+    while limit > 1 && within_bound(limit - 1) {
+        limit -= 1;
+    }
+    Some(limit)
+}
+
 /// Polymarket sets `period` to "SUS" while a game is suspended; its book is
 /// frozen or unreliable then, so nothing may be auto-traded against it.
 pub fn is_game_suspended(period: Option<&str>) -> bool {
@@ -567,15 +605,23 @@ pub async fn neutralize_polymarket(
     let (book, _) = executable_polymarket_book(service, market_slug)
         .await
         .map_err(|error| format!("Unable to get a fresh Polymarket close book: {error}"))?;
-    let close_price = worst_price(&polymarket_sell_levels(&book, position_side), contracts)
+    let displayed_worst = worst_price(&polymarket_sell_levels(&book, position_side), contracts)
         .ok_or_else(|| "Fresh Polymarket close book lacks required executable depth".to_string())?;
-    let close_fee = polymarket_taker_fee(contracts as f64, close_price);
-    if !close_within_loss_bound(entry_price, close_price, contracts, close_fee, max_loss_cents) {
-        return Err(format!(
-            "Polymarket close price {:.4} (closing fee ${:.2}) exceeds configured {}¢ loss bound from actual entry {:.4}",
-            close_price, close_fee, max_loss_cents, entry_price
-        ));
-    }
+    let displayed_cents = (displayed_worst * 100.0).round() as i32;
+    let close_cents = loosest_close_limit_cents(
+        entry_price,
+        displayed_cents,
+        contracts,
+        max_loss_cents,
+        |price| polymarket_taker_fee(contracts as f64, price),
+    )
+    .ok_or_else(|| {
+        format!(
+            "Polymarket close price {:.4} exceeds configured {}¢ loss bound from actual entry {:.4}",
+            displayed_worst, max_loss_cents, entry_price
+        )
+    })?;
+    let close_price = close_cents as f64 / 100.0;
     let result = service
         .polymarket_client
         .submit_limit_order(market_slug, position_side, "sell", contracts, close_price)
@@ -603,16 +649,23 @@ pub async fn neutralize_kalshi(
         .kalshi_client
         .get_fresh_orderbook(ticker, EXECUTABLE_BOOK_MAX_AGE)
         .ok_or_else(|| "Fresh Kalshi websocket close depth is unavailable".to_string())?;
-    let close_price_cents = worst_price(&kalshi_sell_levels(&book, side), contracts)
+    let displayed_cents = worst_price(&kalshi_sell_levels(&book, side), contracts)
         .ok_or_else(|| "Fresh Kalshi close book lacks required executable depth".to_string())?;
-    let close_price = close_price_cents as f64 / 100.0;
-    let close_fee = kalshi_taker_fee(contracts as f64, close_price);
-    if !close_within_loss_bound(entry_price, close_price, contracts, close_fee, max_loss_cents) {
-        return Err(format!(
-            "Kalshi close price {:.4} (closing fee ${:.2}) exceeds configured {}¢ loss bound from actual entry {:.4}",
-            close_price, close_fee, max_loss_cents, entry_price
-        ));
-    }
+    let close_price_cents = loosest_close_limit_cents(
+        entry_price,
+        displayed_cents,
+        contracts,
+        max_loss_cents,
+        |price| kalshi_taker_fee(contracts as f64, price),
+    )
+    .ok_or_else(|| {
+        format!(
+            "Kalshi close price {:.2} exceeds configured {}¢ loss bound from actual entry {:.4}",
+            displayed_cents as f64 / 100.0,
+            max_loss_cents,
+            entry_price
+        )
+    })?;
     let result = service
         .kalshi_client
         .submit_order(ticker, "sell", side, contracts, close_price_cents)
@@ -1423,6 +1476,19 @@ mod tests {
         let poly = vec![(0.04, 300)];
         let result = find_profitable_contract_size(5, 5, 5.0, 0.0, Some(0.01), &kalshi, &poly).unwrap();
         assert_eq!(result.contracts, 5);
+    }
+
+    #[test]
+    fn close_limit_goes_as_low_as_the_loss_bound_allows() {
+        let no_fee = |_: f64| 0.0;
+        // Entry 0.69, 5c bound: the loosest sell limit is 0.64, not the
+        // displayed 0.69 that missed on 2026-10-16.
+        assert_eq!(loosest_close_limit_cents(0.69, 69, 5, 5, no_fee), Some(64));
+        // Displayed level already outside the bound: refuse.
+        assert_eq!(loosest_close_limit_cents(0.69, 60, 5, 5, no_fee), None);
+        // The fee at the limit tightens it: 0.64 less $0.10/5 = 0.62 < 0.64.
+        assert_eq!(loosest_close_limit_cents(0.69, 69, 5, 5, |_| 0.10), Some(66));
+        assert_eq!(loosest_close_limit_cents(0.69, 0, 5, 5, no_fee), None);
     }
 
     #[test]
