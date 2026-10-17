@@ -313,12 +313,6 @@ pub fn calculate_contracts_to_trade(
 /// How far beyond the worst sized level each leg's IOC limit is placed.
 pub const LIMIT_CUSHION_CENTS: i32 = 1;
 
-/// How long the Kalshi IOC waits after the Polymarket IOC is sent. Both legs
-/// still run concurrently, but on every live attempt (2026-10-13..16) Kalshi
-/// (33-170ms round trip) filled 100-140ms before the Polymarket order even
-/// reached its exchange (160-360ms one way), and that Polymarket quote was
-/// gone each time. This lands the Kalshi order about when Polymarket's does.
-pub const POLYMARKET_HEAD_START: Duration = Duration::from_millis(150);
 
 /// One sized trade: the contract count plus the worst-case prices and the
 /// fees of BOTH exchanges that determined it. A named struct (not a tuple)
@@ -941,12 +935,10 @@ pub async fn submit_paired_order(
         book_age_at_submit_ms
     );
     let poly_submitted_at_ms = Utc::now().timestamp_millis();
-    // Both IOC legs run concurrently (never Kalshi-after-Polymarket-fill),
-    // but Polymarket goes out first by POLYMARKET_HEAD_START so its order is
-    // not still in flight when our Kalshi fill prints. Any unequal fill is
-    // handled by the bounded recovery below, for either leg.
+    // Both IOC legs fire at the same moment, with no delay on either
+    // (user decision 2026-10-17). Any unequal fill is handled by the bounded
+    // recovery below, for either leg.
     let kalshi_leg = async {
-        tokio::time::sleep(POLYMARKET_HEAD_START).await;
         let started = Instant::now();
         let result = match service
             .kalshi_client
