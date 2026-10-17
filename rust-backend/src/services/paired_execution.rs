@@ -313,6 +313,13 @@ pub fn calculate_contracts_to_trade(
 /// How far beyond the worst sized level each leg's IOC limit is placed.
 pub const LIMIT_CUSHION_CENTS: i32 = 1;
 
+/// How long the Kalshi IOC waits after the Polymarket IOC is sent. Both legs
+/// still run concurrently, but on every live attempt (2026-10-13..16) Kalshi
+/// (33-170ms round trip) filled 100-140ms before the Polymarket order even
+/// reached its exchange (160-360ms one way), and that Polymarket quote was
+/// gone each time. This lands the Kalshi order about when Polymarket's does.
+pub const POLYMARKET_HEAD_START: Duration = Duration::from_millis(150);
+
 /// One sized trade: the contract count plus the worst-case prices and the
 /// fees of BOTH exchanges that determined it. A named struct (not a tuple)
 /// so the two fees - adjacent `f64`s - can never be swapped by a caller.
@@ -491,6 +498,22 @@ pub fn forward_hedge_within_loss_bound(
     cost_per_contract - 1.0 <= max_loss_cents as f64 / 100.0 + 1e-9
 }
 
+/// Whether completing a one-legged position (buy the missing leg at
+/// `hedge_price`) loses less than unwinding it (sell the filled leg at
+/// `close_price`). The filled leg's entry and fee are sunk in both, so the
+/// forward hedge locks in `hedge + hedge_fee/n - 1` and the unwind
+/// `-close + close_fee/n` per contract.
+pub fn forward_hedge_is_cheaper(
+    hedge_price: f64,
+    hedge_fee: f64,
+    close_price: f64,
+    close_fee: f64,
+    contracts: i32,
+) -> bool {
+    let n = contracts.max(1) as f64;
+    hedge_price + hedge_fee / n - 1.0 <= -close_price + close_fee / n + 1e-9
+}
+
 /// Recovery hedge: one leg filled and the other did not (fully), so buy the
 /// missing `shortfall` on the other venue at the best price its FRESH book
 /// offers now (plus the standard limit cushion), as long as the locked-in
@@ -502,15 +525,22 @@ pub async fn hedge_missing_leg(
     missing: &str,
     shortfall: i32,
     filled_entry_price: Option<f64>,
+    poly_book: Option<PolymarketMarketBook>,
 ) -> Result<RecoveryResult, String> {
     let entry = filled_entry_price.ok_or_else(|| {
         "Filled leg's actual entry price was not returned; bounded hedge cannot be verified"
             .to_string()
     })?;
     if missing == "polymarket" {
-        let (book, _) = executable_polymarket_book(service, &params.polymarket_market_slug)
-            .await
-            .map_err(|error| format!("Unable to get a fresh Polymarket hedge book: {error}"))?;
+        let book = match poly_book {
+            Some(book) => book,
+            None => {
+                executable_polymarket_book(service, &params.polymarket_market_slug)
+                    .await
+                    .map_err(|error| format!("Unable to get a fresh Polymarket hedge book: {error}"))?
+                    .0
+            }
+        };
         let worst = worst_price(
             &polymarket_buy_levels(&book, params.polymarket_position_side),
             shortfall,
@@ -597,14 +627,21 @@ pub async fn neutralize_polymarket(
     contracts: i32,
     entry_price: Option<f64>,
     max_loss_cents: i32,
+    poly_book: Option<PolymarketMarketBook>,
 ) -> Result<RecoveryResult, String> {
     let entry_price = entry_price.ok_or_else(|| {
         "Polymarket actual entry price was not returned; bounded close cannot be verified"
             .to_string()
     })?;
-    let (book, _) = executable_polymarket_book(service, market_slug)
-        .await
-        .map_err(|error| format!("Unable to get a fresh Polymarket close book: {error}"))?;
+    let book = match poly_book {
+        Some(book) => book,
+        None => {
+            executable_polymarket_book(service, market_slug)
+                .await
+                .map_err(|error| format!("Unable to get a fresh Polymarket close book: {error}"))?
+                .0
+        }
+    };
     let displayed_worst = worst_price(&polymarket_sell_levels(&book, position_side), contracts)
         .ok_or_else(|| "Fresh Polymarket close book lacks required executable depth".to_string())?;
     let displayed_cents = (displayed_worst * 100.0).round() as i32;
@@ -760,6 +797,64 @@ fn dry_run_record(params: &PairedOrderParams) -> AutoTradeExecutionRecord {
 /// then neutralize any unequal fill within the configured bound. Halts auto-trading and alerts via Discord if either exchange
 /// acknowledgement can't be durably recorded, or if a residual, un-neutralized
 /// exposure remains.
+/// Decide which bounded exit to try first for `excess` unhedged contracts on
+/// `filled_leg`: buying the missing leg (forward) or selling the filled one
+/// (unwind). Returns the Polymarket book it fetched so the first order does
+/// not fetch again. Falls back to forward-first when either price is unknown.
+async fn choose_recovery_order(
+    service: &ArbitrageService,
+    params: &PairedOrderParams,
+    filled_leg: &str,
+    excess: i32,
+    entry: Option<f64>,
+) -> (bool, Option<PolymarketMarketBook>) {
+    let poly_book = executable_polymarket_book(service, &params.polymarket_market_slug)
+        .await
+        .ok()
+        .map(|(book, _)| book);
+    let kalshi_book = service
+        .kalshi_client
+        .get_fresh_orderbook(&params.kalshi_market_id, EXECUTABLE_BOOK_MAX_AGE);
+    let (Some(poly), Some(kalshi)) = (poly_book.as_ref(), kalshi_book.as_ref()) else {
+        return (true, poly_book);
+    };
+    let cushion = LIMIT_CUSHION_CENTS as f64 / 100.0;
+    let n = excess as f64;
+    // (forward buy price, its fee), (unwind sell price, its fee)
+    let estimates = if filled_leg == "kalshi" {
+        let hedge = worst_price(&polymarket_buy_levels(poly, params.polymarket_position_side), excess)
+            .map(|p| (p + cushion).min(0.99));
+        let close = worst_price(&kalshi_sell_levels(kalshi, &params.kalshi_side), excess)
+            .map(|c| c as f64 / 100.0);
+        hedge.zip(close).map(|(h, c)| {
+            ((h, polymarket_taker_fee(n, h)), (c, kalshi_taker_fee(n, c)))
+        })
+    } else {
+        let hedge = worst_price(&kalshi_buy_levels(kalshi, &params.kalshi_side), excess)
+            .map(|c| ((c + LIMIT_CUSHION_CENTS).min(99)) as f64 / 100.0);
+        let close = worst_price(&polymarket_sell_levels(poly, params.polymarket_position_side), excess);
+        hedge.zip(close).map(|(h, c)| {
+            ((h, kalshi_taker_fee(n, h)), (c, polymarket_taker_fee(n, c)))
+        })
+    };
+    let Some(((hedge, hedge_fee), (close, close_fee))) = estimates else {
+        return (true, poly_book);
+    };
+    let forward_first = forward_hedge_is_cheaper(hedge, hedge_fee, close, close_fee, excess);
+    info!(
+        "Recovery order for {} unhedged {} contracts (entry {:?}): forward buy @ {:.2} (fee ${:.2}) vs unwind sell @ {:.2} (fee ${:.2}) -> {} first",
+        excess,
+        filled_leg,
+        entry,
+        hedge,
+        hedge_fee,
+        close,
+        close_fee,
+        if forward_first { "forward" } else { "unwind" }
+    );
+    (forward_first, poly_book)
+}
+
 pub async fn submit_paired_order(
     service: &ArbitrageService,
     discord_client: &Arc<DiscordClient>,
@@ -846,11 +941,12 @@ pub async fn submit_paired_order(
         book_age_at_submit_ms
     );
     let poly_submitted_at_ms = Utc::now().timestamp_millis();
-    // Both IOC legs go out at the same moment. Submitting Kalshi only after
-    // Polymarket filled gave faster traders 0.1-0.9s to take the Kalshi
-    // price first, which left the Polymarket leg unhedged. Any unequal fill
-    // is handled by the bounded neutralization below, for either leg.
+    // Both IOC legs run concurrently (never Kalshi-after-Polymarket-fill),
+    // but Polymarket goes out first by POLYMARKET_HEAD_START so its order is
+    // not still in flight when our Kalshi fill prints. Any unequal fill is
+    // handled by the bounded recovery below, for either leg.
     let kalshi_leg = async {
+        tokio::time::sleep(POLYMARKET_HEAD_START).await;
         let started = Instant::now();
         let result = match service
             .kalshi_client
@@ -1131,32 +1227,30 @@ pub async fn submit_paired_order(
             )
         };
         neutralization_leg = Some(leg.to_string());
-        // 1) Complete the pair by buying the missing leg at its next best
-        //    price (bounded); 2) unwind whatever is still unhedged.
         let (missing_leg, excess_entry) = if leg == "polymarket" {
             ("kalshi", poly_result.average_fill_price)
         } else {
             ("polymarket", kalshi_result.average_fill_price)
         };
-        let hedged = match hedge_missing_leg(service, &params, missing_leg, excess, excess_entry).await
-        {
-            Ok(hedge) => {
-                neutralization_order_id = hedge.order_id;
-                hedge.filled_contracts.clamp(0, excess)
+        // Try the cheaper of the two bounded exits first, priced from fresh
+        // books (one Polymarket fetch serves both estimates and the first
+        // order); the other is the fallback for whatever is left.
+        let (forward_first, first_poly_book) =
+            choose_recovery_order(service, &params, leg, excess, excess_entry).await;
+        // Only the first step may use that book; a fallback fetches fresh.
+        let mut poly_book = first_poly_book;
+        let steps: [bool; 2] = if forward_first { [true, false] } else { [false, true] };
+        let mut remaining = excess;
+        let mut errors: Vec<String> = Vec::new();
+        for forward in steps {
+            if remaining == 0 {
+                break;
             }
-            Err(reason) => {
-                warn!("Recovery hedge of the {missing_leg} leg not completed: {reason}");
-                neutralization_error = Some(reason);
-                0
-            }
-        };
-        neutralization_filled_contracts = hedged;
-        let remaining = excess - hedged;
-        if remaining == 0 {
-            neutralization_success = Some(true);
-            neutralization_error = None;
-        } else {
-            let recovery = if leg == "polymarket" {
+            let attempt = if forward {
+                hedge_missing_leg(service, &params, missing_leg, remaining, excess_entry, poly_book.take())
+                    .await
+                    .map_err(|reason| format!("Recovery hedge of the {missing_leg} leg not completed: {reason}"))
+            } else if leg == "polymarket" {
                 neutralize_polymarket(
                     service,
                     &params.polymarket_market_slug,
@@ -1164,6 +1258,7 @@ pub async fn submit_paired_order(
                     remaining,
                     poly_result.average_fill_price,
                     params.neutralization_max_loss_cents,
+                    poly_book.take(),
                 )
                 .await
             } else {
@@ -1177,28 +1272,32 @@ pub async fn submit_paired_order(
                 )
                 .await
             };
-            match recovery {
-                Ok(recovery) if recovery.filled_contracts >= remaining => {
-                    neutralization_success = Some(true);
-                    neutralization_order_id = recovery.order_id.or(neutralization_order_id);
-                    neutralization_filled_contracts += recovery.filled_contracts;
-                    neutralization_error = None;
-                }
-                Ok(recovery) => {
-                    neutralization_success = Some(false);
-                    neutralization_order_id = recovery.order_id.or(neutralization_order_id);
-                    neutralization_filled_contracts += recovery.filled_contracts;
-                    neutralization_error = recovery.error.or(neutralization_error);
-                    residual_leg = Some(leg.to_string());
-                    residual_contracts = remaining - recovery.filled_contracts;
+            poly_book = None;
+            match attempt {
+                Ok(result) => {
+                    let filled = result.filled_contracts.clamp(0, remaining);
+                    if result.order_id.is_some() {
+                        neutralization_order_id = result.order_id;
+                    }
+                    neutralization_filled_contracts += filled;
+                    remaining -= filled;
+                    if remaining > 0 {
+                        errors.extend(result.error);
+                    }
                 }
                 Err(reason) => {
-                    neutralization_success = Some(false);
-                    neutralization_error = Some(reason);
-                    residual_leg = Some(leg.to_string());
-                    residual_contracts = remaining;
+                    warn!("{reason}");
+                    errors.push(reason);
                 }
             }
+        }
+        if remaining == 0 {
+            neutralization_success = Some(true);
+        } else {
+            neutralization_success = Some(false);
+            neutralization_error = Some(errors.join("; "));
+            residual_leg = Some(leg.to_string());
+            residual_contracts = remaining;
         }
     }
 
@@ -1328,6 +1427,29 @@ pub async fn submit_paired_order(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recovery_prefers_the_cheaper_exit() {
+        // 2026-10-16 #2024: Kalshi YES filled, Polymarket missed. Forward
+        // buy at 0.35 vs selling the Kalshi YES back at 0.66: 0.35 + 0.66
+        // > 1, so unwinding loses less and goes first.
+        let n = 5;
+        assert!(!super::forward_hedge_is_cheaper(
+            0.35,
+            crate::core::fees::polymarket_taker_fee(n as f64, 0.35),
+            0.66,
+            crate::core::fees::kalshi_taker_fee(n as f64, 0.66),
+            n,
+        ));
+        // Missing leg still near its old price: completing the pair wins.
+        assert!(super::forward_hedge_is_cheaper(
+            0.25,
+            crate::core::fees::polymarket_taker_fee(n as f64, 0.25),
+            0.66,
+            crate::core::fees::kalshi_taker_fee(n as f64, 0.66),
+            n,
+        ));
+    }
+
     use super::*;
 
     fn native_book() -> PolymarketMarketBook {

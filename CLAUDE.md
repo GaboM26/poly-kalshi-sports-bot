@@ -134,10 +134,16 @@ may be more current than this summary. Read it too.
   leg fires; durably update each acknowledgement before submitting the second
   leg. On startup, halt if an unresolved `submitting` record exists until it
   is reconciled.
-- **Recovery hedge** (2026-10-13): on unequal fills, FIRST buy the missing leg
-  at its fresh book's next best price (+1c cushion) if the locked-in result
-  stays within `neutralization_max_loss_cents`; only what is still unhedged
-  goes to the unwind below. IOC limits are placed 1c beyond the worst sized
+- **Recovery hedge** (2026-10-13, ordering 2026-10-17): on unequal fills,
+  `choose_recovery_order` prices both bounded exits from fresh books (buy the
+  missing leg at next best +1c, or sell the filled leg) and tries the cheaper
+  one first (`forward_hedge_is_cheaper`), the other for what is left. Both
+  stay within `neutralization_max_loss_cents`.
+- **Leg timing** (2026-10-17, user decision): both IOCs run concurrently but
+  Polymarket is sent `POLYMARKET_HEAD_START` (150ms) before Kalshi, because
+  Kalshi used to fill before the Polymarket order reached its exchange. Never
+  wait for the Polymarket fill before sending Kalshi; a one-sided fill is an
+  accepted risk handled by recovery. IOC limits are placed 1c beyond the worst sized
   level (`LIMIT_CUSHION_CENTS`) and margin is sized at those limits. An EXPIRED
   Polymarket IOC whose order lookup 404s is confirmed from account activity
   before the fill is called unknown. Not yet exercised against live orders.
