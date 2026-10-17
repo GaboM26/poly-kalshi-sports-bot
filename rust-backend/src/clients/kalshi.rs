@@ -717,8 +717,6 @@ impl KalshiClient {
         *self.last_message_at.write() = Some(Instant::now());
 
         let (mut write, mut read) = ws_stream.split();
-        let mut pending_subscription_ids = HashMap::new();
-        let mut subscription_ids = HashMap::new();
 
         // Create channel for dynamic subscriptions/unsubscriptions
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<KalshiWsCommand>(100);
@@ -727,7 +725,6 @@ impl KalshiClient {
         // Subscribe to initial order books - 逐个订阅（与 Python 版本一致）
         let mut next_msg_id = 1;
         for ticker in tickers.iter() {
-            pending_subscription_ids.insert(next_msg_id, ticker.clone());
             let subscribe_msg = json!({
                 "id": next_msg_id,
                 "cmd": "subscribe",
@@ -766,11 +763,6 @@ impl KalshiClient {
                                     );
                                 }
                             }
-                            Self::record_subscription(
-                                &text,
-                                &mut pending_subscription_ids,
-                                &mut subscription_ids,
-                            );
                             match Self::parse_ws_message(&text, &orderbook_cache, current_epoch, &mut last_seq_by_sid) {
                                 Some(Ok(update)) => {
                                     if price_tx.send(update).await.is_err() {
@@ -820,7 +812,6 @@ impl KalshiClient {
                         KalshiWsCommand::Subscribe(new_tickers) => {
                             info!("🔌 [Kalshi] Processing hot subscription for {} new markets", new_tickers.len());
                             for ticker in new_tickers.iter() {
-                                pending_subscription_ids.insert(next_msg_id, ticker.clone());
                                 let subscribe_msg = json!({
                                     "id": next_msg_id,
                                     "cmd": "subscribe",
@@ -840,41 +831,13 @@ impl KalshiClient {
                         KalshiWsCommand::Unsubscribe(tickers_to_unsub) => {
                             let ticker_count = tickers_to_unsub.len();
                             info!("🔌 [Kalshi] Processing unsubscribe for {} markets", ticker_count);
-                            let subscription_ids_to_remove: Vec<u64> = tickers_to_unsub
-                                .iter()
-                                .filter_map(|ticker| {
-                                    let sid = subscription_ids.remove(ticker);
-                                    if sid.is_none() {
-                                        warn!("Kalshi subscription for {} is not active", ticker);
-                                    }
-                                    sid
-                                })
-                                .collect();
-                            // All tickers share one sid on the live feed, so
-                            // unsubscribing it for an ended market would drop
-                            // every other market's updates and freeze their
-                            // books while the connection stays alive. Only
-                            // unsubscribe a sid no remaining ticker uses.
-                            let mut subscription_ids_to_remove = subscription_ids_to_remove;
-                            subscription_ids_to_remove
-                                .retain(|sid| !subscription_ids.values().any(|live| live == sid));
-                            subscription_ids_to_remove.sort_unstable();
-                            subscription_ids_to_remove.dedup();
-
-                            if !subscription_ids_to_remove.is_empty() {
-                                let unsubscribe_msg = json!({
-                                    "id": next_msg_id,
-                                    "cmd": "unsubscribe",
-                                    "params": {
-                                        "sids": subscription_ids_to_remove
-                                    }
-                                });
-                                next_msg_id += 1;
-
-                                if let Err(e) = write.send(Message::Text(unsubscribe_msg.to_string())).await {
-                                    error!("❌ [Kalshi] Unsubscribe send failed: {:#}", e);
-                                }
-                            }
+                            // Every ticker on the live feed shares one sid
+                            // (only the first subscribe is acked `subscribed`;
+                            // the rest are `ok` on sid 1), so a sid unsubscribe
+                            // for an ended market froze every other book while
+                            // the connection stayed alive. An ended market is
+                            // closed and sends nothing, so dropping its cached
+                            // book is enough; no unsubscribe is sent.
                             for ticker in tickers_to_unsub {
                                 orderbook_cache.write().remove(&ticker);
                             }
@@ -892,35 +855,6 @@ impl KalshiClient {
     }
 
     /// Associate Kalshi's server subscription ID with the market that initiated it.
-    fn record_subscription(
-        text: &str,
-        pending_subscription_ids: &mut HashMap<u64, String>,
-        subscription_ids: &mut HashMap<String, u64>,
-    ) {
-        let Ok(data) = serde_json::from_str::<Value>(text) else {
-            return;
-        };
-        if data["type"].as_str() != Some("subscribed") {
-            return;
-        }
-
-        let (Some(request_id), Some(subscription_id)) =
-            (data["id"].as_u64(), data["msg"]["sid"].as_u64())
-        else {
-            warn!("Kalshi returned an invalid subscription confirmation");
-            return;
-        };
-
-        if let Some(ticker) = pending_subscription_ids.remove(&request_id) {
-            subscription_ids.insert(ticker, subscription_id);
-        } else {
-            warn!(
-                "Kalshi returned an unexpected subscription confirmation: {}",
-                request_id
-            );
-        }
-    }
-
     /// Parse WebSocket message. `epoch` is the current connection's epoch
     /// (see `KalshiClient::connection_epoch`) and is stamped onto any book
     /// this message writes, so `get_fresh_orderbook` can tell it was built

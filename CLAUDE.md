@@ -220,10 +220,12 @@ may be more current than this summary. Read it too.
    untrust the book and force a reconnect again (code path is in
    `clients/kalshi.rs`; it previously caused a reconnect every ~3s, so do not
    re-enable blind).
-2. **Suspected, unverified:** Kalshi unsubscribe sends the `sid` stored per
-   ticker, but all tickers share `sid=1`, so unsubscribing one ended market may
-   unsubscribe everything on the connection. Check `market_lifecycle`
-   removals against the next WS stats line before trusting it.
+2. **Fixed 2026-10-17:** Kalshi acks only the first subscribe as `subscribed`;
+   every later one is `ok` on the shared `sid=1`, so the per-ticker sid map held
+   one ticker and the "shared sid" guard unsubscribed sid 1 when that ticker
+   ended (2026-10-16 21:10:59 UTC, 194 markets), freezing every Kalshi WS book
+   while the connection looked alive. Ended markets now only drop their cached
+   book; no WS unsubscribe is sent. Never reintroduce a sid unsubscribe.
 3. **Not yet verified live:** the `SELL_SHORT` price conversion (none sent yet),
    WS-driven detection end-to-end, API latency during a market scan after the
    lock fix, and Kalshi `market_exposure_dollars` sign on a held NO position.
