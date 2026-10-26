@@ -360,6 +360,14 @@ mismatch as MLB. The matcher refuses any same-name same-date ambiguity
   ~100ms. The veto is correct; do not loosen it to get fills.
 - Kalshi WS book sizes are fractional: keep exact hundredths and floor only
   in the whole-contract view (`OrderBook::refresh_whole_levels`).
+- 2026-10-26 crypto 15m (BTC/ETH/SOL, detection-only with DRY RUN sizing):
+  30 opportunities reached sizing in ~45 min, 0 would have traded (27 WS-vs-
+  REST vetoes). Kalshi's feed is bursty: `Kalshi WS lag` log shows p50 ~40ms
+  real (local clock ~95ms ahead), p95 0.2-1s, also on a dedicated BTC-only
+  connection (`probe_kalshi_ws_lag`). Taker-taker cross-arb only sees edges
+  when one book lags; a maker-plus-hedge design was proposed to the user.
+- Kalshi crypto books tick in 0.1c: bids floor to the cent (`book_bid_cents`),
+  REST asks round up. Never send sub-cent prices without reworking orders.
 
 - `ORD_REJECT_REASON_EXCHANGE_OPTION` was chased through five wrong theories
   (minimumTradeQty, float quantity, SDK/IPC, zero slippage buffer,
