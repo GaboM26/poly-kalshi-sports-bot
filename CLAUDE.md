@@ -284,10 +284,16 @@ the user of this when planning work. Notes for the design:
   always-on setup notes in the conversation of 2026-10-11 (tmux + Task
   Scheduler) before building this.
 
-## Next up: extend market coverage beyond NBA + tennis
+## Market coverage beyond NBA + tennis
 
-Not started. Keep it read-only (detection/display) until settlement
-equivalence is verified; auto-trade safeguards do not check it.
+NHL and MLB full-game moneylines are detected and displayed since
+2026-10-26 (`core/team_codes.rs`, `parse_team_game_event`,
+`parse_team_game_market`). They are DETECTION ONLY:
+`kalshi::auto_trade_enabled_for` keeps them out of
+`check_auto_trade_eligibility`. Kalshi NHL rules also settle at a fair price
+if a game does not start within 48h, so NHL has the same postponement
+mismatch as MLB. The matcher refuses any same-name same-date ambiguity
+(doubleheaders). Notes kept from the research:
 
 - Polymarket US `/v1/sports` lists nba, cbb, nhl, epl, ucl, mls, ufc, uefa,
   mlb, f1, boxing, wta/atp, poly-open. Per-sport series ids come from that
@@ -346,6 +352,14 @@ equivalence is verified; auto-trade safeguards do not check it.
   across services if changed.
 
 ## Lessons from past debugging (so they are not repeated)
+
+- 2026-10-26: in-play tennis "edges" (149 detections in ~2h, most living
+  under 35ms) were latency, not arbitrage. A probe showed Kalshi WS and REST
+  books agree (2 one-cent diffs in 1500 samples); the 21 "WS disagrees with
+  REST" vetoes were the whole ladder repricing 4-5c after a point within
+  ~100ms. The veto is correct; do not loosen it to get fills.
+- Kalshi WS book sizes are fractional: keep exact hundredths and floor only
+  in the whole-contract view (`OrderBook::refresh_whole_levels`).
 
 - `ORD_REJECT_REASON_EXCHANGE_OPTION` was chased through five wrong theories
   (minimumTradeQty, float quantity, SDK/IPC, zero slippage buffer,
