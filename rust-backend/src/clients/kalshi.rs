@@ -838,6 +838,11 @@ impl KalshiClient {
         let mut last_seq_by_sid: HashMap<u64, u64> = HashMap::new();
         let mut gaps_logged = 0u32;
         let mut headers_logged = 0u32;
+        // Observe-only feed lag: exchange `ts_ms` on deltas vs local receipt,
+        // and how full the price channel is (a full channel blocks this loop
+        // and every cached book falls behind).
+        let mut lag_window_start = Instant::now();
+        let mut lag_samples: Vec<i64> = Vec::new();
 
         // Process messages with dynamic subscription/unsubscription support
         loop {
@@ -847,6 +852,30 @@ impl KalshiClient {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
                             *self.last_message_at.write() = Some(Instant::now());
+                            if let Some(ts_ms) = text
+                                .find("\"ts_ms\":")
+                                .and_then(|at| text[at + 8..].split(|c: char| !c.is_ascii_digit()).next())
+                                .and_then(|digits| digits.parse::<i64>().ok())
+                            {
+                                lag_samples.push(Utc::now().timestamp_millis() - ts_ms);
+                            }
+                            if lag_window_start.elapsed() >= Duration::from_secs(30) {
+                                if !lag_samples.is_empty() {
+                                    lag_samples.sort_unstable();
+                                    let pick = |q: f64| lag_samples[((lag_samples.len() - 1) as f64 * q) as usize];
+                                    info!(
+                                        "Kalshi WS lag over 30s: {} deltas, p50 {}ms, p95 {}ms, max {}ms; price channel free {}/{}",
+                                        lag_samples.len(),
+                                        pick(0.5),
+                                        pick(0.95),
+                                        pick(1.0),
+                                        price_tx.capacity(),
+                                        price_tx.max_capacity()
+                                    );
+                                }
+                                lag_samples.clear();
+                                lag_window_start = Instant::now();
+                            }
                             if headers_logged < 25 {
                                 headers_logged += 1;
                                 if let Ok(v) = serde_json::from_str::<Value>(&text) {
