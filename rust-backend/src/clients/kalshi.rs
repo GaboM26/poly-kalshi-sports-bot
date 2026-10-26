@@ -46,7 +46,30 @@ const SUPPORTED_KALSHI_SERIES: &[(&str, &str)] = &[
     ("KXITFMATCH", "TENNIS"),
     ("KXITFWMATCH", "TENNIS"),
     ("KXATPCHALLENGERMATCH", "TENNIS"),
+    // NHL and MLB are detection-only: `auto_trade_enabled_for` excludes them
+    // until settlement equivalence is decided per sport.
+    ("KXNHLGAME", "NHL"),
+    ("KXMLBGAME", "MLB"),
 ];
+
+/// Series auto-trade may execute. NHL and MLB are detected and displayed
+/// only (Kalshi settles a game not played within 48h at a fair price,
+/// Polymarket US waits longer), so their opportunities never trade.
+const AUTO_TRADE_KALSHI_SERIES: &[&str] = &[
+    "KXNBAGAME",
+    "KXATPMATCH",
+    "KXWTAMATCH",
+    "KXITFMATCH",
+    "KXITFWMATCH",
+    "KXATPCHALLENGERMATCH",
+];
+
+/// Whether auto-trade may execute on this Kalshi market ticker.
+pub fn auto_trade_enabled_for(kalshi_ticker: &str) -> bool {
+    kalshi_ticker
+        .split_once('-')
+        .is_some_and(|(series, _)| AUTO_TRADE_KALSHI_SERIES.contains(&series))
+}
 
 /// Human-readable sport for a Kalshi market ticker, from its series prefix
 /// (e.g. `KXATPCHALLENGERMATCH-...` -> "ATP Challenger"). Unknown series
@@ -544,6 +567,7 @@ impl KalshiClient {
                 let event = match category {
                     "NBA" => parse_nba_event(event_data),
                     "TENNIS" => parse_tennis_event(event_data),
+                    "NHL" | "MLB" => parse_team_game_event(event_data, category),
                     _ => None,
                 };
 
@@ -1404,6 +1428,63 @@ fn parse_tennis_event(event_data: &Value) -> Option<KalshiEvent> {
     Some(event)
 }
 
+/// NHL/MLB game: exactly two markets, one per team, the team being the
+/// market ticker suffix (event tickers cannot be split: NHL has 2-letter
+/// codes and MLB tickers embed the start time). The game date comes from the
+/// event ticker (US local date), matching the Polymarket slug date.
+fn parse_team_game_event(event_data: &Value, category: &str) -> Option<KalshiEvent> {
+    let event_ticker = event_data["event_ticker"].as_str()?.to_string();
+    let market_data = event_data["markets"].as_array()?;
+    if market_data.len() != 2 {
+        return None;
+    }
+
+    let mut parsed_markets = Vec::with_capacity(2);
+    for market in market_data {
+        let ticker = market["ticker"].as_str()?.to_string();
+        let (prefix, suffix) = ticker.rsplit_once('-')?;
+        if prefix != event_ticker {
+            return None;
+        }
+        let team = crate::core::canonical_team_code(category, suffix)?;
+        parsed_markets.push((team, ticker, market));
+    }
+
+    let event_name =
+        crate::core::team_game_event_name(category, &parsed_markets[0].0, &parsed_markets[1].0)?;
+    let start_time = extract_game_date_from_ticker(&event_ticker);
+    let mut teams = [parsed_markets[0].0.clone(), parsed_markets[1].0.clone()];
+    teams.sort();
+    let mut event = KalshiEvent {
+        event_id: event_ticker.clone(),
+        name: event_name.clone(),
+        team_a: teams[0].clone(),
+        team_b: teams[1].clone(),
+        start_time,
+        category: category.to_string(),
+        markets: Vec::with_capacity(2),
+    };
+
+    for (team, ticker, market) in parsed_markets {
+        let opponent = if team == teams[0] {
+            teams[1].clone()
+        } else {
+            teams[0].clone()
+        };
+        event.markets.push(build_kalshi_market(
+            market,
+            ticker,
+            event_ticker.clone(),
+            event_name.clone(),
+            team,
+            opponent,
+            start_time,
+        )?);
+    }
+
+    Some(event)
+}
+
 fn build_kalshi_market(
     market_data: &Value,
     ticker: String,
@@ -1695,6 +1776,53 @@ mod tests {
         let book = OrderBook::from_exact(vec![(40, 999), (41, 50)], vec![]);
         // 9.99 floors to 9 whole contracts; 0.50 is not a tradable level.
         assert_eq!(book.yes, vec![(40, 9)]);
+    }
+
+    #[test]
+    fn parses_nhl_and_mlb_games_from_market_ticker_suffixes() {
+        let nhl = json!({
+            "event_ticker": "KXNHLGAME-26OCT27NYINSH",
+            "markets": [
+                {"ticker": "KXNHLGAME-26OCT27NYINSH-NYI", "yes_ask_dollars": "0.5500"},
+                {"ticker": "KXNHLGAME-26OCT27NYINSH-NSH", "yes_ask_dollars": "0.4600"}
+            ]
+        });
+        let event = parse_team_game_event(&nhl, "NHL").unwrap();
+        assert_eq!(event.name, "NHL NSH VS NYI");
+        assert_eq!(event.category, "NHL");
+        assert_eq!(event.start_time.unwrap().date_naive().to_string(), "2026-10-27");
+        assert_eq!(event.markets[0].team_name, "NYI");
+        assert_eq!(event.markets[0].opponent_name, "NSH");
+
+        let mlb = json!({
+            "event_ticker": "KXMLBGAME-26OCT262000MILTB",
+            "markets": [
+                {"ticker": "KXMLBGAME-26OCT262000MILTB-MIL", "yes_ask_dollars": "0.4800"},
+                {"ticker": "KXMLBGAME-26OCT262000MILTB-TB", "yes_ask_dollars": "0.5300"}
+            ]
+        });
+        let event = parse_team_game_event(&mlb, "MLB").unwrap();
+        assert_eq!(event.name, "MLB MIL VS TB");
+        assert_eq!(event.start_time.unwrap().date_naive().to_string(), "2026-10-26");
+
+        let three = json!({
+            "event_ticker": "KXNHLGAME-26OCT27NYINSH",
+            "markets": [
+                {"ticker": "KXNHLGAME-26OCT27NYINSH-NYI", "yes_ask_dollars": "0.5"},
+                {"ticker": "KXNHLGAME-26OCT27NYINSH-NSH", "yes_ask_dollars": "0.5"},
+                {"ticker": "KXNHLGAME-26OCT27NYINSH-TIE", "yes_ask_dollars": "0.1"}
+            ]
+        });
+        assert!(parse_team_game_event(&three, "NHL").is_none());
+    }
+
+    #[test]
+    fn nhl_and_mlb_are_detection_only() {
+        assert!(auto_trade_enabled_for("KXNBAGAME-26OCT11LALMEM-LAL"));
+        assert!(auto_trade_enabled_for("KXITFWMATCH-26OCT26GLOARL-GLO"));
+        assert!(!auto_trade_enabled_for("KXNHLGAME-26OCT27NYINSH-NYI"));
+        assert!(!auto_trade_enabled_for("KXMLBGAME-26OCT262000MILTB-TB"));
+        assert!(!auto_trade_enabled_for("garbage"));
     }
 
     #[test]

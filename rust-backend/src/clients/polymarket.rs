@@ -25,6 +25,14 @@ use crate::models::{PolymarketEvent, PolymarketMarket, PolymarketPositionSide};
 // Series IDs are resolved from /v1/sports at runtime so they are not baked in.
 const TENNIS_SPORT_CODES: &[&str] = &["atp", "wta", "itfm", "itfw", "itfme", "itfwo", "atpcq"];
 
+// (sport code, category, the only accepted `sportsMarketType`). NHL full-game
+// winner includes OT/SO like Kalshi; regulation-winner and partial-game MLB
+// markets settle differently and are never fetched.
+const TEAM_GAME_SPORTS: &[(&str, &str, &str)] = &[
+    ("nhl", "NHL", "hockey_team_full_game_winner"),
+    ("mlb", "MLB", "baseball_team_full_game_winner"),
+];
+
 const RATE_LIMIT_MAX_RETRIES: u32 = 3;
 const BALANCE_CACHE_TTL: Duration = Duration::from_secs(30);
 const POSITIONS_CACHE_TTL: Duration = Duration::from_secs(30);
@@ -327,11 +335,41 @@ impl PolymarketClient {
         self.append_series_events_and_markets(
             &nba_series,
             "NBA",
+            None,
             &mut fetched_series,
             &mut events,
             &mut markets,
         )
         .await?;
+
+        for &(sport_code_name, category, market_type) in TEAM_GAME_SPORTS {
+            let Some(series_id) = sports
+                .iter()
+                .find(|sport| sport_has_code(sport, sport_code_name))
+                .and_then(sport_series_id)
+            else {
+                warn!(
+                    "Polymarket US sport code {} is unavailable; skipping it",
+                    sport_code_name
+                );
+                continue;
+            };
+            // One sport failing (the gateway times out regularly) must not
+            // drop NBA and tennis from the scan.
+            if let Err(error) = self
+                .append_series_events_and_markets(
+                    &series_id,
+                    category,
+                    Some(market_type),
+                    &mut fetched_series,
+                    &mut events,
+                    &mut markets,
+                )
+                .await
+            {
+                warn!("Polymarket US {} events unavailable: {:#}", category, error);
+            }
+        }
 
         for sport_code_name in TENNIS_SPORT_CODES {
             let Some(sport) = sports
@@ -356,6 +394,7 @@ impl PolymarketClient {
             self.append_series_events_and_markets(
                 &series_id,
                 "TENNIS",
+                None,
                 &mut fetched_series,
                 &mut events,
                 &mut markets,
@@ -388,7 +427,7 @@ impl PolymarketClient {
             .ok_or_else(|| anyhow::anyhow!("NBA league not found"))?;
         let nba_series =
             sport_series_id(nba_sport).ok_or_else(|| anyhow::anyhow!("NBA series_id not found"))?;
-        self.get_series_events_and_markets(&nba_series, "NBA").await
+        self.get_series_events_and_markets(&nba_series, "NBA", None).await
     }
 
     async fn get_sports(&self) -> Result<Vec<Value>> {
@@ -411,6 +450,7 @@ impl PolymarketClient {
         &self,
         series_id: &str,
         category: &str,
+        market_type: Option<&str>,
         fetched_series: &mut HashSet<String>,
         events: &mut Vec<PolymarketEvent>,
         markets: &mut Vec<PolymarketMarket>,
@@ -420,7 +460,7 @@ impl PolymarketClient {
         }
 
         let (mut series_events, mut series_markets) = self
-            .get_series_events_and_markets(series_id, category)
+            .get_series_events_and_markets(series_id, category, market_type)
             .await?;
         events.append(&mut series_events);
         markets.append(&mut series_markets);
@@ -431,11 +471,17 @@ impl PolymarketClient {
         &self,
         series_id: &str,
         category: &str,
+        market_type: Option<&str>,
     ) -> Result<(Vec<PolymarketEvent>, Vec<PolymarketMarket>)> {
-        let events_url = format!(
+        let mut events_url = format!(
             "{}/v1/events?seriesId={}&active=true&closed=false&limit=100",
             self.config.base_url, series_id
         );
+        // Unfiltered NHL is ~22 MB per request; fetch only the moneyline.
+        if let Some(market_type) = market_type {
+            events_url.push_str("&sportsMarketTypes=");
+            events_url.push_str(market_type);
+        }
         let response = self.http.get(&events_url).send().await?;
         if !response.status().is_success() {
             anyhow::bail!(
@@ -468,6 +514,9 @@ impl PolymarketClient {
                 let parsed = match category {
                     "NBA" => parse_nba_market(event_title, event_date, market_data),
                     "TENNIS" => parse_tennis_match_winner_market(event_date, market_data),
+                    "NHL" | "MLB" => market_type.and_then(|market_type| {
+                        parse_team_game_market(category, market_type, event_date, market_data)
+                    }),
                     _ => None,
                 };
                 if let Some((mut event, mut market)) = parsed {
@@ -1311,6 +1360,63 @@ fn parse_tennis_match_winner_market(
     )
 }
 
+/// NHL/MLB full-game moneyline. Teams come from
+/// `marketSides[].team.abbreviation` (mapped to Kalshi codes); each side's
+/// own `long` flag gives its native position, never the outcome order.
+fn parse_team_game_market(
+    category: &str,
+    market_type: &str,
+    event_date: Option<DateTime<Utc>>,
+    market_data: &Value,
+) -> Option<(PolymarketEvent, PolymarketMarket)> {
+    if market_data["sportsMarketType"].as_str() != Some(market_type)
+        || market_data["sportsMarketTypeV2"].as_str() != Some("SPORTS_MARKET_TYPE_MONEYLINE")
+    {
+        return None;
+    }
+
+    let market_sides = market_data["marketSides"].as_array()?;
+    if market_sides.len() != 2 {
+        return None;
+    }
+    let mut parsed = Vec::with_capacity(2);
+    for market_side in market_sides {
+        let team = crate::core::canonical_team_code(
+            category,
+            market_side["team"]["abbreviation"].as_str()?,
+        )?;
+        let quote = market_side["quote"]["value"]
+            .as_str()
+            .and_then(|price| price.parse::<f64>().ok())
+            .or_else(|| market_side["quote"]["value"].as_f64())?;
+        if !quote.is_finite() || !(0.01..=0.99).contains(&quote) {
+            return None;
+        }
+        let position_side = if market_side["long"].as_bool()? {
+            PolymarketPositionSide::Long
+        } else {
+            PolymarketPositionSide::Short
+        };
+        parsed.push((team, MarketSide { quote, position_side }));
+    }
+    // Exactly one LONG and one SHORT side, for two different teams.
+    if parsed[0].0 == parsed[1].0 || parsed[0].1.position_side == parsed[1].1.position_side {
+        return None;
+    }
+
+    let event_name = crate::core::team_game_event_name(category, &parsed[0].0, &parsed[1].0)?;
+    build_competitor_market(
+        market_data,
+        event_name,
+        parsed[0].0.clone(),
+        parsed[1].0.clone(),
+        parsed[0].1,
+        parsed[1].1,
+        event_date,
+        category,
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 struct MarketSide {
     quote: f64,
@@ -1660,6 +1766,45 @@ mod tests {
             {"description": "Juan Manuel Cerundolo", "long": false, "quote": {"value": "0.46"}}
         ]);
         assert!(parse_tennis_match_winner_market(None, &ambiguous).is_none());
+    }
+
+    #[test]
+    fn parses_nhl_moneyline_from_team_abbreviations() {
+        let market = json!({
+            "id": "1669874",
+            "slug": "aec-nhl-mon-nas-2026-10-27",
+            "sportsMarketType": "hockey_team_full_game_winner",
+            "sportsMarketTypeV2": "SPORTS_MARKET_TYPE_MONEYLINE",
+            "outcomes": "[\"Canadiens\",\"Predators\"]",
+            "marketSides": [
+                {"description": "Canadiens", "long": true, "quote": {"value": "0.4500"}, "team": {"abbreviation": "mon"}},
+                {"description": "Predators", "long": false, "quote": {"value": "0.56"}, "team": {"abbreviation": "nas"}}
+            ]
+        });
+        let (event, parsed) = parse_team_game_market(
+            "NHL",
+            "hockey_team_full_game_winner",
+            None,
+            &market,
+        )
+        .unwrap();
+        assert_eq!(event.name, "NHL MTL VS NSH");
+        assert_eq!(event.category, "NHL");
+        assert_eq!(parsed.team_a, "MTL");
+        assert_eq!(parsed.team_a_position, PolymarketPositionSide::Long);
+        assert_eq!(parsed.team_b, "NSH");
+        assert_eq!(parsed.team_b_position, PolymarketPositionSide::Short);
+        assert!((parsed.price_b - 0.56).abs() < 1e-9);
+
+        // Regulation-winner (no OT/SO) settles differently: never accepted.
+        let mut regulation = market.clone();
+        regulation["sportsMarketType"] = json!("hockey_team_regulation_winner");
+        assert!(parse_team_game_market("NHL", "hockey_team_full_game_winner", None, &regulation).is_none());
+
+        // Two LONG sides would make the position ambiguous.
+        let mut both_long = market.clone();
+        both_long["marketSides"][1]["long"] = json!(true);
+        assert!(parse_team_game_market("NHL", "hockey_team_full_game_winner", None, &both_long).is_none());
     }
 
     #[test]

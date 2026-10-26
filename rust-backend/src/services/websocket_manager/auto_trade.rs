@@ -147,14 +147,19 @@ impl WebSocketManager {
             );
         }
 
-        let market_idx = self
+        let market = self
             .matched_markets
             .read()
             .iter()
-            .position(|market| market.market_key() == key);
-        let Some(market_idx) = market_idx else {
+            .enumerate()
+            .find(|(_, market)| market.market_key() == key)
+            .map(|(idx, market)| (idx, market.kalshi_market.market_id.clone()));
+        let Some((market_idx, kalshi_ticker)) = market else {
             return (false, "Matched market is no longer available".to_string());
         };
+        if !crate::clients::kalshi::auto_trade_enabled_for(&kalshi_ticker) {
+            return (false, "Sport is detection-only (not enabled for auto-trade)".to_string());
+        }
         if !self.is_market_ready(market_idx) {
             return (
                 false,

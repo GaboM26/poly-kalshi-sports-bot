@@ -41,6 +41,15 @@ impl SubscriptionInfo {
     }
 }
 
+fn event_date_key(event: &KalshiEvent) -> String {
+    format!(
+        "{}:{}:{:?}",
+        event.category,
+        event.name.to_uppercase(),
+        event.start_time.map(|t| t.date_naive())
+    )
+}
+
 impl EventMatcher {
     /// Create a new event matcher
     pub fn new(time_tolerance_hours: i64) -> Self {
@@ -102,10 +111,27 @@ impl EventMatcher {
             poly_index.entry(key).or_default().push(event);
         }
 
+        // Two games between the same teams on one date (an MLB doubleheader)
+        // share a name and date on both exchanges, so nothing tells which
+        // Polymarket game is which Kalshi game. Refuse instead of guessing.
+        let mut kalshi_key_counts: HashMap<String, usize> = HashMap::new();
+        for k_event in kalshi_events {
+            *kalshi_key_counts.entry(event_date_key(k_event)).or_default() += 1;
+        }
+
         // Find match for each Kalshi event
         for k_event in kalshi_events {
             let k_name = k_event.name.to_uppercase();
             let k_date = k_event.start_time.map(|t| t.date_naive());
+            if kalshi_key_counts.get(&event_date_key(k_event)).copied().unwrap_or(0) > 1 {
+                warn!(
+                    "   ⚠️ Ambiguous: {} Kalshi events named {} on {:?}; not matching",
+                    kalshi_key_counts[&event_date_key(k_event)],
+                    k_event.name,
+                    k_date
+                );
+                continue;
+            }
 
             // Also check reversed name (e.g., MEM-LAL vs LAL-MEM)
             let k_name_reversed = {
@@ -119,6 +145,7 @@ impl EventMatcher {
 
             let mut best_match: Option<&PolymarketEvent> = None;
             let mut best_confidence = 0.0_f64;
+            let mut same_date_candidates = 0;
 
             // Look for exact match or reversed match
             for (name_to_check, is_reversed) in
@@ -151,6 +178,7 @@ impl EventMatcher {
                                 );
                                 continue;
                             }
+                            same_date_candidates += 1;
                             if is_reversed {
                                 0.95
                             } else {
@@ -175,6 +203,14 @@ impl EventMatcher {
                         best_match = Some(p_event);
                     }
                 }
+            }
+
+            if same_date_candidates > 1 {
+                warn!(
+                    "   ⚠️ Ambiguous: {} Polymarket events match {} on {:?}; not matching",
+                    same_date_candidates, k_event.name, k_date
+                );
+                continue;
             }
 
             if let Some(p_event) = best_match {
@@ -356,5 +392,52 @@ mod tests {
             crate::models::PolymarketPositionSide::Long
         );
         assert_eq!(market.us_execution_for_competitor("BOS"), None);
+    }
+
+    fn mlb_events(kalshi_games: usize, poly_games: usize) -> (Vec<KalshiEvent>, Vec<PolymarketEvent>) {
+        let date = chrono::DateTime::parse_from_rfc3339("2026-10-26T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let kalshi = (0..kalshi_games)
+            .map(|i| KalshiEvent {
+                event_id: format!("KXMLBGAME-26OCT26{i}MILTB"),
+                name: "MLB MIL VS TB".to_string(),
+                team_a: "MIL".to_string(),
+                team_b: "TB".to_string(),
+                start_time: Some(date),
+                category: "MLB".to_string(),
+                markets: Vec::new(),
+            })
+            .collect();
+        let poly = (0..poly_games)
+            .map(|i| {
+                let mut market = create_test_poly_market();
+                market.event_name = "MLB MIL VS TB".to_string();
+                PolymarketEvent {
+                    event_id: format!("poly-{i}"),
+                    name: "MLB MIL VS TB".to_string(),
+                    team_a: "MIL".to_string(),
+                    team_b: "TB".to_string(),
+                    start_time: Some(date),
+                    category: "MLB".to_string(),
+                    market: Some(market),
+                }
+            })
+            .collect();
+        (kalshi, poly)
+    }
+
+    #[test]
+    fn a_single_game_matches() {
+        let (kalshi, poly) = mlb_events(1, 1);
+        assert_eq!(EventMatcher::new(24).match_events(&kalshi, &poly).len(), 1);
+    }
+
+    #[test]
+    fn a_doubleheader_is_never_matched_by_guess() {
+        let (kalshi, poly) = mlb_events(2, 2);
+        assert!(EventMatcher::new(24).match_events(&kalshi, &poly).is_empty());
+        let (kalshi, poly) = mlb_events(1, 2);
+        assert!(EventMatcher::new(24).match_events(&kalshi, &poly).is_empty());
     }
 }
