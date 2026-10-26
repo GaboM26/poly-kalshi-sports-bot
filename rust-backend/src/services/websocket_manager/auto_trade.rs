@@ -147,19 +147,17 @@ impl WebSocketManager {
             );
         }
 
-        let market = self
+        // Detection-only sports (NHL, MLB, crypto) stay eligible here so the
+        // executor can size them against fresh books as a dry run; it stops
+        // before any order (`auto_trade_enabled_for` in execute_single_auto_trade).
+        let market_idx = self
             .matched_markets
             .read()
             .iter()
-            .enumerate()
-            .find(|(_, market)| market.market_key() == key)
-            .map(|(idx, market)| (idx, market.kalshi_market.market_id.clone()));
-        let Some((market_idx, kalshi_ticker)) = market else {
+            .position(|market| market.market_key() == key);
+        let Some(market_idx) = market_idx else {
             return (false, "Matched market is no longer available".to_string());
         };
-        if !crate::clients::kalshi::auto_trade_enabled_for(&kalshi_ticker) {
-            return (false, "Sport is detection-only (not enabled for auto-trade)".to_string());
-        }
         if !self.is_market_ready(market_idx) {
             return (
                 false,

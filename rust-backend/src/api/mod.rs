@@ -824,6 +824,24 @@ async fn execute_single_auto_trade(
         return;
     };
 
+    // Detection-only sport: everything above only read fresh books, so this
+    // is a dry run of the real decision. Record what would have traded and
+    // never send an order.
+    if !crate::clients::kalshi::auto_trade_enabled_for(&record.kalshi_market_id) {
+        let reason = format!(
+            "DRY RUN (detection-only sport): would trade {} contracts, Kalshi {} @ {}c, Polymarket {} @ {:.3}, net margin {:.2}% after fees",
+            sized.contracts,
+            opportunity.kalshi_side,
+            sized.kalshi_price_cents,
+            opportunity.polymarket_side,
+            sized.poly_price,
+            sized.profit_margin,
+        );
+        info!("🧪 [Auto-trade] {}: {}", record.event_name, reason);
+        save_auto_trade_skip(service, key, &record, &opportunity, sized.contracts, duration_ms, &reason);
+        return;
+    }
+
     let outcome = submit_paired_order(
         service,
         &state.discord_client,
