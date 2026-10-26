@@ -32,7 +32,9 @@ use crate::services::{ArbitrageService, PairedOrderParams, PerformanceMetrics, D
 
 /// Market scan interval in seconds (5 minutes)
 const MARKET_SCAN_INTERVAL_SECS: u64 = 300;
-const MARKET_SCAN_OFFSET_SECS: u64 = 5;
+// Measured 2026-10-26: both exchanges list a new 15-minute crypto window
+// 15-30s after it opens (Kalshi flaps between old and new until ~30s).
+const MARKET_SCAN_OFFSET_SECS: u64 = 40;
 
 /// Time from `now` to the next `MARKET_SCAN_INTERVAL_SECS` wall-clock
 /// boundary plus `MARKET_SCAN_OFFSET_SECS`.
@@ -926,10 +928,10 @@ mod tests {
 
     #[test]
     fn scans_wait_for_the_next_boundary_plus_offset() {
-        assert_eq!(until_next_scan(at("2026-10-26T16:44:00Z")).as_secs(), 65);
-        assert_eq!(until_next_scan(at("2026-10-26T16:45:04Z")).as_secs(), 1);
+        assert_eq!(until_next_scan(at("2026-10-26T16:44:00Z")).as_secs(), 100);
+        assert_eq!(until_next_scan(at("2026-10-26T16:45:39Z")).as_secs(), 1);
         // Exactly on a scan time: wait a full interval, never zero.
-        assert_eq!(until_next_scan(at("2026-10-26T16:45:05Z")).as_secs(), 300);
-        assert_eq!(until_next_scan(at("2026-10-26T16:45:06Z")).as_secs(), 299);
+        assert_eq!(until_next_scan(at("2026-10-26T16:45:40Z")).as_secs(), 300);
+        assert_eq!(until_next_scan(at("2026-10-26T16:45:41Z")).as_secs(), 299);
     }
 }
