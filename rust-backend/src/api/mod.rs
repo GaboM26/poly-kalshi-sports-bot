@@ -33,17 +33,29 @@ use crate::services::{ArbitrageService, PairedOrderParams, PerformanceMetrics, D
 /// Market scan interval in seconds (5 minutes)
 const MARKET_SCAN_INTERVAL_SECS: u64 = 300;
 // Measured 2026-10-26: both exchanges list a new 15-minute crypto window
-// 15-30s after it opens (Kalshi flaps between old and new until ~30s).
-const MARKET_SCAN_OFFSET_SECS: u64 = 40;
+// 15-30s after it opens (Kalshi flaps between old and new until ~30s, and
+// at 17:45:41 still returned no ETH window), so a second scan retries.
+const MARKET_SCAN_OFFSETS_SECS: &[u64] = &[40, 100];
 
-/// Time from `now` to the next `MARKET_SCAN_INTERVAL_SECS` wall-clock
-/// boundary plus `MARKET_SCAN_OFFSET_SECS`.
+/// Time from `now` to the next scan: a `MARKET_SCAN_INTERVAL_SECS`
+/// wall-clock boundary plus one of `MARKET_SCAN_OFFSETS_SECS`.
 fn until_next_scan(now: chrono::DateTime<chrono::Utc>) -> std::time::Duration {
     let interval_ms = MARKET_SCAN_INTERVAL_SECS * 1000;
-    let offset_ms = MARKET_SCAN_OFFSET_SECS * 1000;
     let now_ms = now.timestamp_millis().max(0) as u64;
-    let into_interval = (now_ms + interval_ms - offset_ms) % interval_ms;
-    std::time::Duration::from_millis(interval_ms - into_interval)
+    let into_interval = now_ms % interval_ms;
+    let wait_ms = MARKET_SCAN_OFFSETS_SECS
+        .iter()
+        .map(|offset| offset * 1000)
+        .map(|offset_ms| {
+            if offset_ms > into_interval {
+                offset_ms - into_interval
+            } else {
+                interval_ms + offset_ms - into_interval
+            }
+        })
+        .min()
+        .unwrap_or(interval_ms);
+    std::time::Duration::from_millis(wait_ms)
 }
 
 /// Application state shared across handlers
@@ -930,8 +942,9 @@ mod tests {
     fn scans_wait_for_the_next_boundary_plus_offset() {
         assert_eq!(until_next_scan(at("2026-10-26T16:44:00Z")).as_secs(), 100);
         assert_eq!(until_next_scan(at("2026-10-26T16:45:39Z")).as_secs(), 1);
-        // Exactly on a scan time: wait a full interval, never zero.
-        assert_eq!(until_next_scan(at("2026-10-26T16:45:40Z")).as_secs(), 300);
-        assert_eq!(until_next_scan(at("2026-10-26T16:45:41Z")).as_secs(), 299);
+        // Exactly on a scan time: wait for the next one, never zero.
+        assert_eq!(until_next_scan(at("2026-10-26T16:45:40Z")).as_secs(), 60);
+        assert_eq!(until_next_scan(at("2026-10-26T16:46:30Z")).as_secs(), 10);
+        assert_eq!(until_next_scan(at("2026-10-26T16:46:40Z")).as_secs(), 240);
     }
 }
