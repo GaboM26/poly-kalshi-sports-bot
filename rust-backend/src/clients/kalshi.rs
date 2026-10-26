@@ -50,6 +50,10 @@ const SUPPORTED_KALSHI_SERIES: &[(&str, &str)] = &[
     // until settlement equivalence is decided per sport.
     ("KXNHLGAME", "NHL"),
     ("KXMLBGAME", "MLB"),
+    // 15-minute crypto windows, detection-only like NHL/MLB.
+    ("KXBTC15M", "CRYPTO15"),
+    ("KXETH15M", "CRYPTO15"),
+    ("KXSOL15M", "CRYPTO15"),
 ];
 
 /// Series auto-trade may execute. NHL and MLB are detected and displayed
@@ -84,6 +88,9 @@ pub fn sport_label(kalshi_ticker: &str) -> &'static str {
         ("KXNBAGAME", "NBA"),
         ("KXNHLGAME", "NHL"),
         ("KXMLBGAME", "MLB"),
+        ("KXBTC15M", "BTC 15m"),
+        ("KXETH15M", "ETH 15m"),
+        ("KXSOL15M", "SOL 15m"),
     ];
     LABELS
         .iter()
@@ -568,6 +575,7 @@ impl KalshiClient {
                     "NBA" => parse_nba_event(event_data),
                     "TENNIS" => parse_tennis_event(event_data),
                     "NHL" | "MLB" => parse_team_game_event(event_data, category),
+                    "CRYPTO15" => parse_crypto_window_event(event_data, series_ticker),
                     _ => None,
                 };
 
@@ -1485,6 +1493,57 @@ fn parse_team_game_event(event_data: &Value, category: &str) -> Option<KalshiEve
     Some(event)
 }
 
+/// One 15-minute crypto window: a single market whose YES is "Up" (end
+/// average >= start average of the series' CF Benchmarks index). Anything
+/// that does not read exactly that way is excluded.
+fn parse_crypto_window_event(event_data: &Value, series_ticker: &str) -> Option<KalshiEvent> {
+    use crate::core::crypto_windows::{self, DOWN, UP};
+
+    let series = crypto_windows::series_for_kalshi(series_ticker)?;
+    let event_ticker = event_data["event_ticker"].as_str()?.to_string();
+    let [market] = event_data["markets"].as_array()?.as_slice() else {
+        return None;
+    };
+    let ticker = market["ticker"].as_str()?.to_string();
+    if market["strike_type"].as_str() != Some("greater_or_equal")
+        || !market["rules_primary"]
+            .as_str()
+            .is_some_and(|rules| rules.contains(series.kalshi_index) && rules.contains("is at least"))
+    {
+        return None;
+    }
+    let time = |field: &str| {
+        market[field]
+            .as_str()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc))
+    };
+    let (open, close) = (time("open_time")?, time("close_time")?);
+    if !crypto_windows::is_window(open, close) {
+        return None;
+    }
+
+    let event_name = crypto_windows::crypto_window_event_name(series.coin, close);
+    let market = build_kalshi_market(
+        market,
+        ticker,
+        event_ticker.clone(),
+        event_name.clone(),
+        UP.to_string(),
+        DOWN.to_string(),
+        Some(close),
+    )?;
+    Some(KalshiEvent {
+        event_id: event_ticker,
+        name: event_name,
+        team_a: DOWN.to_string(),
+        team_b: UP.to_string(),
+        start_time: Some(close),
+        category: crypto_windows::CRYPTO_WINDOW_CATEGORY.to_string(),
+        markets: vec![market],
+    })
+}
+
 fn build_kalshi_market(
     market_data: &Value,
     ticker: String,
@@ -1814,6 +1873,35 @@ mod tests {
             ]
         });
         assert!(parse_team_game_event(&three, "NHL").is_none());
+    }
+
+    #[test]
+    fn parses_a_15_minute_crypto_window() {
+        let event = json!({
+            "event_ticker": "KXBTC15M-26OCT261300",
+            "markets": [{
+                "ticker": "KXBTC15M-26OCT261300-00",
+                "open_time": "2026-10-26T16:45:00Z",
+                "close_time": "2026-10-26T17:00:00Z",
+                "strike_type": "greater_or_equal",
+                "yes_ask_dollars": "0.5200",
+                "rules_primary": "If the simple average of the sixty seconds of CF Benchmarks' BRTI before 1:00 PM EDT on Oct 26, 2026 is at least the simple average of the sixty seconds of CF Benchmarks' BRTI before 12:45 PM EDT on October 26, 2026, then the market resolves to Yes."
+            }]
+        });
+        let parsed = parse_crypto_window_event(&event, "KXBTC15M").unwrap();
+        assert_eq!(parsed.name, "BTC 15M 17:00Z");
+        assert_eq!(parsed.category, "CRYPTO15");
+        assert_eq!(parsed.markets[0].team_name, "UP");
+        assert_eq!(parsed.markets[0].opponent_name, "DOWN");
+        assert!(!auto_trade_enabled_for("KXBTC15M-26OCT261300-00"));
+
+        let mut other_index = event.clone();
+        other_index["markets"][0]["rules_primary"] = json!("... CF Benchmarks' ETHUSDRTI ... is at least ...");
+        assert!(parse_crypto_window_event(&other_index, "KXBTC15M").is_none());
+        let mut hourly = event.clone();
+        hourly["markets"][0]["open_time"] = json!("2026-10-26T16:00:00Z");
+        assert!(parse_crypto_window_event(&hourly, "KXBTC15M").is_none());
+        assert!(parse_crypto_window_event(&event, "KXXRP15M").is_none());
     }
 
     #[test]

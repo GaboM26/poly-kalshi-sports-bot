@@ -5,6 +5,7 @@
 
 pub mod calculator;
 pub mod competitors;
+pub mod crypto_windows;
 pub mod fees;
 pub mod matcher;
 pub mod nba_teams;

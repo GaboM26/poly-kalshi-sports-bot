@@ -402,6 +402,19 @@ impl PolymarketClient {
             .await?;
         }
 
+        for series in crate::core::crypto_windows::CRYPTO_WINDOW_SERIES {
+            match self.get_crypto_window_events_and_markets(series).await {
+                Ok((mut series_events, mut series_markets)) => {
+                    events.append(&mut series_events);
+                    markets.append(&mut series_markets);
+                }
+                Err(error) => warn!(
+                    "Polymarket US {} events unavailable: {:#}",
+                    series.polymarket_series_slug, error
+                ),
+            }
+        }
+
         info!(
             "✅ Polymarket supported sports: {} events, {} markets",
             events.len(),
@@ -428,6 +441,49 @@ impl PolymarketClient {
         let nba_series =
             sport_series_id(nba_sport).ok_or_else(|| anyhow::anyhow!("NBA series_id not found"))?;
         self.get_series_events_and_markets(&nba_series, "NBA", None).await
+    }
+
+    /// Open windows of one 15-minute crypto series. The series is not in
+    /// /v1/sports, so its ID is resolved from its slug.
+    async fn get_crypto_window_events_and_markets(
+        &self,
+        series: &crate::core::crypto_windows::CryptoWindowSeries,
+    ) -> Result<(Vec<PolymarketEvent>, Vec<PolymarketMarket>)> {
+        let series_url = format!(
+            "{}/v1/series?slug={}",
+            self.config.base_url, series.polymarket_series_slug
+        );
+        let response = self.http.get(&series_url).send().await?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to get series: {}", response.status());
+        }
+        let body = response.json::<Value>().await?;
+        let series_id = body["series"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry["slug"].as_str() == Some(series.polymarket_series_slug))
+            .and_then(|entry| entry["id"].as_str().map(str::to_string))
+            .ok_or_else(|| anyhow::anyhow!("series ID not found"))?;
+
+        let events_url = format!(
+            "{}/v1/events?seriesId={}&active=true&closed=false&limit=100",
+            self.config.base_url, series_id
+        );
+        let response = self.http.get(&events_url).send().await?;
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to get events: {}", response.status());
+        }
+        let body = response.json::<Value>().await?;
+        let mut events = Vec::new();
+        let mut markets = Vec::new();
+        for api_event in body["events"].as_array().into_iter().flatten() {
+            if let Some((event, market)) = parse_crypto_window_market(series, api_event) {
+                events.push(event);
+                markets.push(market);
+            }
+        }
+        Ok((events, markets))
     }
 
     async fn get_sports(&self) -> Result<Vec<Value>> {
@@ -1417,6 +1473,79 @@ fn parse_team_game_market(
     )
 }
 
+/// One 15-minute crypto window event: a single Yes(LONG)=Up / No(SHORT)=Down
+/// market whose description names the series' index and the ">=" rule.
+fn parse_crypto_window_market(
+    series: &crate::core::crypto_windows::CryptoWindowSeries,
+    api_event: &Value,
+) -> Option<(PolymarketEvent, PolymarketMarket)> {
+    use crate::core::crypto_windows::{self, DOWN, UP};
+
+    let time = |field: &str| {
+        api_event[field]
+            .as_str()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc))
+    };
+    let (start, end) = (time("startDate")?, time("endDate")?);
+    if !crypto_windows::is_window(start, end) {
+        return None;
+    }
+    let [market_data] = api_event["markets"].as_array()?.as_slice() else {
+        return None;
+    };
+    let description = market_data["description"].as_str()?;
+    if !description.contains(series.polymarket_index)
+        || !description.contains("settle to Up if")
+        || !description.contains("greater than or equal to")
+    {
+        return None;
+    }
+
+    let market_sides = market_data["marketSides"].as_array()?;
+    if market_sides.len() != 2 {
+        return None;
+    }
+    let mut up = None;
+    let mut down = None;
+    for market_side in market_sides {
+        let quote = market_side["quote"]["value"]
+            .as_str()
+            .and_then(|price| price.parse::<f64>().ok())
+            .or_else(|| market_side["quote"]["value"].as_f64())
+            .filter(|quote| quote.is_finite() && (0.01..=0.99).contains(quote));
+        match (market_side["description"].as_str()?, market_side["long"].as_bool()?) {
+            ("Yes", true) if up.is_none() => up = Some(quote),
+            ("No", false) if down.is_none() => down = Some(quote),
+            _ => return None,
+        }
+    }
+    // A side near 0/1 can lack a quote; the live feed fills it in later.
+    let (up_quote, down_quote) = match (up?, down?) {
+        (Some(up), Some(down)) => (up, down),
+        (Some(up), None) => (up, 1.0 - up),
+        (None, Some(down)) => (1.0 - down, down),
+        (None, None) => return None,
+    };
+
+    build_competitor_market(
+        market_data,
+        crypto_windows::crypto_window_event_name(series.coin, end),
+        UP.to_string(),
+        DOWN.to_string(),
+        MarketSide {
+            quote: up_quote,
+            position_side: PolymarketPositionSide::Long,
+        },
+        MarketSide {
+            quote: down_quote,
+            position_side: PolymarketPositionSide::Short,
+        },
+        Some(end),
+        crypto_windows::CRYPTO_WINDOW_CATEGORY,
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 struct MarketSide {
     quote: f64,
@@ -1805,6 +1934,40 @@ mod tests {
         let mut both_long = market.clone();
         both_long["marketSides"][1]["long"] = json!(true);
         assert!(parse_team_game_market("NHL", "hockey_team_full_game_winner", None, &both_long).is_none());
+    }
+
+    #[test]
+    fn parses_a_15_minute_crypto_window() {
+        let series = &crate::core::crypto_windows::CRYPTO_WINDOW_SERIES[0];
+        let event = json!({
+            "startDate": "2026-10-26T16:45:00Z",
+            "endDate": "2026-10-26T17:00:00Z",
+            "markets": [{
+                "id": "1",
+                "slug": "cpc-btc-updown-15m-2026-10-26-1645z",
+                "description": "This market will settle to Up if the Bitcoin price at 1:00PM ET on Oct 26, 2026 is greater than or equal to the price at 12:45PM ET on Oct 26, 2026. Otherwise, this market will settle to Down. Outcome sourced from CF Benchmarks' Bitcoin Real-Time Index (BRTI).",
+                "marketSides": [
+                    {"description": "Yes", "long": true, "quote": null},
+                    {"description": "No", "long": false, "quote": {"value": "0.4500"}}
+                ]
+            }]
+        });
+        let (parsed_event, market) = parse_crypto_window_market(series, &event).unwrap();
+        assert_eq!(parsed_event.name, "BTC 15M 17:00Z");
+        assert_eq!(parsed_event.category, "CRYPTO15");
+        // team_a/team_b are sorted: DOWN, UP.
+        assert_eq!(market.team_a, "DOWN");
+        assert_eq!(market.team_a_position, PolymarketPositionSide::Short);
+        assert_eq!(market.team_b, "UP");
+        assert_eq!(market.team_b_position, PolymarketPositionSide::Long);
+        assert!((market.price_b - 0.55).abs() < 1e-9);
+
+        let mut eth = event.clone();
+        eth["markets"][0]["description"] = json!("settle to Up if ... greater than or equal to ... (ETHUSD_RTI)");
+        assert!(parse_crypto_window_market(series, &eth).is_none());
+        let mut swapped = event.clone();
+        swapped["markets"][0]["marketSides"][0]["long"] = json!(false);
+        assert!(parse_crypto_window_market(series, &swapped).is_none());
     }
 
     #[test]

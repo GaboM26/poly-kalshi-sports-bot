@@ -32,6 +32,17 @@ use crate::services::{ArbitrageService, PairedOrderParams, PerformanceMetrics, D
 
 /// Market scan interval in seconds (5 minutes)
 const MARKET_SCAN_INTERVAL_SECS: u64 = 300;
+const MARKET_SCAN_OFFSET_SECS: u64 = 5;
+
+/// Time from `now` to the next `MARKET_SCAN_INTERVAL_SECS` wall-clock
+/// boundary plus `MARKET_SCAN_OFFSET_SECS`.
+fn until_next_scan(now: chrono::DateTime<chrono::Utc>) -> std::time::Duration {
+    let interval_ms = MARKET_SCAN_INTERVAL_SECS * 1000;
+    let offset_ms = MARKET_SCAN_OFFSET_SECS * 1000;
+    let now_ms = now.timestamp_millis().max(0) as u64;
+    let into_interval = (now_ms + interval_ms - offset_ms) % interval_ms;
+    std::time::Duration::from_millis(interval_ms - into_interval)
+}
 
 /// Application state shared across handlers
 pub struct AppState {
@@ -132,15 +143,16 @@ pub async fn create_app(config: Config) -> Result<Router> {
             MARKET_SCAN_INTERVAL_SECS / 60
         );
 
-        let mut interval =
-            tokio::time::interval(tokio::time::Duration::from_secs(MARKET_SCAN_INTERVAL_SECS));
         let mut scan_count = 0u64;
 
         // Wait for initial WebSocket connections to establish
         tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
 
         loop {
-            interval.tick().await;
+            // Scans run on wall-clock boundaries (plus a few seconds for the
+            // exchanges to list it), so a new 15-minute crypto window is
+            // picked up as it opens instead of up to 5 minutes later.
+            tokio::time::sleep(until_next_scan(chrono::Utc::now())).await;
             scan_count += 1;
 
             info!("🔄 Starting periodic market scan #{}...", scan_count);
@@ -900,4 +912,24 @@ async fn cleanup_ended_markets(state: &Arc<AppState>) {
         "✅ [Cleanup] Complete; {} active markets remain",
         remaining_markets
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(rfc3339: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(rfc3339)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn scans_wait_for_the_next_boundary_plus_offset() {
+        assert_eq!(until_next_scan(at("2026-10-26T16:44:00Z")).as_secs(), 65);
+        assert_eq!(until_next_scan(at("2026-10-26T16:45:04Z")).as_secs(), 1);
+        // Exactly on a scan time: wait a full interval, never zero.
+        assert_eq!(until_next_scan(at("2026-10-26T16:45:05Z")).as_secs(), 300);
+        assert_eq!(until_next_scan(at("2026-10-26T16:45:06Z")).as_secs(), 299);
+    }
 }
