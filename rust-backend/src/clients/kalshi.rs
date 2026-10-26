@@ -843,6 +843,7 @@ impl KalshiClient {
         // and every cached book falls behind).
         let mut lag_window_start = Instant::now();
         let mut lag_samples: Vec<i64> = Vec::new();
+        let mut lag_crypto: Vec<i64> = Vec::new();
 
         // Process messages with dynamic subscription/unsubscription support
         loop {
@@ -857,7 +858,14 @@ impl KalshiClient {
                                 .and_then(|at| text[at + 8..].split(|c: char| !c.is_ascii_digit()).next())
                                 .and_then(|digits| digits.parse::<i64>().ok())
                             {
-                                lag_samples.push(Utc::now().timestamp_millis() - ts_ms);
+                                let lag = Utc::now().timestamp_millis() - ts_ms;
+                                lag_samples.push(lag);
+                                if text.contains("\"market_ticker\":\"KXBTC15M")
+                                    || text.contains("\"market_ticker\":\"KXETH15M")
+                                    || text.contains("\"market_ticker\":\"KXSOL15M")
+                                {
+                                    lag_crypto.push(lag);
+                                }
                             }
                             if lag_window_start.elapsed() >= Duration::from_secs(30) {
                                 if !lag_samples.is_empty() {
@@ -873,6 +881,17 @@ impl KalshiClient {
                                         price_tx.max_capacity()
                                     );
                                 }
+                                if !lag_crypto.is_empty() {
+                                    lag_crypto.sort_unstable();
+                                    let pick = |q: f64| lag_crypto[((lag_crypto.len() - 1) as f64 * q) as usize];
+                                    info!(
+                                        "Kalshi WS lag (crypto only): {} deltas, p50 {}ms, p95 {}ms",
+                                        lag_crypto.len(),
+                                        pick(0.5),
+                                        pick(0.95)
+                                    );
+                                }
+                                lag_crypto.clear();
                                 lag_samples.clear();
                                 lag_window_start = Instant::now();
                             }
