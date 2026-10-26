@@ -220,12 +220,19 @@ pub struct KalshiOrderResult {
 }
 
 impl OrderBook {
-    fn from_exact(mut yes_exact: Vec<(i32, i64)>, mut no_exact: Vec<(i32, i64)>) -> Self {
-        yes_exact.sort_by_key(|(p, _)| *p);
-        no_exact.sort_by_key(|(p, _)| *p);
+    fn from_exact(yes_exact: Vec<(i32, i64)>, no_exact: Vec<(i32, i64)>) -> Self {
+        // Sub-cent levels floor onto one whole-cent price, so merge them:
+        // deltas then update that single aggregated level.
+        let merge = |levels: Vec<(i32, i64)>| -> Vec<(i32, i64)> {
+            let mut merged = std::collections::BTreeMap::new();
+            for (price, quantity) in levels {
+                *merged.entry(price).or_insert(0) += quantity;
+            }
+            merged.into_iter().filter(|(_, quantity)| *quantity > 0).collect()
+        };
         let mut book = OrderBook {
-            yes_exact,
-            no_exact,
+            yes_exact: merge(yes_exact),
+            no_exact: merge(no_exact),
             ..OrderBook::default()
         };
         book.refresh_whole_levels();
@@ -1027,7 +1034,7 @@ impl KalshiClient {
                 let ticker = msg.get("market_ticker")?.as_str()?;
                 let price = msg
                     .get("price_dollars")
-                    .and_then(dollars_to_cents)
+                    .and_then(book_bid_cents)
                     .or_else(|| {
                         msg.get("price")
                             .and_then(Value::as_i64)
@@ -1234,7 +1241,7 @@ fn parse_price_levels(message: &Value, fixed_point_key: &str, legacy_key: &str) 
         .filter_map(|entry| {
             let price = entry.get(0)?;
             let price = if fixed_point {
-                dollars_to_cents(price)?
+                book_bid_cents(price)?
             } else {
                 price.as_i64()? as i32
             };
@@ -1247,8 +1254,12 @@ fn parse_price_levels(message: &Value, fixed_point_key: &str, legacy_key: &str) 
         .collect()
 }
 
-/// Convert Kalshi's fixed-point dollar price to an exact whole-cent price.
-fn dollars_to_cents(value: &Value) -> Option<i32> {
+/// Convert a Kalshi book BID price (fixed-point dollars) to whole cents,
+/// flooring a sub-cent price (crypto markets tick in 0.1c). Every cached book
+/// level is a bid and an ask is `100 - bid`, so flooring only ever shows a
+/// bid lower and an ask higher than the exchange: depth and edges are never
+/// overstated, and a whole-cent limit is still a valid Kalshi price.
+fn book_bid_cents(value: &Value) -> Option<i32> {
     let price = value
         .as_str()
         .map(ToOwned::to_owned)
@@ -1259,7 +1270,7 @@ fn dollars_to_cents(value: &Value) -> Option<i32> {
     while cents.len() < 2 {
         cents.push('0');
     }
-    if fractional.chars().skip(2).any(|digit| digit != '0') {
+    if !fractional.chars().all(|digit| digit.is_ascii_digit()) {
         return None;
     }
 
@@ -1301,9 +1312,15 @@ fn parse_market_rest_quote(market: &Value) -> Result<KalshiMarketQuote> {
         .filter(|ticker| !ticker.is_empty())
         .ok_or_else(|| anyhow::anyhow!("Kalshi market quote is missing ticker"))?
         .to_string();
+    // Asks round UP to the cent, matching the floored WS book bids (a 9.7c
+    // crypto ask is 10c here), so REST never shows a better price than the
+    // whole-cent limit we could actually send.
+    let ask_cents_up = |price: f64| ((price * 100.0) - 1e-9).ceil() / 100.0;
     let yes_ask = parse_quote_dollars(&market["yes_ask_dollars"], "yes_ask_dollars")
+        .map(ask_cents_up)
         .with_context(|| format!("Invalid Kalshi REST quote for {market_id}"))?;
     let no_ask = parse_quote_dollars(&market["no_ask_dollars"], "no_ask_dollars")
+        .map(ask_cents_up)
         .with_context(|| format!("Invalid Kalshi REST quote for {market_id}"))?;
     let status = market["status"].as_str().unwrap_or("").to_string();
 
@@ -1832,6 +1849,8 @@ mod tests {
     #[test]
     fn floors_fractional_orderbook_depth_for_whole_contract_orders() {
         assert_eq!(fixed_point_to_centi(&json!("9.99")), Some(999));
+        let merged = OrderBook::from_exact(vec![(90, 150), (90, 60)], vec![]);
+        assert_eq!(merged.yes, vec![(90, 2)]);
         let book = OrderBook::from_exact(vec![(40, 999), (41, 50)], vec![]);
         // 9.99 floors to 9 whole contracts; 0.50 is not a tradable level.
         assert_eq!(book.yes, vec![(40, 9)]);
@@ -1911,6 +1930,24 @@ mod tests {
         assert!(!auto_trade_enabled_for("KXNHLGAME-26OCT27NYINSH-NYI"));
         assert!(!auto_trade_enabled_for("KXMLBGAME-26OCT262000MILTB-TB"));
         assert!(!auto_trade_enabled_for("garbage"));
+    }
+
+    #[test]
+    fn sub_cent_book_bids_floor_and_rest_asks_round_up() {
+        assert_eq!(book_bid_cents(&json!("0.9030")), Some(90));
+        assert_eq!(book_bid_cents(&json!("0.0950")), Some(9));
+        assert_eq!(book_bid_cents(&json!("0.45")), Some(45));
+        assert_eq!(book_bid_cents(&json!("1.0000")), Some(100));
+        assert_eq!(book_bid_cents(&json!("0.9x")), None);
+        let quote = parse_market_rest_quote(&json!({
+            "ticker": "KXBTC15M-26OCT261315-15",
+            "yes_ask_dollars": "0.0970",
+            "no_ask_dollars": "0.9100",
+            "status": "active"
+        }))
+        .unwrap();
+        assert!((quote.yes_ask - 0.10).abs() < 1e-9);
+        assert!((quote.no_ask - 0.91).abs() < 1e-9);
     }
 
     #[test]
