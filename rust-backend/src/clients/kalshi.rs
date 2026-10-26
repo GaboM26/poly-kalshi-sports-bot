@@ -106,8 +106,16 @@ pub struct KalshiClient {
 /// Order book structure
 #[derive(Debug, Clone, Default)]
 pub struct OrderBook {
-    pub yes: Vec<(i32, i32)>, // (price_cents, quantity)
+    /// Whole-contract view (price_cents, floored quantity), ascending, best
+    /// last. Derived from the exact levels; a level under one whole contract
+    /// is left out, since an order can only take whole contracts.
+    pub yes: Vec<(i32, i32)>,
     pub no: Vec<(i32, i32)>,
+    /// Exact levels in hundredths of a contract (Kalshi sizes are
+    /// fixed-point). Deltas apply here: flooring each delta on its own made
+    /// the cached book drift from the exchange's.
+    yes_exact: Vec<(i32, i64)>,
+    no_exact: Vec<(i32, i64)>,
     updated_at: Option<Instant>,
     /// The WebSocket connection epoch this book was last written under. 0
     /// (the Default) never matches a real connection's epoch (which starts
@@ -182,6 +190,53 @@ pub struct KalshiOrderResult {
 }
 
 impl OrderBook {
+    fn from_exact(mut yes_exact: Vec<(i32, i64)>, mut no_exact: Vec<(i32, i64)>) -> Self {
+        yes_exact.sort_by_key(|(p, _)| *p);
+        no_exact.sort_by_key(|(p, _)| *p);
+        let mut book = OrderBook {
+            yes_exact,
+            no_exact,
+            ..OrderBook::default()
+        };
+        book.refresh_whole_levels();
+        book
+    }
+
+    fn refresh_whole_levels(&mut self) {
+        let whole = |levels: &[(i32, i64)]| -> Vec<(i32, i32)> {
+            levels
+                .iter()
+                .filter_map(|(price, centi)| {
+                    let contracts = i32::try_from(centi / 100).ok()?;
+                    (contracts > 0).then_some((*price, contracts))
+                })
+                .collect()
+        };
+        self.yes = whole(&self.yes_exact);
+        self.no = whole(&self.no_exact);
+    }
+
+    /// Apply one `orderbook_delta` (exact hundredths of a contract).
+    fn apply_delta(&mut self, side: &str, price: i32, delta_centi: i64) {
+        let levels = if side == "yes" {
+            &mut self.yes_exact
+        } else {
+            &mut self.no_exact
+        };
+        if let Some(pos) = levels.iter().position(|(p, _)| *p == price) {
+            let new_qty = levels[pos].1 + delta_centi;
+            if new_qty <= 0 {
+                levels.remove(pos);
+            } else {
+                levels[pos].1 = new_qty;
+            }
+        } else if delta_centi > 0 {
+            levels.push((price, delta_centi));
+            levels.sort_by_key(|(p, _)| *p);
+        }
+        self.refresh_whole_levels();
+    }
+
     /// 计算 yes 侧的 ask 深度（买入 yes 时使用）
     /// Kalshi: yes_ask = 1 - no_bid，所以买 yes 的深度看 no 侧的 bid
     /// no 按价格升序排列，last 是最高买价（best no_bid）
@@ -554,11 +609,10 @@ impl KalshiClient {
         let book = response
             .get("orderbook_fp")
             .ok_or_else(|| anyhow::anyhow!("Kalshi REST order book has no orderbook_fp"))?;
-        Ok(OrderBook {
-            yes: parse_price_levels(book, "yes_dollars", "yes"),
-            no: parse_price_levels(book, "no_dollars", "no"),
-            ..OrderBook::default()
-        })
+        Ok(OrderBook::from_exact(
+            parse_price_levels(book, "yes_dollars", "yes"),
+            parse_price_levels(book, "no_dollars", "no"),
+        ))
     }
 
     /// Get orders with optional status filter
@@ -907,13 +961,10 @@ impl KalshiClient {
                 let msg = data.get("msg")?;
                 let ticker = msg.get("market_ticker")?.as_str()?;
 
-                let mut book = OrderBook::default();
-                book.yes = parse_price_levels(msg, "yes_dollars_fp", "yes");
-                book.no = parse_price_levels(msg, "no_dollars_fp", "no");
-
-                // Sort by price
-                book.yes.sort_by_key(|(p, _)| *p);
-                book.no.sort_by_key(|(p, _)| *p);
+                let mut book = OrderBook::from_exact(
+                    parse_price_levels(msg, "yes_dollars_fp", "yes"),
+                    parse_price_levels(msg, "no_dollars_fp", "no"),
+                );
                 book.updated_at = Some(Instant::now());
                 book.epoch = epoch;
 
@@ -952,11 +1003,11 @@ impl KalshiClient {
                     });
                 let delta = msg
                     .get("delta_fp")
-                    .and_then(fixed_point_to_i32)
+                    .and_then(fixed_point_to_centi)
                     .or_else(|| {
                         msg.get("delta")
                             .and_then(Value::as_i64)
-                            .map(|delta| delta as i32)
+                            .map(|delta| delta * 100)
                     });
                 let side = msg.get("side").and_then(Value::as_str);
                 let (Some(price), Some(delta), Some(side)) = (price, delta, side) else {
@@ -978,24 +1029,7 @@ impl KalshiClient {
                 if book.epoch != epoch {
                     return None;
                 }
-                let book_side = if side == "yes" {
-                    &mut book.yes
-                } else {
-                    &mut book.no
-                };
-
-                // Find and update or insert
-                if let Some(pos) = book_side.iter().position(|(p, _)| *p == price) {
-                    let new_qty = book_side[pos].1 + delta;
-                    if new_qty <= 0 {
-                        book_side.remove(pos);
-                    } else {
-                        book_side[pos].1 = new_qty;
-                    }
-                } else if delta > 0 {
-                    book_side.push((price, delta));
-                    book_side.sort_by_key(|(p, _)| *p);
-                }
+                book.apply_delta(side, price, delta);
                 book.updated_at = Some(Instant::now());
                 book.epoch = epoch;
 
@@ -1152,7 +1186,8 @@ fn v2_order_payload(
 }
 
 /// Parse current fixed-point levels and the legacy integer-cent representation.
-fn parse_price_levels(message: &Value, fixed_point_key: &str, legacy_key: &str) -> Vec<(i32, i32)> {
+/// Levels as (price_cents, quantity in hundredths of a contract).
+fn parse_price_levels(message: &Value, fixed_point_key: &str, legacy_key: &str) -> Vec<(i32, i64)> {
     let Some(levels) = message
         .get(fixed_point_key)
         .or_else(|| message.get(legacy_key))
@@ -1166,12 +1201,15 @@ fn parse_price_levels(message: &Value, fixed_point_key: &str, legacy_key: &str) 
         .iter()
         .filter_map(|entry| {
             let price = entry.get(0)?;
-            let quantity = entry.get(1).and_then(quantity_to_i32)?;
             let price = if fixed_point {
                 dollars_to_cents(price)?
             } else {
                 price.as_i64()? as i32
             };
+            let quantity = entry.get(1).and_then(fixed_point_to_centi)?;
+            if quantity < 0 {
+                return None;
+            }
             Some((price, quantity))
         })
         .collect()
@@ -1245,21 +1283,20 @@ fn parse_market_rest_quote(market: &Value) -> Result<KalshiMarketQuote> {
     })
 }
 
-fn quantity_to_i32(value: &Value) -> Option<i32> {
-    fixed_point_to_i32(value).filter(|quantity| *quantity >= 0)
-}
-
-fn fixed_point_to_i32(value: &Value) -> Option<i32> {
-    let quantity = value
+/// A Kalshi fixed-point contract quantity in exact hundredths of a contract
+/// (Kalshi sizes carry at most two decimals). Whole contracts are floored
+/// only when the book's whole-contract view is built.
+fn fixed_point_to_centi(value: &Value) -> Option<i64> {
+    let centi = value
         .as_f64()
         .or_else(|| {
             value
                 .as_str()
                 .and_then(|quantity| quantity.parse::<f64>().ok())
         })?
-        .floor();
-    (quantity.is_finite() && quantity >= i32::MIN as f64 && quantity <= i32::MAX as f64)
-        .then_some(quantity as i32)
+        * 100.0;
+    let centi = centi.round();
+    (centi.is_finite() && centi.abs() < 1e15).then_some(centi as i64)
 }
 
 fn parse_nba_event(event_data: &Value) -> Option<KalshiEvent> {
@@ -1654,7 +1691,25 @@ mod tests {
 
     #[test]
     fn floors_fractional_orderbook_depth_for_whole_contract_orders() {
-        assert_eq!(fixed_point_to_i32(&json!("9.99")), Some(9));
+        assert_eq!(fixed_point_to_centi(&json!("9.99")), Some(999));
+        let book = OrderBook::from_exact(vec![(40, 999), (41, 50)], vec![]);
+        // 9.99 floors to 9 whole contracts; 0.50 is not a tradable level.
+        assert_eq!(book.yes, vec![(40, 9)]);
+    }
+
+    #[test]
+    fn fractional_deltas_do_not_drift_the_book() {
+        let mut book = OrderBook::from_exact(vec![], vec![(55, 200)]);
+        // +1.50 then -1.50 must return to exactly 2 contracts; flooring each
+        // delta separately (+1, -2) left 1.
+        book.apply_delta("no", 55, 150);
+        book.apply_delta("no", 55, -150);
+        assert_eq!(book.no, vec![(55, 2)]);
+        // A level that only ever reaches 0.70 never shows as a best price.
+        book.apply_delta("no", 60, 70);
+        assert_eq!(book.no.last(), Some(&(55, 2)));
+        book.apply_delta("no", 60, 40);
+        assert_eq!(book.no.last(), Some(&(60, 1)));
     }
 
     #[test]

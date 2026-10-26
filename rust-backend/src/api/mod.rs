@@ -726,10 +726,12 @@ async fn execute_single_auto_trade(
     let ws_best = kalshi_levels.first().map(|(price, _)| *price);
     if rest_best.is_none_or(|rest| ws_best.is_none_or(|ws| rest > ws)) {
         tracing::warn!(
-            "Kalshi WebSocket book disagrees with REST for {}: ws_best_ask_cents={:?} rest_best_ask_cents={:?}; skipping",
+            "Kalshi WebSocket book disagrees with REST for {}: ws_best_ask_cents={:?} rest_best_ask_cents={:?} ws_asks={:?} rest_asks={:?}; skipping",
             record.kalshi_market_id,
             ws_best,
-            rest_best
+            rest_best,
+            &kalshi_levels[..kalshi_levels.len().min(4)],
+            &rest_levels[..rest_levels.len().min(4)],
         );
         save_auto_trade_skip(
             service,
