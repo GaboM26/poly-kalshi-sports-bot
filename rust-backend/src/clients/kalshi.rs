@@ -914,6 +914,28 @@ impl KalshiClient {
                                     );
                                 }
                             }
+                            // Every non-book frame (acks, errors, unsubscribes)
+                            // is rare and explains a change in what the server
+                            // sends; on 2026-10-27 book updates collapsed from
+                            // ~330 to ~4 markets on a live connection with no
+                            // visible cause. An `ok` carries the subscription's
+                            // whole ticker list, so log only its size.
+                            if !text.contains("\"type\":\"orderbook_delta\"")
+                                && !text.contains("\"type\":\"orderbook_snapshot\"")
+                            {
+                                if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                                    match v["msg"]["market_tickers"].as_array() {
+                                        Some(list) => info!(
+                                            "Kalshi ws control: type={} id={} sid={} subscribed_tickers={}",
+                                            v["type"], v["id"], v["sid"], list.len()
+                                        ),
+                                        None => info!(
+                                            "Kalshi ws control: {}",
+                                            text.chars().take(300).collect::<String>()
+                                        ),
+                                    }
+                                }
+                            }
                             match Self::parse_ws_message(&text, &orderbook_cache, current_epoch, &mut last_seq_by_sid) {
                                 Some(Ok(update)) => {
                                     if price_tx.send(update).await.is_err() {
