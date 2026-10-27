@@ -401,6 +401,14 @@ mismatch as MLB. The matcher refuses any same-name same-date ambiguity
   rejected at sizing). The client now counts subscriptions, reconnects to
   repack when a hot-add will not fit, and logs server error frames
   (`probe_poly_ws_subscriptions` reproduces the cap).
+- 2026-10-27: Kalshi WS "lag" of 10-45s (and 72/264 corrupted or frozen
+  books after reconnects) was our own download link saturating (~7.7 of
+  ~8.5 MB/s): the Polymarket gateway poll re-downloaded ~10 MB of event
+  lists every ~3s. Kalshi stamps `sending_ts_ms` ~4ms after `ts_ms`, so all
+  the delay was transport (`probe_kalshi_ws_raw` splits it). The poll now
+  runs at the 30s CDN age; rx fell to ~1.6 MB/s, Kalshi p50 lag ~0.1-0.25s
+  real. The WSL clock runs ~0.7-0.9s ahead, so the logged lag p50 reads
+  ~0.95s. Watch bandwidth (`/proc/net/dev`) before blaming a feed.
 - Do not hold a shared lock (`service.write()`) across network calls; fetch
   first, then lock briefly to apply.
 
