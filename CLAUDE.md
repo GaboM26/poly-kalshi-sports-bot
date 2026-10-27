@@ -243,8 +243,9 @@ may be more current than this summary. Read it too.
    a local SQLite file).
 6. Secrets are plaintext in `rust-backend/config.toml`; `arbitrage_history.db`
    has no backup and holds execution state.
-7. Polymarket REST gateway times out regularly (10s client timeout); the WS
-   covers about half the markets and REST fills the rest.
+7. Polymarket REST gateway times out regularly (10s client timeout). The
+   "WS covers about half the markets" gap was the 10-subscription cap (fixed
+   2026-10-27, see lessons); re-check WS coverage after a restart.
 8. "Seems to disconnect every few seconds" (2026-09-27): likely the lock stall
    (fixed) but unconfirmed. Re-check after a few days of uptime.
 9. Cleanup: `npm run lint` is broken (`--ext` flag); INFO-level logging of
@@ -391,6 +392,15 @@ mismatch as MLB. The matcher refuses any same-name same-date ambiguity
   every ~3s on the live feed. Log a sample of real messages before enforcing a
   rule that reconnects, untrusts data, or blocks trades, and ship it
   observe-only first. Check the log after every restart.
+- 2026-10-27: the Polymarket US markets WS allows 10 subscriptions per
+  connection and answers the 11th with `"error":"max subscriptions per
+  connection reached"`, which the client treated as a heartbeat. Every
+  market hot-added after the first few (each new crypto window) had no WS
+  data, so detection priced Polymarket from the 30s-cached gateway quote
+  (median 7c better than the real book: 598 phantom edges in 1h, all
+  rejected at sizing). The client now counts subscriptions, reconnects to
+  repack when a hot-add will not fit, and logs server error frames
+  (`probe_poly_ws_subscriptions` reproduces the cap).
 - Do not hold a shared lock (`service.write()`) across network calls; fetch
   first, then lock briefly to apply.
 

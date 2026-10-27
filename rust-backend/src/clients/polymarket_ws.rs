@@ -29,6 +29,13 @@ const WS_URL: &str = "wss://api.polymarket.us/v1/ws/markets";
 const WS_PATH: &str = "/v1/ws/markets";
 /// Documented cap: 100 markets per subscription.
 const MAX_SLUGS_PER_SUBSCRIPTION: usize = 100;
+/// Server limit, observed live 2026-10-27: the 11th subscribe on one
+/// connection is answered `"error":"max subscriptions per connection
+/// reached"` and never streams. Every hot-add uses 2 (lite + book), so
+/// without this the markets added after the first few (every new crypto
+/// window) silently got no WS data and detection ran on 30s-stale gateway
+/// quotes.
+const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 10;
 /// The server sends heartbeats; silence beyond this means a dead socket.
 const SILENCE_TIMEOUT: Duration = Duration::from_secs(30);
 const SLUG_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -126,6 +133,23 @@ fn subscribe_messages(slugs: &[String], next_id: &mut u64) -> Vec<Message> {
     messages
 }
 
+/// Subscriptions (lite + book per 100-slug chunk) needed for `slugs` markets.
+fn subscription_count(slugs: usize) -> usize {
+    slugs.div_ceil(MAX_SLUGS_PER_SUBSCRIPTION) * SUBSCRIPTION_TYPES.len()
+}
+
+/// The server's error for a rejected request, e.g. a subscribe over the cap.
+fn subscription_error(text: &str) -> Option<String> {
+    let root: Value = serde_json::from_str(text).ok()?;
+    let error = root.get("error")?.as_str()?;
+    Some(format!(
+        "{} (request {}, {})",
+        error,
+        root.get("requestId").and_then(Value::as_str).unwrap_or("?"),
+        root.get("subscriptionType").and_then(Value::as_str).unwrap_or("?")
+    ))
+}
+
 /// One connection attempt. Returns when the socket dies or goes silent.
 async fn run_once<S, Q>(
     key_id: &str,
@@ -152,6 +176,7 @@ where
 
     let mut subscribed: HashSet<String> = HashSet::new();
     let mut next_id = 0u64;
+    let mut subscriptions = 0usize;
     let mut refresh = tokio::time::interval(SLUG_REFRESH_INTERVAL);
 
     loop {
@@ -166,11 +191,38 @@ where
                     .filter(|s| !subscribed.contains(s))
                     .collect();
                 if !new.is_empty() {
-                    for msg in subscribe_messages(&new, &mut next_id) {
+                    let messages = subscribe_messages(&new, &mut next_id);
+                    if subscriptions + messages.len() > MAX_SUBSCRIPTIONS_PER_CONNECTION {
+                        let all = subscribed.len() + new.len();
+                        if subscription_count(all) <= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+                            // A fresh connection packs every slug into full
+                            // 100-slug chunks, so all of them fit again.
+                            anyhow::bail!(
+                                "subscription cap reached with {} new markets; reconnecting to resubscribe all {}",
+                                new.len(), all
+                            );
+                        }
+                        // Even a fresh connection cannot carry every slug:
+                        // fill the remaining slots (whole chunks, lite +
+                        // book together) and leave the rest on REST.
+                        let free = MAX_SUBSCRIPTIONS_PER_CONNECTION - subscriptions;
+                        warn!(
+                            "📡 Polymarket WS covers only part of {} new markets: {} markets need more than {} subscriptions on one connection",
+                            new.len(), all, MAX_SUBSCRIPTIONS_PER_CONNECTION
+                        );
+                        subscriptions += free;
+                        for msg in messages.into_iter().take(free) {
+                            write.send(msg).await.context("WS subscribe send failed")?;
+                        }
+                        subscribed.extend(new);
+                        continue;
+                    }
+                    subscriptions += messages.len();
+                    for msg in messages {
                         write.send(msg).await.context("WS subscribe send failed")?;
                     }
-                    info!("📡 Polymarket WS subscribed to {} new markets ({} total)",
-                        new.len(), subscribed.len() + new.len());
+                    info!("📡 Polymarket WS subscribed to {} new markets ({} total, {} subscriptions)",
+                        new.len(), subscribed.len() + new.len(), subscriptions);
                     subscribed.extend(new);
                 }
             }
@@ -178,6 +230,9 @@ where
                 let frame = frame.context("Polymarket WS silent for 30s")?;
                 match frame {
                     Some(Ok(Message::Text(text))) => {
+                        if let Some(error) = subscription_error(&text) {
+                            warn!("Polymarket WS subscription error: {}", error);
+                        }
                         on_quote(parse_event(&text).unwrap_or(PolyWsEvent::Heartbeat));
                     }
                     Some(Ok(Message::Close(frame))) => {
@@ -263,6 +318,20 @@ mod tests {
         // Two subscription types (lite quotes + full book) per chunk.
         assert_eq!(subscribe_messages(&slugs, &mut id).len(), 6);
         assert_eq!(id, 6);
+    }
+
+    #[test]
+    fn counts_subscriptions_and_reads_server_errors() {
+        assert_eq!(subscription_count(0), 0);
+        assert_eq!(subscription_count(100), 2);
+        assert_eq!(subscription_count(320), 8);
+        assert_eq!(subscription_count(501), 12);
+        let err = r#"{"requestId":"r11", "error":"max subscriptions per connection reached", "subscriptionType":"SUBSCRIPTION_TYPE_MARKET_DATA_LITE"}"#;
+        assert_eq!(
+            subscription_error(err).as_deref(),
+            Some("max subscriptions per connection reached (request r11, SUBSCRIPTION_TYPE_MARKET_DATA_LITE)")
+        );
+        assert!(subscription_error(OPEN).is_none());
     }
 
     #[test]
