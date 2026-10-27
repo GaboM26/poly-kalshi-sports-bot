@@ -833,19 +833,22 @@ impl KalshiClient {
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<KalshiWsCommand>(100);
         *self.command_tx.write() = Some(cmd_tx);
 
-        // Subscribe to initial order books - 逐个订阅（与 Python 版本一致）
+        // One subscribe for every initial ticker. Subscribing one ticker per
+        // message made Kalshi answer each with an `ok` listing the whole
+        // growing ticker set (~3 MB for ~400 tickers, measured 2026-10-27),
+        // arriving with the snapshots and pushing the reader behind. An
+        // empty list is never sent: it could mean "every market".
         let mut next_msg_id = 1;
-        for ticker in tickers.iter() {
+        if !tickers.is_empty() {
             let subscribe_msg = json!({
                 "id": next_msg_id,
                 "cmd": "subscribe",
                 "params": {
                     "channels": ["orderbook_delta"],
-                    "market_ticker": ticker  // 单个 ticker，不是数组
+                    "market_tickers": tickers
                 }
             });
             next_msg_id += 1;
-
             write.send(Message::Text(subscribe_msg.to_string())).await?;
         }
 
