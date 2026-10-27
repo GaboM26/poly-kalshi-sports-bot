@@ -942,6 +942,14 @@ impl KalshiClient {
                                             text.chars().take(300).collect::<String>()
                                         ),
                                     }
+                                    if is_subscription_dropped(&v) {
+                                        // The server dropped our subscription but
+                                        // keeps the socket open: every book would
+                                        // freeze while looking current. Reconnect
+                                        // for a fresh subscription and snapshots.
+                                        error!("Kalshi WS subscription dropped by the server; reconnecting");
+                                        break;
+                                    }
                                 }
                             }
                             match Self::parse_ws_message(&text, &orderbook_cache, current_epoch, &mut last_seq_by_sid) {
@@ -1182,6 +1190,20 @@ impl KalshiClient {
             }
             _ => None,
         }
+    }
+}
+
+/// The server dropped our book subscription while keeping the socket open:
+/// `{"type":"error","msg":{"code":25,"msg":"Subscription buffer overflow"}}`
+/// (we fell behind), followed by `{"type":"unsubscribed","sid":1}`. Seen live
+/// 2026-10-27, when book updates collapsed from ~330 markets to ~4 and the
+/// rest froze. This client never sends an unsubscribe, so any `unsubscribed`
+/// is server-initiated.
+fn is_subscription_dropped(frame: &Value) -> bool {
+    match frame["type"].as_str() {
+        Some("error") => frame["msg"]["code"].as_u64() == Some(25),
+        Some("unsubscribed") => true,
+        _ => false,
     }
 }
 
@@ -2196,6 +2218,23 @@ mod tests {
         assert_eq!(payload["self_trade_prevention_type"], "taker_at_cross");
         assert!(payload.get("exchange_index").is_none());
         assert!(payload["client_order_id"].as_str().is_some());
+    }
+
+    #[test]
+    fn detects_a_server_dropped_subscription_only() {
+        let overflow: Value = serde_json::from_str(
+            r#"{"type":"error","sid":1,"seq":4912141,"msg":{"code":25,"msg":"Subscription buffer overflow"},"sending_ts_ms":1793122937806}"#,
+        )
+        .unwrap();
+        assert!(is_subscription_dropped(&overflow));
+        let unsubscribed: Value =
+            serde_json::from_str(r#"{"type":"unsubscribed","sid":1,"seq":4912142,"sending_ts_ms":1793122937806}"#).unwrap();
+        assert!(is_subscription_dropped(&unsubscribed));
+        let other_error: Value =
+            serde_json::from_str(r#"{"type":"error","id":7,"msg":{"code":8,"msg":"Unknown market"}}"#).unwrap();
+        assert!(!is_subscription_dropped(&other_error));
+        let ok: Value = serde_json::from_str(r#"{"type":"ok","id":2,"sid":1,"seq":2,"msg":{"market_tickers":[]}}"#).unwrap();
+        assert!(!is_subscription_dropped(&ok));
     }
 
     #[test]

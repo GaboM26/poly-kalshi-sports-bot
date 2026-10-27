@@ -409,6 +409,16 @@ mismatch as MLB. The matcher refuses any same-name same-date ambiguity
   runs at the 30s CDN age; rx fell to ~1.6 MB/s, Kalshi p50 lag ~0.1-0.25s
   real. The WSL clock runs ~0.7-0.9s ahead, so the logged lag p50 reads
   ~0.95s. Watch bandwidth (`/proc/net/dev`) before blaming a feed.
+- 2026-10-27: when the client falls behind, Kalshi sends `{"type":"error",
+  "msg":{"code":25,"msg":"Subscription buffer overflow"}}` then
+  `{"type":"unsubscribed","sid":1}` and keeps the socket open, so every book
+  froze while the connection looked alive (updates 330 -> 0 markets). The
+  next hot subscribe then opened a new sid with only the new tickers. The
+  client now reconnects on either frame and logs every control frame.
+- 2026-10-27: Kalshi balances are per exchange shard (0 catch-all, 1 combos,
+  2 crypto, 3 tennis/baseball/basketball). An order on an unfunded shard
+  fails with `insufficient_shard_balance`; crypto shard 2 held $0, so every
+  crypto Kalshi leg failed. `probe_kalshi_balance` prints the breakdown.
 - Do not hold a shared lock (`service.write()`) across network calls; fetch
   first, then lock briefly to apply.
 
