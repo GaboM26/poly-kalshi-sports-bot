@@ -777,16 +777,13 @@ impl KalshiClient {
         }
     }
 
-    /// Connect to WebSocket for real-time updates
-    pub async fn connect_websocket(
+    /// Signed WebSocket upgrade request (auth goes in HTTP headers).
+    pub fn websocket_request(
         &self,
-        tickers: Vec<String>,
-        price_tx: mpsc::Sender<PriceUpdate>,
-    ) -> Result<()> {
+    ) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
         let timestamp = Self::get_timestamp_ms();
         let signature = self.sign_request(timestamp, "GET", "/trade-api/ws/v2");
 
-        // 使用 HTTP headers 传递认证信息（与 Python 版本一致）
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         let mut request = KALSHI_WS_URL.into_client_request()?;
         request
@@ -799,6 +796,16 @@ impl KalshiClient {
             "KALSHI-ACCESS-TIMESTAMP",
             timestamp.to_string().parse().unwrap(),
         );
+        Ok(request)
+    }
+
+    /// Connect to WebSocket for real-time updates
+    pub async fn connect_websocket(
+        &self,
+        tickers: Vec<String>,
+        price_tx: mpsc::Sender<PriceUpdate>,
+    ) -> Result<()> {
+        let request = self.websocket_request()?;
 
         info!("Connecting to the Kalshi WebSocket...");
 
