@@ -823,7 +823,12 @@ impl WebSocketManager {
             .read()
             .get(&matched_market.polymarket_market.market_id)
             .cloned()?;
-        if !self.is_poly_rest_quote_fresh_at(&quote, now) {
+        // A quote the live WebSocket pushed stays exact while that
+        // connection is alive (every change is pushed), however quiet the
+        // market; only a gateway quote ages out.
+        if !self.is_poly_rest_quote_fresh_at(&quote, now)
+            && !self.polymarket_price_is_live(&matched_market.polymarket_market.market_id)
+        {
             return None;
         }
 
@@ -1245,7 +1250,10 @@ impl WebSocketManager {
             polymarket_coverage: format!("{}/{}", poly_ready, total),
             full_coverage: format!("{}/{}", both_ready, total),
             kalshi_connected: self.is_kalshi_rest_available(now_instant),
-            polymarket_connected: self.is_polymarket_rest_available(now_instant),
+            // The gateway poll runs every 30s (CDN max-age); the live
+            // WebSocket is what keeps Polymarket prices current.
+            polymarket_connected: self.is_polymarket_rest_available(now_instant)
+                || self.live_polymarket_ws_epoch(POLYMARKET_WS_MAX_SILENCE).is_some(),
             kalshi_source: "rest_polling",
             polymarket_source: "rest_polling",
             kalshi_latency_ms,

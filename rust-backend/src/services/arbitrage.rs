@@ -20,6 +20,14 @@ use crate::models::{
 use crate::services::{ArbitrageStorage, Operation, PerformanceMetrics, WebSocketManager};
 
 const MIN_REST_QUOTE_REFRESH_SECS: u64 = 1;
+/// The Polymarket US gateway is Cloudflare-cached with `max-age=30`, so a
+/// faster poll only re-downloads the same snapshot. Each poll pulls every
+/// supported sport's full event list (~10 MB: NBA alone ~6 MB); at the 2s
+/// UI refresh interval that was ~3-4 MB/s, which saturated this machine's
+/// link and delayed the Kalshi WebSocket by 1-45s (2026-10-27). Live
+/// prices come from the Polymarket WebSocket; this poll only confirms
+/// listings, ended markets and live/period state.
+const MIN_POLYMARKET_GATEWAY_REFRESH_SECS: u64 = 30;
 
 /// Raw market lists from one scan of both venues.
 pub struct MarketSnapshot {
@@ -257,10 +265,10 @@ impl ArbitrageService {
     /// by discovery. CLOB order books remain separate and are never inferred
     /// from the gateway's market-side IDs.
     pub async fn run_polymarket_quote_refresh(&self, requested_interval_secs: u64) {
-        let interval_secs = requested_interval_secs.max(MIN_REST_QUOTE_REFRESH_SECS);
+        let interval_secs = requested_interval_secs.max(MIN_POLYMARKET_GATEWAY_REFRESH_SECS);
         if interval_secs != requested_interval_secs {
             tracing::warn!(
-                "Polymarket quote refresh interval {}s is too low; clamping to {}s",
+                "Polymarket gateway refresh interval {}s is below the 30s CDN cache; using {}s",
                 requested_interval_secs,
                 interval_secs
             );
