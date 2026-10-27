@@ -164,6 +164,17 @@ impl WebSocketManager {
                 "Market data is incomplete or Polymarket REST quote is stale".to_string(),
             );
         }
+        let poly_market_id = self.matched_markets.read()[market_idx]
+            .polymarket_market
+            .market_id
+            .clone();
+        if !self.polymarket_price_is_live(&poly_market_id) {
+            return (
+                false,
+                "Polymarket price is not from the live WebSocket (gateway quote may be cached)"
+                    .to_string(),
+            );
+        }
 
         if self.auto_traded_opportunities.read().contains(key) {
             return (

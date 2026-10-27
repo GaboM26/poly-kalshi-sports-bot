@@ -740,6 +740,17 @@ impl WebSocketManager {
         alive.then(|| self.poly_ws_epoch.load(Ordering::SeqCst))
     }
 
+    /// Whether `market_id`'s Polymarket price came from the WebSocket on the
+    /// connection that is live now. Anything else is a gateway REST quote,
+    /// which Cloudflare can serve up to 30s old: a new crypto window's
+    /// listing quote was 12c off the real book on 2026-10-27, seconds before
+    /// its WS subscription landed. Only a live WS price may start an
+    /// auto-trade.
+    pub fn polymarket_price_is_live(&self, market_id: &str) -> bool {
+        self.live_polymarket_ws_epoch(POLYMARKET_WS_MAX_SILENCE)
+            .is_some_and(|epoch| self.poly_ws_quote_epoch.read().get(market_id) == Some(&epoch))
+    }
+
     /// The WebSocket book for `slug`, but only if it is provably current:
     /// it arrived on the connection that is up right now, and that
     /// connection has delivered a frame within `max_silence`. The server
