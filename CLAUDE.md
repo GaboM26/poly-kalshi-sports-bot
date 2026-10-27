@@ -366,6 +366,9 @@ mismatch as MLB. The matcher refuses any same-name same-date ambiguity
   real (local clock ~95ms ahead), p95 0.2-1s, also on a dedicated BTC-only
   connection (`probe_kalshi_ws_lag`). Taker-taker cross-arb only sees edges
   when one book lags; a maker-plus-hedge design was proposed to the user.
+  Second run (2026-10-26 23:14-00:46 UTC): 9 crypto dry runs passed every
+  check (5 contracts, 0.4-2.7% net). On 2026-10-27 the user enabled LIVE
+  auto-trade for KXBTC15M/KXETH15M/KXSOL15M (`AUTO_TRADE_KALSHI_SERIES`).
 - Kalshi crypto books tick in 0.1c: bids floor to the cent (`book_bid_cents`),
   REST asks round up. Never send sub-cent prices without reworking orders.
 

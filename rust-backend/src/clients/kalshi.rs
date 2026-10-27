@@ -66,6 +66,9 @@ const AUTO_TRADE_KALSHI_SERIES: &[&str] = &[
     "KXITFMATCH",
     "KXITFWMATCH",
     "KXATPCHALLENGERMATCH",
+    "KXBTC15M",
+    "KXETH15M",
+    "KXSOL15M",
 ];
 
 /// Whether auto-trade may execute on this Kalshi market ticker.
@@ -1960,7 +1963,6 @@ mod tests {
         assert_eq!(parsed.category, "CRYPTO15");
         assert_eq!(parsed.markets[0].team_name, "UP");
         assert_eq!(parsed.markets[0].opponent_name, "DOWN");
-        assert!(!auto_trade_enabled_for("KXBTC15M-26OCT261300-00"));
 
         let mut other_index = event.clone();
         other_index["markets"][0]["rules_primary"] = json!("... CF Benchmarks' ETHUSDRTI ... is at least ...");
@@ -1972,11 +1974,12 @@ mod tests {
     }
 
     #[test]
-    fn nhl_and_mlb_are_detection_only() {
+    fn nhl_and_mlb_are_detection_only_crypto_trades() {
         assert!(auto_trade_enabled_for("KXNBAGAME-26OCT11LALMEM-LAL"));
         assert!(auto_trade_enabled_for("KXITFWMATCH-26OCT26GLOARL-GLO"));
         assert!(!auto_trade_enabled_for("KXNHLGAME-26OCT27NYINSH-NYI"));
         assert!(!auto_trade_enabled_for("KXMLBGAME-26OCT262000MILTB-TB"));
+        assert!(auto_trade_enabled_for("KXBTC15M-26OCT261945-45"));
         assert!(!auto_trade_enabled_for("garbage"));
     }
 
