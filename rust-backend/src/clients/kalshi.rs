@@ -456,6 +456,14 @@ impl KalshiClient {
         Ok(balance / 100.0) // Convert cents to dollars
     }
 
+    /// Raw balance response, including the per-exchange-shard
+    /// `balance_breakdown`. Kalshi keeps a separate balance per shard
+    /// (crypto is shard 2, tennis/baseball/basketball shard 3), and an order
+    /// on a shard with no funds fails with `insufficient_shard_balance`.
+    pub async fn get_balance_details(&self) -> Result<Value> {
+        self.get("/portfolio/balance").await
+    }
+
     /// Get order book from cache
     pub fn get_orderbook(&self, ticker: &str) -> Option<OrderBook> {
         self.orderbook_cache.read().get(ticker).cloned()
