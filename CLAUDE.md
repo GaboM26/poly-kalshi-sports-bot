@@ -419,6 +419,16 @@ mismatch as MLB. The matcher refuses any same-name same-date ambiguity
   2 crypto, 3 tennis/baseball/basketball). An order on an unfunded shard
   fails with `insufficient_shard_balance`; crypto shard 2 held $0, so every
   crypto Kalshi leg failed. `probe_kalshi_balance` prints the breakdown.
+- 2026-10-28 04:10 UTC, first live paired fill (WTA Alexandrova vs
+  Rakhimova, in-play, sized +0.6%): Kalshi NO 5 @ 0.63 filled; the Polymarket
+  IOC expired because a point moved its book ~5c within ~1s; recovery bought
+  the missing leg at NO 0.37, so the pair settles $1.00/contract and locked
+  only the fees (~-$0.25). HINT (user, to revisit with more data): in-play
+  markets likely need a wider spread than the 1c `LIMIT_CUSHION_CENTS` and a
+  higher minimum margin. Auto-trade stays on to gather data.
+- `trade_count` (the max-6 cap) only increments on `executed`; a
+  `neutralized` trade that cost fees does not count toward the cap.
+  Flagged to the user 2026-10-28; unchanged pending their call.
 - Do not hold a shared lock (`service.write()`) across network calls; fetch
   first, then lock briefly to apply.
 
