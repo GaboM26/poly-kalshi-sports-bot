@@ -76,20 +76,44 @@ Two services, started together via `./start_rust_stack.sh`:
     `orders.rs`, `events.rs`, `ws.rs` authenticated market-data WebSocket).
     Both exchanges are called directly; there is no separate order-service
     process.
-  - `strategies/`: one folder per trading strategy.
-    `sports_arb/` (`service.rs` detection/control, `execution.rs` sizing,
-    paired submission, neutralization, `websocket_manager/` quote caches,
-    live delivery to the frontend, `auto_trade.rs`, `market_lifecycle.rs`).
-    `mention/` (`execution.rs` single-leg directional executor, `signal.rs`
-    client for the local kalshi-mention signal service).
-  - `services/`: shared platform services. `positions.rs` (position
-    economics and hedge pairing), `pnl.rs`, `metrics.rs`,
-    `storage/` (SQLite; `auto_trade_repo.rs` tracks the execution state
-    machine, `hedge_pairs_repo.rs` persists verified hedges), `discord.rs` (webhook alerts; off until `[discord]` is configured).
-  - `api/`: HTTP routes and the `mod.rs` request/response wiring.
-- **`web/`** (Vite + React + TS, port `5175`, set in `web/vite.config.ts`), the dashboard: live
-  opportunities, order forms, position/history views, WebSocket client
-  (`hooks/useWebSocket.ts`).
+  - `strategies/`: one folder per trading strategy, each implementing the
+    `Strategy` trait in `strategies/mod.rs` (`id`, `routes`, `start`,
+    `feed_client`, `hedge_pairs`); `build_all` lists them.
+    `sports_arb/` (`strategy.rs` startup/routes/WS feed, `service.rs`
+    detection/control, `runner.rs` scan, auto-trade queue/executor and
+    cleanup loops, `execution.rs` sizing, paired submission,
+    neutralization, `routes/` HTTP handlers, `websocket_manager/` quote
+    caches split into `markets`, `quotes`, `polymarket_feed`, `detection`,
+    `frontend`, `auto_trade`, `market_lifecycle`, `opportunity_tracker`).
+    `mention/` (`strategy.rs`, `execution.rs` single-leg directional
+    executor, `signal.rs` client for the local kalshi-mention signal
+    service, `routes.rs`). The model itself stays in Python
+    (`kalshi-mention/`, user decision 2026-11-04).
+  - `services/`: shared platform. `platform.rs` (`Platform`: config,
+    both exchange clients, storage, metrics, Discord, built once and
+    shared by every strategy), `positions.rs` (position economics and
+    hedge pairing), `pnl.rs`, `metrics.rs`, `storage/` (SQLite;
+    `auto_trade_repo.rs` tracks the execution state machine,
+    `hedge_pairs_repo.rs` persists verified hedges), `discord.rs` (webhook
+    alerts; off until `[discord]` is configured).
+  - `api/`: shared routes only (health, login, balances, positions, manual
+    orders, `/ws`) plus mounting each strategy's routes at
+    `/api/<strategy id>/...` (sports arb: `/api/sports_arb/...`, mention:
+    `/api/mention/...`).
+  - `config/`: every tunable lives here with defaults equal to the old
+    constants (`[kalshi.http]`, `[polymarket.http|cache|ws]`,
+    `[sports_arb]` incl. `[[sports_arb.series]]` and
+    `[sports_arb.ended_markets]`, `[mention]`, `[storage]`). Exchange facts
+    (fee rates, WS limits, URLs) stay named constants in their module.
+  - `main.rs` uses the library crate; nothing is compiled twice.
+- **`web/`** (Vite + React + TS, port `5175`, set in `web/vite.config.ts`), the dashboard.
+  `src/strategies/registry.ts` lists the strategy pages (nav tabs);
+  `src/strategies/<id>/` holds each page, its panels and `api.ts`;
+  `src/shared/` holds the header, login, positions panel, WebSocket hook
+  and `api.ts`. Requests are same-origin: Vite proxies `/api` and `/ws` to
+  `VITE_BACKEND_URL` (default `http://localhost:8000`).
+
+Adding a strategy: see `docs/adding-a-strategy.md`.
 
 The old Python `poly-order-service/` (FastAPI wrapper around the
 `polymarket-us` SDK) was replaced by direct Rust calls on 2026-09-27 and
