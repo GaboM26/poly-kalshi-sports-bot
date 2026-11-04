@@ -19,7 +19,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Map, Value};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -217,6 +217,9 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
+
+    // Close politely so the server does not log a connection reset.
+    let _ = stream.close(None).await;
 
     let out = json!({ "http": http_shapes, "ws": ws_shapes });
     println!("{}", serde_json::to_string_pretty(&out)?);
