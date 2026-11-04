@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import { createPolymarketOrder } from '../utils/api';
+import { createPolymarketOrder } from '../shared/api';
 
 interface PolyDebugOrderProps {
-  apiBaseUrl: string;
   onClose: () => void;
 }
 
@@ -14,7 +13,7 @@ interface OrderLog {
   data?: any;
 }
 
-export function PolyDebugOrder({ apiBaseUrl, onClose }: PolyDebugOrderProps) {
+export function PolyDebugOrder({ onClose }: PolyDebugOrderProps) {
   const [marketSlug, setMarketSlug] = useState('');
   const [positionSide, setPositionSide] = useState<'long' | 'short'>('long');
   const [side, setSide] = useState<'buy' | 'sell'>('buy');
@@ -59,7 +58,7 @@ export function PolyDebugOrder({ apiBaseUrl, onClose }: PolyDebugOrderProps) {
 
     try {
       const startTime = Date.now();
-      const response = await createPolymarketOrder(apiBaseUrl, request);
+      const response = await createPolymarketOrder(request);
       const elapsed = Date.now() - startTime;
 
       addLog('response', `Response received (${elapsed}ms)`, response);

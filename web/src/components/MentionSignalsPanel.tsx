@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
+import { mentionUrl } from '../strategies/mention/api';
 import { MentionDecision, MentionPosition, MentionSignalRow, MentionStatus } from '../types';
 
 interface MentionSignalsPanelProps {
-  apiBaseUrl: string;
   signals: MentionSignalRow[];
   status: MentionStatus | null;
 }
@@ -48,7 +48,7 @@ const MODE_STYLE: Record<Mode, { frame: string; banner: string; text: string }> 
   },
 };
 
-export function MentionSignalsPanel({ apiBaseUrl, signals, status }: MentionSignalsPanelProps) {
+export function MentionSignalsPanel({ signals, status }: MentionSignalsPanelProps) {
   const [decisions, setDecisions] = useState<MentionDecision[]>([]);
   const [positions, setPositions] = useState<MentionPosition[]>([]);
   const [busy, setBusy] = useState(false);
@@ -59,8 +59,8 @@ export function MentionSignalsPanel({ apiBaseUrl, signals, status }: MentionSign
     const load = async () => {
       try {
         const [decisionResponse, positionResponse] = await Promise.all([
-          fetch(`${apiBaseUrl}/api/mention/decisions?limit=20`),
-          fetch(`${apiBaseUrl}/api/mention/history?limit=10`),
+          fetch(mentionUrl(`/decisions?limit=20`)),
+          fetch(mentionUrl(`/history?limit=10`)),
         ]);
         if (!decisionResponse.ok) throw new Error(`Decision log unavailable (${decisionResponse.status})`);
         if (!positionResponse.ok) throw new Error(`Position history unavailable (${positionResponse.status})`);
@@ -76,14 +76,14 @@ export function MentionSignalsPanel({ apiBaseUrl, signals, status }: MentionSign
     void load();
     const timer = setInterval(() => void load(), 10000);
     return () => { disposed = true; clearInterval(timer); };
-  }, [apiBaseUrl]);
+  }, []);
 
   const command = async (method: 'POST' | 'PUT', path: string, body: unknown) => {
     setBusy(true);
     setError(null);
     try {
       const token = localStorage.getItem('auth_token');
-      const response = await fetch(`${apiBaseUrl}/api/mention/${path}`, {
+      const response = await fetch(mentionUrl(`/${path}`), {
         method,
         headers: {
           'Content-Type': 'application/json',

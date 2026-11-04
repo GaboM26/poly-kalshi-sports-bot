@@ -1,17 +1,17 @@
 import { useState } from 'react';
 import { MatchedMarketData } from '../types';
-import { createKalshiOrder, createPolymarketOrder, executeArbitrage } from '../utils/api';
+import { createKalshiOrder, createPolymarketOrder } from '../shared/api';
+import { executeArbitrage } from '../strategies/sports-arb/api';
 
 interface OrderFormProps {
   market: MatchedMarketData;
-  apiBaseUrl: string;
   onOrderPlaced?: () => void;
 }
 
 type Side = 'yes' | 'no';
 type Action = 'buy' | 'sell';
 
-export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps) {
+export function OrderForm({ market, onOrderPlaced }: OrderFormProps) {
   const [count, setCount] = useState(1);
   const [polyContracts, setPolyContracts] = useState(1);
   const [loading, setLoading] = useState<string | null>(null);
@@ -32,7 +32,7 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
     setResult(null);
 
     try {
-      const response = await createKalshiOrder(apiBaseUrl, {
+      const response = await createKalshiOrder({
         ticker: market.kalshi_market_id,
         side,
         action,
@@ -78,7 +78,7 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
         return;
       }
 
-      const response = await createPolymarketOrder(apiBaseUrl, {
+      const response = await createPolymarketOrder({
         market_slug: marketSlug,
         position_side: competitor === 'team'
           ? market.polymarket_team_position_side
@@ -126,7 +126,7 @@ export function OrderForm({ market, apiBaseUrl, onOrderPlaced }: OrderFormProps)
       const isKalshiYes = market.arbitrage_type.includes('KalshiYes');
       const kalshiSide: Side = isKalshiYes ? 'yes' : 'no';
 
-      const response = await executeArbitrage(apiBaseUrl, {
+      const response = await executeArbitrage({
         event_name: market.event_name,
         team_name: market.team_name,
         kalshi_side: kalshiSide,

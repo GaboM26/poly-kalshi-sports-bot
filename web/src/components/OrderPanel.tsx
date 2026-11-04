@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { PositionCard, PositionLeg } from '../types';
-import { getUnifiedPositions, createKalshiOrder } from '../utils/api';
+import { getUnifiedPositions, createKalshiOrder } from '../shared/api';
 
 interface OrderPanelProps {
-  apiBaseUrl: string;
 }
 
 const money = (v: number | null | undefined) =>
@@ -47,7 +46,7 @@ function Field({
   );
 }
 
-export function OrderPanel({ apiBaseUrl }: OrderPanelProps) {
+export function OrderPanel({}: OrderPanelProps) {
   const [cards, setCards] = useState<PositionCard[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +55,7 @@ export function OrderPanel({ apiBaseUrl }: OrderPanelProps) {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await getUnifiedPositions(apiBaseUrl);
+      const res = await getUnifiedPositions();
       setCards(res.cards);
       setError(res.errors.length > 0 ? res.errors.join('; ') : null);
     } catch (e) {
@@ -64,7 +63,7 @@ export function OrderPanel({ apiBaseUrl }: OrderPanelProps) {
     } finally {
       setLoading(false);
     }
-  }, [apiBaseUrl]);
+  }, []);
 
   useEffect(() => {
     loadData();
@@ -81,7 +80,7 @@ export function OrderPanel({ apiBaseUrl }: OrderPanelProps) {
     }
     setActionLoading(leg.market_id);
     try {
-      const result = await createKalshiOrder(apiBaseUrl, {
+      const result = await createKalshiOrder({
         ticker: leg.market_id,
         side: leg.side as 'yes' | 'no',
         action: 'sell',

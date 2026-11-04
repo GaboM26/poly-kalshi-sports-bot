@@ -1,18 +1,18 @@
 import { useState, useEffect } from 'react';
+import { sportsArbUrl } from '../strategies/sports-arb/api';
 import { TrackingStats, ActiveTracking } from '../types';
 
 interface TrackingPanelProps {
-  apiBaseUrl: string;
 }
 
-export function TrackingPanel({ apiBaseUrl }: TrackingPanelProps) {
+export function TrackingPanel({}: TrackingPanelProps) {
   const [trackingStats, setTrackingStats] = useState<TrackingStats | null>(null);
 
   // Fetch tracking data periodically.
   useEffect(() => {
     const fetchTracking = async () => {
       try {
-        const response = await fetch(`${apiBaseUrl}/api/tracking`);
+        const response = await fetch(sportsArbUrl(`/tracking`));
         if (response.ok) {
           const data = await response.json();
           setTrackingStats(data);
@@ -25,7 +25,7 @@ export function TrackingPanel({ apiBaseUrl }: TrackingPanelProps) {
     fetchTracking();
     const interval = setInterval(fetchTracking, 2000); // Refresh every two seconds.
     return () => clearInterval(interval);
-  }, [apiBaseUrl]);
+  }, []);
 
   if (!trackingStats) {
     return (

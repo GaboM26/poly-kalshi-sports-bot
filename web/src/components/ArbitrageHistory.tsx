@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { sportsArbUrl } from '../strategies/sports-arb/api';
 
 interface ProfitHistoryEntry {
   time: string;
@@ -62,11 +63,10 @@ interface ArbitrageHistoryData {
 }
 
 interface ArbitrageHistoryProps {
-  apiBaseUrl: string;
   onOpenExplorer?: () => void;
 }
 
-export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistoryProps) {
+export function ArbitrageHistory({ onOpenExplorer }: ArbitrageHistoryProps) {
   const [data, setData] = useState<ArbitrageHistoryData>({ active: [], completed: [] });
   const [autoTradeRecords, setAutoTradeRecords] = useState<AutoTradeRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -78,7 +78,7 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
     const fetchHistory = async () => {
       try {
         // Fetch arbitrage tracking history
-        const response = await fetch(`${apiBaseUrl}/api/arbitrage-history`);
+        const response = await fetch(sportsArbUrl(`/arbitrage-history`));
         if (response.ok) {
           const result = await response.json();
           setData({
@@ -88,7 +88,7 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
         }
         
         // Fetch auto-trade history
-        const autoTradeResponse = await fetch(`${apiBaseUrl}/api/auto-trade/history?limit=50`);
+        const autoTradeResponse = await fetch(sportsArbUrl(`/auto-trade/history?limit=50`));
         if (autoTradeResponse.ok) {
           const result = await autoTradeResponse.json();
           setAutoTradeRecords(result?.records || []);
@@ -104,7 +104,7 @@ export function ArbitrageHistory({ apiBaseUrl, onOpenExplorer }: ArbitrageHistor
     // Refresh every five seconds.
     const interval = setInterval(fetchHistory, 5000);
     return () => clearInterval(interval);
-  }, [apiBaseUrl]);
+  }, []);
 
   if (loading) {
     return (

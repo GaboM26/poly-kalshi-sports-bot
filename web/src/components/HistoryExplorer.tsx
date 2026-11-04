@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { sportsArbUrl } from '../strategies/sports-arb/api';
 
 interface ProfitHistoryEntry {
   time: string;
@@ -65,11 +66,10 @@ interface Statistics {
 }
 
 interface HistoryExplorerProps {
-  apiBaseUrl: string;
   onClose: () => void;
 }
 
-export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
+export function HistoryExplorer({ onClose }: HistoryExplorerProps) {
   // Filter criteria
   const [minProfit, setMinProfit] = useState<string>('');
   const [maxProfit, setMaxProfit] = useState<string>('');
@@ -122,7 +122,7 @@ export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
       params.set('offset', ((page - 1) * pageSize).toString());
       params.set('include_history', 'true');
       
-      const response = await fetch(`${apiBaseUrl}/api/history/search?${params}`);
+      const response = await fetch(sportsArbUrl(`/history/search?${params}`));
       if (response.ok) {
         const data = await response.json();
         setResult(data);
@@ -132,12 +132,12 @@ export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
     } finally {
       setLoading(false);
     }
-  }, [apiBaseUrl, minProfit, maxProfit, minDuration, maxDuration, durationUnit, eventName, teamName, sortBy, sortOrder, page]);
+  }, [minProfit, maxProfit, minDuration, maxDuration, durationUnit, eventName, teamName, sortBy, sortOrder, page]);
 
   // Fetch statistics
   const fetchStats = useCallback(async () => {
     try {
-      const response = await fetch(`${apiBaseUrl}/api/history/statistics`);
+      const response = await fetch(sportsArbUrl(`/history/statistics`));
       if (response.ok) {
         const data = await response.json();
         setStats(data);
@@ -145,7 +145,7 @@ export function HistoryExplorer({ apiBaseUrl, onClose }: HistoryExplorerProps) {
     } catch (error) {
       console.error('Failed to fetch stats:', error);
     }
-  }, [apiBaseUrl]);
+  }, []);
 
   useEffect(() => {
     search();

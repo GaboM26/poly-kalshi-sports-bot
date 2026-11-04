@@ -1,16 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
+import { apiUrl } from '../shared/api';
 import { DataCoverage, AccountBalance, MetricsReport } from '../types';
-import { 
-  getAutoTradeStatus, 
-  enableAutoTrade, 
-  disableAutoTrade, 
-  resetAutoTradeCount, 
-  updateAutoTradeSettings,
-  AutoTradeStatus,
-  getAppSettings,
-  updateAppSettings,
-  AppSettings
-} from '../utils/api';
+import { getAutoTradeStatus, enableAutoTrade, disableAutoTrade, resetAutoTradeCount, updateAutoTradeSettings, AutoTradeStatus, getAppSettings, updateAppSettings, AppSettings } from '../strategies/sports-arb/api';
 
 interface HeaderProps {
   isConnected: boolean;
@@ -25,7 +16,6 @@ interface HeaderProps {
   updateCount: number;
   dataCoverage: DataCoverage;
   metrics: MetricsReport | null;
-  apiBaseUrl: string;
   onLogout?: () => void;
   username?: string | null;
 }
@@ -33,7 +23,7 @@ interface HeaderProps {
 const AUTO_REFRESH_STORAGE_KEY = 'polytaoli_auto_refresh';
 const MIN_AUTO_REFRESH_SECONDS = 5;
 
-export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastUpdateTime, updateCount, dataCoverage, metrics, apiBaseUrl, onLogout, username }: HeaderProps) {
+export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastUpdateTime, updateCount, dataCoverage, metrics, onLogout, username }: HeaderProps) {
   const [isFlashing, setIsFlashing] = useState(false);
   const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null);
 
@@ -140,7 +130,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
   // an input only changes when the user edits it or a save round-trips.
   const fetchAutoTradeStatus = useCallback(async () => {
     try {
-      const data = await getAutoTradeStatus(apiBaseUrl);
+      const data = await getAutoTradeStatus();
       setAutoTradeStatus((prev) => {
         if (prev === null) {
           setDurationInput(String(data.min_duration_ms));
@@ -154,12 +144,12 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     } catch (error) {
       console.error('Failed to fetch automated trading status:', error);
     }
-  }, [apiBaseUrl]);
+  }, []);
 
   // Fetch application settings.
   const fetchAppSettings = useCallback(async () => {
     try {
-      const data = await getAppSettings(apiBaseUrl);
+      const data = await getAppSettings();
       setAppSettings(data);
       setEditRefreshInterval(String(data.refresh_interval));
       setEditMinProfit(String(data.min_profit_margin));
@@ -168,7 +158,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     } catch (error) {
       console.error('Failed to fetch application settings:', error);
     }
-  }, [apiBaseUrl]);
+  }, []);
 
   // Refresh automated trading status periodically.
   useEffect(() => {
@@ -220,7 +210,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
 
     setSettingsLoading(true);
     try {
-      const result = await updateAppSettings(apiBaseUrl, {
+      const result = await updateAppSettings({
         refresh_interval: refreshInterval,
         min_profit_margin: minProfit,
         default_bet_amount: defaultBet,
@@ -244,11 +234,11 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     setAutoTradeLoading(true);
     try {
       if (autoTradeStatus.enabled) {
-        const result = await disableAutoTrade(apiBaseUrl);
+        const result = await disableAutoTrade();
         if (result.success) showAutoTradeMsg('Automated trading disabled', 'success');
         else showAutoTradeMsg(result.error || 'Operation failed', 'error');
       } else {
-        const result = await enableAutoTrade(apiBaseUrl);
+        const result = await enableAutoTrade();
         if (result.success) showAutoTradeMsg('Automated trading enabled', 'success');
         else showAutoTradeMsg(result.error || 'Operation failed', 'error');
       }
@@ -263,7 +253,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
   const handleAutoTradeReset = async () => {
     setAutoTradeLoading(true);
     try {
-      const result = await resetAutoTradeCount(apiBaseUrl);
+      const result = await resetAutoTradeCount();
       if (result.success) showAutoTradeMsg('Trade count reset', 'success');
       else showAutoTradeMsg(result.error || 'Failed to reset trade count', 'error');
       await fetchAutoTradeStatus();
@@ -282,7 +272,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     }
     setAutoTradeLoading(true);
     try {
-      const result = await updateAutoTradeSettings(apiBaseUrl, { min_duration_ms: duration });
+      const result = await updateAutoTradeSettings({ min_duration_ms: duration });
       if (result.success) showAutoTradeMsg('Settings updated', 'success');
       else showAutoTradeMsg(result.error || 'Failed to update settings', 'error');
       await fetchAutoTradeStatus();
@@ -301,7 +291,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     }
     setAutoTradeLoading(true);
     try {
-      const result = await updateAutoTradeSettings(apiBaseUrl, { max_trade_count: count });
+      const result = await updateAutoTradeSettings({ max_trade_count: count });
       if (result.success) showAutoTradeMsg('Maximum trade count updated', 'success');
       else showAutoTradeMsg(result.error || 'Failed to update settings', 'error');
       await fetchAutoTradeStatus();
@@ -316,7 +306,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     if (!autoTradeStatus) return;
     setAutoTradeLoading(true);
     try {
-      const result = await updateAutoTradeSettings(apiBaseUrl, { 
+      const result = await updateAutoTradeSettings({ 
         flexible_mode: !autoTradeStatus.flexible_mode 
       });
       if (result.success) {
@@ -343,7 +333,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     }
     setAutoTradeLoading(true);
     try {
-      const result = await updateAutoTradeSettings(apiBaseUrl, { max_contracts: count });
+      const result = await updateAutoTradeSettings({ max_contracts: count });
       if (result.success) showAutoTradeMsg('Maximum contracts updated', 'success');
       else showAutoTradeMsg(result.error || 'Failed to update settings', 'error');
       await fetchAutoTradeStatus();
@@ -362,7 +352,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     }
     setAutoTradeLoading(true);
     try {
-      const result = await updateAutoTradeSettings(apiBaseUrl, { min_contracts: count });
+      const result = await updateAutoTradeSettings({ min_contracts: count });
       if (result.success) showAutoTradeMsg('Minimum contracts updated', 'success');
       else showAutoTradeMsg(result.error || 'Failed to update settings', 'error');
       await fetchAutoTradeStatus();
@@ -380,7 +370,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     }
     setAutoTradeLoading(true);
     try {
-      const result = await updateAutoTradeSettings(apiBaseUrl, {
+      const result = await updateAutoTradeSettings({
         neutralization_max_loss_cents: cents,
       });
       if (result.success) showAutoTradeMsg('Close-loss bound updated', 'success');
@@ -405,7 +395,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
   useEffect(() => {
     const fetchBalance = async () => {
       try {
-        const response = await fetch(`${apiBaseUrl}/api/account-balance`);
+        const response = await fetch(apiUrl(`/api/account-balance`));
         if (response.ok) {
           const data = await response.json();
           setAccountBalance(data);
@@ -420,7 +410,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     // Account endpoints are rate-limited; refresh at a sustainable cadence.
     const interval = setInterval(fetchBalance, 60000);
     return () => clearInterval(interval);
-  }, [apiBaseUrl]);
+  }, []);
 
   // Refresh displayed time every second.
   const [, setTick] = useState(0);

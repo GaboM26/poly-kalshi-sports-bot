@@ -1,11 +1,11 @@
 import { useState, FormEvent } from 'react';
+import { apiUrl } from '../shared/api';
 
 interface LoginProps {
   onLoginSuccess: (token: string, username: string) => void;
-  apiBaseUrl: string;
 }
 
-export function Login({ onLoginSuccess, apiBaseUrl }: LoginProps) {
+export function Login({ onLoginSuccess }: LoginProps) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -17,7 +17,7 @@ export function Login({ onLoginSuccess, apiBaseUrl }: LoginProps) {
     setLoading(true);
 
     try {
-      const response = await fetch(`${apiBaseUrl}/api/auth/login`, {
+      const response = await fetch(apiUrl(`/api/auth/login`), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

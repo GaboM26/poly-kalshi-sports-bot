@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
+import { sportsArbUrl } from './strategies/sports-arb/api';
 import { Header } from './components/Header';
 import { Login } from './components/Login';
 import { OpportunityList } from './components/OpportunityList';
@@ -12,6 +13,7 @@ import { PolyDebugOrder } from './components/PolyDebugOrder';
 import { MentionSignalsPanel } from './components/MentionSignalsPanel';
 import { StrategyNav, Strategy } from './components/StrategyNav';
 import { useWebSocket } from './hooks/useWebSocket';
+import { wsUrl } from './shared/api';
 import { MatchedMarketData, OrderbookDepthResponse } from './types';
 
 function App() {
@@ -45,23 +47,7 @@ function App() {
     setCurrentUsername(null);
   };
 
-  const wsUrl = useMemo(() => {
-    const devPorts = ['5175', '5176', '5177', '5173'];
-    const isDev = devPorts.includes(window.location.port);
-    return isDev 
-      ? 'ws://localhost:8000/ws'
-      : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
-  }, []);
-
-  const apiBaseUrl = useMemo(() => {
-    const devPorts = ['5175', '5176', '5177', '5173'];
-    const isDev = devPorts.includes(window.location.port);
-    return isDev 
-      ? 'http://localhost:8000'
-      : `${window.location.protocol}//${window.location.host}`;
-  }, []);
-  
-  const { matchedMarkets, isConnected, stats, lastUpdateTime, updateCount, dataCoverage, metrics, mentionSignals, mentionStatus } = useWebSocket(wsUrl);
+  const { matchedMarkets, isConnected, stats, lastUpdateTime, updateCount, dataCoverage, metrics, mentionSignals, mentionStatus } = useWebSocket(wsUrl());
   // Calculate total profit from matched markets with arbitrage opportunities.
   const totalProfit = matchedMarkets
     .filter(m => m.has_opportunity)
@@ -104,7 +90,7 @@ function App() {
       if (market.kalshi_market_id) {
         params.append('kalshi_ticker', market.kalshi_market_id);
       }
-      const response = await fetch(`${apiBaseUrl}/api/orderbook/depth?${params}`);
+      const response = await fetch(sportsArbUrl(`/orderbook/depth?${params}`));
       if (response.ok) {
         const data = await response.json();
         setOrderbookDepth(data);
@@ -112,7 +98,7 @@ function App() {
     } catch (error) {
       console.error('Failed to fetch order book depth:', error);
     }
-  }, [apiBaseUrl]);
+  }, []);
 
   // Fetch depth when the selected market changes.
   useEffect(() => {
@@ -128,7 +114,7 @@ function App() {
 
   // Show the login page when unauthenticated.
   if (!isAuthenticated) {
-    return <Login onLoginSuccess={handleLoginSuccess} apiBaseUrl={apiBaseUrl} />;
+    return <Login onLoginSuccess={handleLoginSuccess} />;
   }
 
   return (
@@ -141,7 +127,6 @@ function App() {
         updateCount={updateCount}
         dataCoverage={dataCoverage}
         metrics={metrics}
-        apiBaseUrl={apiBaseUrl}
         onLogout={handleLogout}
         username={currentUsername}
       />
@@ -150,7 +135,7 @@ function App() {
       {strategy === 'mention' ? (
       <main className="flex-1 overflow-hidden p-1 bg-[--bg-primary]">
         <div className="h-full overflow-y-auto bg-[--bg-secondary] rounded border border-[--border-color] shadow-lg">
-          <MentionSignalsPanel apiBaseUrl={apiBaseUrl} signals={mentionSignals} status={mentionStatus} />
+          <MentionSignalsPanel signals={mentionSignals} status={mentionStatus} />
         </div>
       </main>
       ) : (
@@ -166,7 +151,6 @@ function App() {
                   `${market.kalshi_market_id}_${market.polymarket_market_id}`,
                 )
               }
-              apiBaseUrl={apiBaseUrl}
             />
           </div>
           {/* Bottom: positions/history tabs (45%) */}
@@ -198,9 +182,9 @@ function App() {
             {/* Tab content */}
             <div className="flex-1 overflow-hidden">
               {leftBottomTab === 'positions' ? (
-                <OrderPanel apiBaseUrl={apiBaseUrl} />
+                <OrderPanel />
               ) : (
-                <ArbitrageHistory apiBaseUrl={apiBaseUrl} onOpenExplorer={() => setShowHistoryExplorer(true)} />
+                <ArbitrageHistory onOpenExplorer={() => setShowHistoryExplorer(true)} />
               )}
             </div>
           </div>
@@ -465,8 +449,7 @@ function App() {
                           <h3 className="text-[10px] font-semibold text-[--text-muted] uppercase tracking-wider">Place Order</h3>
                         </div>
                         <OrderForm 
-                          market={selectedMarket} 
-                          apiBaseUrl={apiBaseUrl}
+                          market={selectedMarket}
                         />
                       </div>
                   </div>
@@ -478,7 +461,7 @@ function App() {
                   </div>
                 )
               ) : (
-                <TrackingPanel apiBaseUrl={apiBaseUrl} />
+                <TrackingPanel />
               )}
             </div>
           </div>
@@ -494,7 +477,6 @@ function App() {
       {/* History explorer modal */}
       {showHistoryExplorer && (
         <HistoryExplorer 
-          apiBaseUrl={apiBaseUrl} 
           onClose={() => setShowHistoryExplorer(false)} 
         />
       )}
@@ -502,7 +484,6 @@ function App() {
       {/* Polymarket debug order modal */}
       {showPolyDebug && (
         <PolyDebugOrder
-          apiBaseUrl={apiBaseUrl}
           onClose={() => setShowPolyDebug(false)}
         />
       )}

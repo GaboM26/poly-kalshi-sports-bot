@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { sportsArbUrl } from '../strategies/sports-arb/api';
 import { MatchedMarketData, ArbitrageExecuteRequest } from '../types';
-import { executeArbitrage } from '../utils/api';
+import { executeArbitrage } from '../strategies/sports-arb/api';
 
 interface OpportunityListProps {
   matchedMarkets: MatchedMarketData[];
   onSelectMarket?: (market: MatchedMarketData) => void;
-  apiBaseUrl?: string;
 }
 
 type SortOption = 'profit' | 'event' | 'team' | 'sport';
 
-export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '' }: OpportunityListProps) {
+export function OpportunityList({ matchedMarkets, onSelectMarket }: OpportunityListProps) {
   // Track price changes for highlight animations.
   const [flashingCells, setFlashingCells] = useState<Set<string>>(new Set());
   const prevPricesRef = useRef<Map<string, { k_yes: number; k_no: number; p_yes: number; p_no: number }>>(new Map());
@@ -47,15 +47,14 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
   
   // Fetch excluded markets.
   const fetchExcludedMarkets = useCallback(async () => {
-    if (!apiBaseUrl) return;
     try {
-      const res = await fetch(`${apiBaseUrl}/api/auto-trade/excluded`);
+      const res = await fetch(sportsArbUrl(`/auto-trade/excluded`));
       const data = await res.json();
       setExcludedMarkets(new Set(data.excluded_markets || []));
     } catch (err) {
       console.error('Failed to fetch excluded markets:', err);
     }
-  }, [apiBaseUrl]);
+  }, []);
   
   // Initially load excluded markets.
   useEffect(() => {
@@ -75,7 +74,6 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
   // Exclude or unexclude a market.
   const handleToggleExclude = async (market: MatchedMarketData, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!apiBaseUrl) return;
     
     const key = getMarketKey(market);
     const isExcluded = excludedMarkets.has(key);
@@ -84,7 +82,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
     
     try {
       const endpoint = isExcluded ? 'unexclude' : 'exclude';
-      const res = await fetch(`${apiBaseUrl}/api/auto-trade/${endpoint}`, {
+      const res = await fetch(sportsArbUrl(`/auto-trade/${endpoint}`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -116,7 +114,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
   // Execute arbitrage.
   const handleExecute = async (market: MatchedMarketData, executionKey: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!market.has_opportunity || !apiBaseUrl) return;
+    if (!market.has_opportunity) return;
 
     setExecutingKey(executionKey);
     setLastResult(null);
@@ -140,7 +138,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
         dry_run: false,
       };
 
-      const result = await executeArbitrage(apiBaseUrl, request);
+      const result = await executeArbitrage(request);
       const dryRun = result.status === 'dry_run';
 
       if (result.success) {
@@ -424,7 +422,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                         <div className="flex flex-col items-center gap-0.5 max-w-[110px]">
                           <button
                             onClick={(e) => handleExecute(market, marketKey, e)}
-                            disabled={executingKey === marketKey || !apiBaseUrl}
+                            disabled={executingKey === marketKey}
                             title={lastResult?.key === marketKey ? lastResult.message : 'Execute this paired arbitrage'}
                             className={`w-full px-2 py-1 text-[10px] font-semibold rounded-md border transition-colors ${
                               executingKey === marketKey
@@ -459,7 +457,7 @@ export function OpportunityList({ matchedMarkets, onSelectMarket, apiBaseUrl = '
                       {/* Exclude button */}
                       <button
                         onClick={(e) => handleToggleExclude(market, e)}
-                        disabled={excludingKey === marketKey || !apiBaseUrl}
+                        disabled={excludingKey === marketKey}
                         title={excludedMarkets.has(marketKey) ? 'Remove Exclusion' : 'Exclude This Market'}
                         className={`px-1 py-0.5 text-[9px] font-medium rounded transition-colors ${
                           excludingKey === marketKey

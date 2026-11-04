@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { sportsArbUrl } from '../strategies/sports-arb/api';
 import { WsMessage, LogEntry, DataCoverage, MatchedMarketData, MetricsReport, MentionSignalRow, MentionStatus } from '../types';
 
 export function useWebSocket(url: string) {
@@ -223,8 +224,7 @@ export function useWebSocket(url: string) {
     const fetchCoverage = async () => {
       try {
         // Infer the API URL from the WebSocket URL.
-        const apiUrl = url.replace('ws://', 'http://').replace('wss://', 'https://').replace('/ws', '');
-        const response = await fetch(`${apiUrl}/api/data-coverage`);
+        const response = await fetch(sportsArbUrl('/data-coverage'));
         if (response.ok) {
           const data = await response.json();
           setDataCoverage(data);
