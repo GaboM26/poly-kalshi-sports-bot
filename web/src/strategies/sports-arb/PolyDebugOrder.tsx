@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { createPolymarketOrder } from '../shared/api';
+import { createPolymarketOrder } from '../../shared/api';
 
 interface PolyDebugOrderProps {
   onClose: () => void;

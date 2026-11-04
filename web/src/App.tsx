@@ -1,20 +1,12 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
-import { sportsArbUrl } from './strategies/sports-arb/api';
-import { Header } from './components/Header';
-import { Login } from './components/Login';
-import { OpportunityList } from './components/OpportunityList';
-import { TrackingPanel } from './components/TrackingPanel';
-import { ArbitrageHistory } from './components/ArbitrageHistory';
-import { HistoryExplorer } from './components/HistoryExplorer';
-import { OrderPanel } from './components/OrderPanel';
-import { OrderForm } from './components/OrderForm';
-import { MetricsPanel } from './components/MetricsPanel';
-import { PolyDebugOrder } from './components/PolyDebugOrder';
-import { MentionSignalsPanel } from './components/MentionSignalsPanel';
-import { StrategyNav, Strategy } from './components/StrategyNav';
-import { useWebSocket } from './hooks/useWebSocket';
+import { useEffect, useState } from 'react';
+import { Header } from './shared/components/Header';
+import { Login } from './shared/components/Login';
+import { StrategyNav } from './shared/components/StrategyNav';
+import { useWebSocket } from './shared/useWebSocket';
 import { wsUrl } from './shared/api';
-import { MatchedMarketData, OrderbookDepthResponse } from './types';
+import { STRATEGIES } from './strategies/registry';
+
+const STRATEGY_STORAGE_KEY = 'strategy';
 
 function App() {
   // Authentication state
@@ -47,70 +39,29 @@ function App() {
     setCurrentUsername(null);
   };
 
-  const { matchedMarkets, isConnected, stats, lastUpdateTime, updateCount, dataCoverage, metrics, mentionSignals, mentionStatus } = useWebSocket(wsUrl());
+  const live = useWebSocket(wsUrl());
+  const { matchedMarkets, isConnected, stats, lastUpdateTime, updateCount, dataCoverage, metrics } = live;
   // Calculate total profit from matched markets with arbitrage opportunities.
   const totalProfit = matchedMarkets
     .filter(m => m.has_opportunity)
     .reduce((sum, m) => sum + m.expected_profit, 0);
-  const [selectedMarketKey, setSelectedMarketKey] = useState<string | null>(null);
-  const selectedMarket = useMemo(() => {
-    if (selectedMarketKey === null) {
-      return null;
-    }
-    return matchedMarkets.find(
-      (market) =>
-        `${market.kalshi_market_id}_${market.polymarket_market_id}` === selectedMarketKey,
-    ) ?? null;
-  }, [matchedMarkets, selectedMarketKey]);
-  const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking'>('detail');
-  const [strategy, setStrategy] = useState<Strategy>(() => {
+
+  const [strategyId, setStrategyId] = useState<string>(() => {
     try {
-      return localStorage.getItem('strategy') === 'mention' ? 'mention' : 'arbitrage';
+      return localStorage.getItem(STRATEGY_STORAGE_KEY) ?? STRATEGIES[0].id;
     } catch {
-      return 'arbitrage';
+      return STRATEGIES[0].id;
     }
   });
-  const selectStrategy = (next: Strategy) => {
-    setStrategy(next);
+  const selectStrategy = (id: string) => {
+    setStrategyId(id);
     try {
-      localStorage.setItem('strategy', next);
+      localStorage.setItem(STRATEGY_STORAGE_KEY, id);
     } catch {
       // Remembering the page is a convenience only.
     }
   };
-  const [leftBottomTab, setLeftBottomTab] = useState<'positions' | 'history'>('positions');
-  const [showHistoryExplorer, setShowHistoryExplorer] = useState(false);
-  const [showPolyDebug, setShowPolyDebug] = useState(false);
-  const [orderbookDepth, setOrderbookDepth] = useState<OrderbookDepthResponse | null>(null);
-
-  // Fetch order book depth.
-  const fetchOrderbookDepth = useCallback(async (market: MatchedMarketData) => {
-    try {
-      const params = new URLSearchParams();
-      if (market.kalshi_market_id) {
-        params.append('kalshi_ticker', market.kalshi_market_id);
-      }
-      const response = await fetch(sportsArbUrl(`/orderbook/depth?${params}`));
-      if (response.ok) {
-        const data = await response.json();
-        setOrderbookDepth(data);
-      }
-    } catch (error) {
-      console.error('Failed to fetch order book depth:', error);
-    }
-  }, []);
-
-  // Fetch depth when the selected market changes.
-  useEffect(() => {
-    if (selectedMarket) {
-      fetchOrderbookDepth(selectedMarket);
-      // Refresh depth every three seconds.
-      const interval = setInterval(() => fetchOrderbookDepth(selectedMarket), 3000);
-      return () => clearInterval(interval);
-    } else {
-      setOrderbookDepth(null);
-    }
-  }, [selectedMarket, fetchOrderbookDepth]);
+  const active = STRATEGIES.find((s) => s.id === strategyId) ?? STRATEGIES[0];
 
   // Show the login page when unauthenticated.
   if (!isAuthenticated) {
@@ -129,418 +80,12 @@ function App() {
         metrics={metrics}
         onLogout={handleLogout}
         username={currentUsername}
+        controls={active.HeaderControls ? <active.HeaderControls /> : null}
       />
-      <StrategyNav active={strategy} onChange={selectStrategy} />
-
-      {strategy === 'mention' ? (
-      <main className="flex-1 overflow-hidden p-1 bg-[--bg-primary]">
-        <div className="h-full overflow-y-auto bg-[--bg-secondary] rounded border border-[--border-color] shadow-lg">
-          <MentionSignalsPanel signals={mentionSignals} status={mentionStatus} />
-        </div>
-      </main>
-      ) : (
-      <main className="flex-1 flex overflow-hidden gap-1 p-1 bg-[--bg-primary]">
-        {/* Left: market list and positions/history */}
-        <div className="flex-1 flex flex-col overflow-hidden gap-1">
-          {/* Top: market list (55%) */}
-          <div className="flex-1 min-h-0 overflow-hidden flex flex-col bg-[--bg-secondary] rounded border border-[--border-color] shadow-lg" style={{flexBasis: '55%'}}>
-            <OpportunityList 
-              matchedMarkets={matchedMarkets}
-              onSelectMarket={(market) =>
-                setSelectedMarketKey(
-                  `${market.kalshi_market_id}_${market.polymarket_market_id}`,
-                )
-              }
-            />
-          </div>
-          {/* Bottom: positions/history tabs (45%) */}
-          <div className="flex-1 min-h-0 overflow-hidden flex flex-col bg-[--bg-secondary] rounded border border-[--border-color] shadow-lg" style={{flexBasis: '45%'}}>
-            {/* Tab switcher */}
-            <div className="flex border-b-2 border-[--border-color] flex-shrink-0 bg-[--bg-tertiary]">
-              <button
-                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors border-b-2 ${
-                  leftBottomTab === 'positions'
-                    ? 'text-[--accent-blue] border-[--accent-blue] bg-[--bg-secondary]'
-                    : 'text-[--text-muted] hover:text-[--text-secondary] border-transparent'
-                }`}
-                onClick={() => setLeftBottomTab('positions')}
-              >
-                💼 Positions
-              </button>
-              <button
-                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors border-b-2 ${
-                  leftBottomTab === 'history'
-                    ? 'text-[--accent-yellow] border-[--accent-yellow] bg-[--bg-secondary]'
-                    : 'text-[--text-muted] hover:text-[--text-secondary] border-transparent'
-                }`}
-                onClick={() => setLeftBottomTab('history')}
-              >
-                📜 Arbitrage History
-              </button>
-            </div>
-            
-            {/* Tab content */}
-            <div className="flex-1 overflow-hidden">
-              {leftBottomTab === 'positions' ? (
-                <OrderPanel />
-              ) : (
-                <ArbitrageHistory onOpenExplorer={() => setShowHistoryExplorer(true)} />
-              )}
-            </div>
-          </div>
-        </div>
-        
-        {/* Right: details/tracking and performance */}
-        <aside className="w-96 flex-shrink-0 flex flex-col gap-1">
-          {/* Top: tab area (70%) */}
-          <div className="flex-1 min-h-0 flex flex-col bg-[--bg-secondary] rounded border border-[--border-color] shadow-lg" style={{flexBasis: '70%'}}>
-            {/* Tab switcher */}
-            <div className="flex border-b-2 border-[--border-color] flex-shrink-0 bg-[--bg-tertiary]">
-              <button
-                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors border-b-2 ${
-                  rightPanelTab === 'detail'
-                    ? 'text-[--accent-purple] border-[--accent-purple] bg-[--bg-secondary]'
-                    : 'text-[--text-muted] hover:text-[--text-secondary] border-transparent'
-                }`}
-                onClick={() => setRightPanelTab('detail')}
-              >
-                📋 Details
-              </button>
-              <button
-                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors border-b-2 ${
-                  rightPanelTab === 'tracking'
-                    ? 'text-[--accent-green] border-[--accent-green] bg-[--bg-secondary]'
-                    : 'text-[--text-muted] hover:text-[--text-secondary] border-transparent'
-                }`}
-                onClick={() => setRightPanelTab('tracking')}
-              >
-                🎯 Tracking
-              </button>
-            </div>
-
-            {/* Tab content */}
-            <div className="flex-1 overflow-y-auto overflow-x-hidden">
-              {rightPanelTab === 'detail' ? (
-                selectedMarket ? (
-                  <div className="p-2 space-y-2">
-                      {/* Header */}
-                      <div className="pb-1.5 border-b border-[--border-color]">
-                        <h3 className="text-[10px] font-semibold text-[--text-muted] uppercase tracking-wider">Market Details</h3>
-                      </div>
-                      
-                      {/* Event information */}
-                      <div className="bg-[--bg-tertiary] rounded p-2">
-                        <div className="text-[10px] text-[--text-muted] mb-1">Event</div>
-                        <div className="text-xs text-[--text-primary] font-medium leading-tight">
-                          {selectedMarket.event_name}
-                        </div>
-                        {selectedMarket.team_name && (
-                          <div className="text-xs text-[--accent-yellow] mt-1 font-medium">
-                            {selectedMarket.team_name}
-                          </div>
-                        )}
-                        {selectedMarket.end_time && (
-                          <div className="text-[10px] text-[--text-muted] mt-1.5 flex items-center gap-1">
-                            <span>🕐</span>
-                            <span>{formatDateTime(selectedMarket.end_time)}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Data status and profit information */}
-                      <div className="grid grid-cols-2 gap-1.5">
-                        {/* Data status */}
-                        <div className="bg-[--bg-tertiary] rounded p-1.5">
-                          <div className="text-[10px] text-[--text-muted] mb-1.5">Data Status</div>
-                          <div className="flex flex-col gap-1">
-                            <span className={`px-1.5 py-0.5 rounded text-[10px] ${selectedMarket.kalshi_ready ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400'}`}>
-                              Kalshi {selectedMarket.kalshi_ready ? '✓' : '○'}
-                            </span>
-                            <span className={`px-1.5 py-0.5 rounded text-[10px] ${selectedMarket.poly_ready ? 'bg-purple-500/20 text-purple-400' : 'bg-gray-500/20 text-gray-400'}`}>
-                              Poly {selectedMarket.poly_ready ? '✓' : '○'}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Profit information */}
-                        {selectedMarket.has_opportunity ? (
-                          <div className="bg-gradient-to-br from-green-500/10 to-emerald-500/5 rounded p-1.5 border border-green-500/20">
-                            <div className="text-[10px] text-[--text-muted] mb-1">Arbitrage Opportunity</div>
-                            <div className="text-base font-bold text-[--accent-green] leading-tight">
-                              {selectedMarket.profit_margin.toFixed(2)}%
-                            </div>
-                            <div className="text-[10px] text-green-400 mt-0.5">
-                              Net Profit: {signedMoney(selectedMarket.expected_profit)}
-                            </div>
-                          </div>
-                        ) : selectedMarket.arbitrage_type ? (
-                          <div className="bg-[--bg-tertiary] rounded p-1.5 border border-gray-500/20">
-                            <div className="text-[10px] text-[--text-muted] mb-1" title="The better hedge at current prices, after both exchanges' fees">
-                              Best Hedge (after fees)
-                            </div>
-                            <div className={`text-base font-bold leading-tight ${selectedMarket.profit_margin >= 0 ? 'text-gray-300' : 'text-red-400'}`}>
-                              {selectedMarket.profit_margin.toFixed(2)}%
-                            </div>
-                            <div className={`text-[10px] mt-0.5 ${selectedMarket.expected_profit >= 0 ? 'text-gray-400' : 'text-red-400'}`}>
-                              Net Profit: {signedMoney(selectedMarket.expected_profit)}
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="bg-[--bg-tertiary] rounded p-1.5 border border-gray-500/20">
-                            <div className="text-[10px] text-[--text-muted] mb-1">Arbitrage Result</div>
-                            <div className="text-base font-bold text-gray-500 leading-tight">—</div>
-                            <div className="text-[10px] text-gray-500 mt-0.5">Waiting for prices on both exchanges</div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Prices and depth side by side */}
-                      <div className="grid grid-cols-2 gap-2">
-                        {/* Kalshi */}
-                        <div className="bg-[--bg-tertiary] rounded p-2">
-                          <div className="text-[10px] text-blue-400 font-medium mb-1.5">Kalshi</div>
-                          <div className="space-y-1">
-                            {/* Yes */}
-                            <div className="space-y-0.5">
-                              <div className="flex items-center justify-between">
-                                <span className="text-[9px] text-green-400 font-medium">Yes</span>
-                                <span className="text-xs text-[--text-primary] font-mono font-semibold">
-                                  {(selectedMarket.kalshi_yes_price * 100).toFixed(0)}¢
-                                </span>
-                              </div>
-                              <div className="flex items-center justify-between text-[9px]">
-                                <span className="text-cyan-400 font-mono">
-                                  ×{orderbookDepth?.kalshi?.yes?.size?.toFixed(0) ?? '-'}
-                                </span>
-                                <span className="text-yellow-400 font-mono">
-                                  ${orderbookDepth?.kalshi?.yes?.price != null && orderbookDepth?.kalshi?.yes?.size != null 
-                                    ? (orderbookDepth.kalshi.yes.price * orderbookDepth.kalshi.yes.size).toFixed(0) 
-                                    : '-'}
-                                </span>
-                              </div>
-                            </div>
-                            {/* No */}
-                            <div className="space-y-0.5 pt-1 border-t border-[--border-color]">
-                              <div className="flex items-center justify-between">
-                                <span className="text-[9px] text-red-400 font-medium">No</span>
-                                <span className="text-xs text-[--text-primary] font-mono font-semibold">
-                                  {(selectedMarket.kalshi_no_price * 100).toFixed(0)}¢
-                                </span>
-                              </div>
-                              <div className="flex items-center justify-between text-[9px]">
-                                <span className="text-cyan-400 font-mono">
-                                  ×{orderbookDepth?.kalshi?.no?.size?.toFixed(0) ?? '-'}
-                                </span>
-                                <span className="text-yellow-400 font-mono">
-                                  ${orderbookDepth?.kalshi?.no?.price != null && orderbookDepth?.kalshi?.no?.size != null 
-                                    ? (orderbookDepth.kalshi.no.price * orderbookDepth.kalshi.no.size).toFixed(0) 
-                                    : '-'}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Polymarket */}
-                        <div className="bg-[--bg-tertiary] rounded p-2">
-                          <div className="text-[10px] text-purple-400 font-medium mb-1.5">Polymarket</div>
-                          <div className="space-y-1">
-                            {/* Yes */}
-                            <div className="space-y-0.5">
-                              <div className="flex items-center justify-between">
-                                <span className="text-[9px] text-green-400 font-medium">Yes</span>
-                                <span className="text-xs text-[--text-primary] font-mono font-semibold">
-                                  {(selectedMarket.poly_yes_price * 100).toFixed(0)}¢
-                                </span>
-                              </div>
-                              <div className="flex items-center justify-between text-[9px]">
-                                <span className="text-cyan-400 font-mono">
-                                  ×{orderbookDepth?.polymarket?.yes?.size?.toFixed(0) ?? '-'}
-                                </span>
-                                <span className="text-yellow-400 font-mono">
-                                  ${orderbookDepth?.polymarket?.yes?.price != null && orderbookDepth?.polymarket?.yes?.size != null 
-                                    ? (orderbookDepth.polymarket.yes.price * orderbookDepth.polymarket.yes.size).toFixed(0) 
-                                    : '-'}
-                                </span>
-                              </div>
-                            </div>
-                            {/* No */}
-                            <div className="space-y-0.5 pt-1 border-t border-[--border-color]">
-                              <div className="flex items-center justify-between">
-                                <span className="text-[9px] text-red-400 font-medium">No</span>
-                                <span className="text-xs text-[--text-primary] font-mono font-semibold">
-                                  {(selectedMarket.poly_no_price * 100).toFixed(0)}¢
-                                </span>
-                              </div>
-                              <div className="flex items-center justify-between text-[9px]">
-                                <span className="text-cyan-400 font-mono">
-                                  ×{orderbookDepth?.polymarket?.no?.size?.toFixed(0) ?? '-'}
-                                </span>
-                                <span className="text-yellow-400 font-mono">
-                                  ${orderbookDepth?.polymarket?.no?.price != null && orderbookDepth?.polymarket?.no?.size != null 
-                                    ? (orderbookDepth.polymarket.no.price * orderbookDepth.polymarket.no.size).toFixed(0) 
-                                    : '-'}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Arbitrage calculation details */}
-                      <div className="bg-[--bg-tertiary] rounded p-2 space-y-1.5">
-                        {selectedMarket.arbitrage_type && (
-                          <div>
-                            <div className="text-[10px] text-[--text-muted] mb-1">Arbitrage Strategy</div>
-                            <div className={`text-xs font-mono ${selectedMarket.has_opportunity ? 'text-[--text-primary]' : 'text-gray-400'}`}>
-                              {selectedMarket.arbitrage_type}
-                            </div>
-                            {!selectedMarket.has_opportunity && (
-                              <div className="text-[9px] text-[--text-muted] mt-0.5">
-                                Best hedge at current prices; not an opportunity at your minimum margin
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        
-                        {/* Fee breakdown */}
-                        <div className={selectedMarket.arbitrage_type ? 'pt-2 border-t border-[--border-color]' : ''}>
-                          <div className="text-[10px] text-[--text-muted] mb-1.5">Arbitrage Calculation Details</div>
-                          <div className="space-y-1 text-[10px]">
-                            {selectedMarket.kalshi_contracts !== undefined && (
-                              <div className="flex justify-between">
-                                <span className="text-[--text-muted]">Kalshi Contracts</span>
-                                <span className="text-blue-400 font-mono">{Math.round(selectedMarket.kalshi_contracts)}</span>
-                              </div>
-                            )}
-                            {selectedMarket.kalshi_fee !== undefined && (
-                              <div className="flex justify-between">
-                                <span className="text-[--text-muted]">Kalshi Fee</span>
-                                <span className="text-orange-400 font-mono">-${selectedMarket.kalshi_fee.toFixed(2)}</span>
-                              </div>
-                            )}
-                            {selectedMarket.polymarket_fee !== undefined && (
-                              <div className="flex justify-between">
-                                <span className="text-[--text-muted]">Polymarket Fee</span>
-                                <span className="text-orange-400 font-mono">-${selectedMarket.polymarket_fee.toFixed(2)}</span>
-                              </div>
-                            )}
-                            {selectedMarket.gross_profit !== undefined && (
-                              <div className="flex justify-between">
-                                <span className="text-[--text-muted]">Gross Profit</span>
-                                <span className={`font-mono ${selectedMarket.gross_profit >= 0 ? 'text-[--text-secondary]' : 'text-red-400'}`}>
-                                  {signedMoney(selectedMarket.gross_profit)}
-                                </span>
-                              </div>
-                            )}
-                            <div className="flex justify-between pt-1 border-t border-[--border-color]">
-                              <span className="text-[--text-muted] font-medium">Net Profit</span>
-                              <span className={`font-mono font-medium ${selectedMarket.expected_profit >= 0 ? (selectedMarket.has_opportunity ? 'text-green-400' : 'text-gray-400') : 'text-red-400'}`}>
-                                {signedMoney(selectedMarket.expected_profit)}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Order area */}
-                      <div className="pt-1.5 border-t border-[--border-color]">
-                        <div className="pb-1.5">
-                          <h3 className="text-[10px] font-semibold text-[--text-muted] uppercase tracking-wider">Place Order</h3>
-                        </div>
-                        <OrderForm 
-                          market={selectedMarket}
-                        />
-                      </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center h-full">
-                    <div className="text-3xl mb-2">👆</div>
-                    <div className="text-xs text-[--text-secondary]">Select a market</div>
-                    <div className="text-[10px] text-[--text-muted] mt-1">View details and place trades</div>
-                  </div>
-                )
-              ) : (
-                <TrackingPanel />
-              )}
-            </div>
-          </div>
-          
-          {/* Bottom: performance monitoring (30%) */}
-          <div className="flex-1 min-h-0 overflow-hidden flex flex-col bg-[--bg-secondary] rounded border border-[--border-color] shadow-lg" style={{flexBasis: '30%'}}>
-            <MetricsPanel metrics={metrics} />
-          </div>
-        </aside>
-      </main>
-      )}
-
-      {/* History explorer modal */}
-      {showHistoryExplorer && (
-        <HistoryExplorer 
-          onClose={() => setShowHistoryExplorer(false)} 
-        />
-      )}
-
-      {/* Polymarket debug order modal */}
-      {showPolyDebug && (
-        <PolyDebugOrder
-          onClose={() => setShowPolyDebug(false)}
-        />
-      )}
-
-      {/* Debug button fixed to the bottom right */}
-      <button
-        onClick={() => setShowPolyDebug(true)}
-        className="fixed bottom-4 right-4 w-12 h-12 rounded-full bg-purple-500 hover:bg-purple-600 text-white shadow-lg flex items-center justify-center text-xl z-40"
-        title="Polymarket Manual Order Debug"
-      >
-        🔧
-      </button>
+      <StrategyNav strategies={STRATEGIES} active={active.id} onChange={selectStrategy} />
+      <active.Page live={live} />
     </div>
   );
-}
-
-/** "$1.23" / "-$0.27" (the sign goes before the dollar sign). */
-function signedMoney(value: number): string {
-  return `${value < 0 ? '-' : ''}$${Math.abs(value).toFixed(2)}`;
-}
-
-function formatDateTime(dateString: string): string {
-  const date = new Date(dateString);
-  const now = new Date();
-  const diffMs = date.getTime() - now.getTime();
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-  
-  // Format date and time.
-  const dateStr = date.toLocaleDateString('en-US', {
-    month: '2-digit', 
-    day: '2-digit',
-    weekday: 'short'
-  });
-  const timeStr = date.toLocaleTimeString('en-US', {
-    hour: '2-digit', 
-    minute: '2-digit',
-    hour12: false
-  });
-  
-  // Show a countdown for events within 24 hours.
-  if (diffMs > 0 && diffHours < 24) {
-    if (diffHours > 0) {
-      return `${dateStr} ${timeStr} (in ${diffHours}h ${diffMinutes}m)`;
-    } else if (diffMinutes > 0) {
-      return `${dateStr} ${timeStr} (in ${diffMinutes}m)`;
-    } else {
-      return `${dateStr} ${timeStr} (starting soon)`;
-    }
-  }
-  
-  // Indicate events that have already started.
-  if (diffMs < 0) {
-    return `${dateStr} ${timeStr} (started)`;
-  }
-  
-  return `${dateStr} ${timeStr}`;
 }
 
 export default App;

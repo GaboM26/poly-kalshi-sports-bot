@@ -1,5 +1,5 @@
 import { useState, FormEvent } from 'react';
-import { apiUrl } from '../shared/api';
+import { apiUrl } from '../api';
 
 interface LoginProps {
   onLoginSuccess: (token: string, username: string) => void;

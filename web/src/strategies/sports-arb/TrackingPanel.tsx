@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { sportsArbUrl } from '../strategies/sports-arb/api';
-import { TrackingStats, ActiveTracking } from '../types';
+import { sportsArbUrl } from './api';
+import { TrackingStats, ActiveTracking } from '../../types';
 
 interface TrackingPanelProps {
 }

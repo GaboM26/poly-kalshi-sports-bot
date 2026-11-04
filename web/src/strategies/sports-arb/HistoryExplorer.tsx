@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { sportsArbUrl } from '../strategies/sports-arb/api';
+import { sportsArbUrl } from './api';
 
 interface ProfitHistoryEntry {
   time: string;

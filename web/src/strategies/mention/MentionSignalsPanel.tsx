@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { mentionUrl } from '../strategies/mention/api';
-import { MentionDecision, MentionPosition, MentionSignalRow, MentionStatus } from '../types';
+import { mentionUrl } from './api';
+import { MentionDecision, MentionPosition, MentionSignalRow, MentionStatus } from '../../types';
 
 interface MentionSignalsPanelProps {
   signals: MentionSignalRow[];

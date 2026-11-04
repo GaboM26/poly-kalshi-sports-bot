@@ -1,20 +1,16 @@
-export type Strategy = 'arbitrage' | 'mention';
-
-const STRATEGIES: { id: Strategy; label: string }[] = [
-  { id: 'arbitrage', label: 'Arbitrage Scanner' },
-  { id: 'mention', label: 'Trump Speeches' },
-];
+import type { StrategyEntry } from '../../strategies/registry';
 
 interface StrategyNavProps {
-  active: Strategy;
-  onChange: (strategy: Strategy) => void;
+  strategies: StrategyEntry[];
+  active: string;
+  onChange: (id: string) => void;
 }
 
 /** Top-level switch between trading strategies; each gets its own page. */
-export function StrategyNav({ active, onChange }: StrategyNavProps) {
+export function StrategyNav({ strategies, active, onChange }: StrategyNavProps) {
   return (
     <nav className="flex flex-shrink-0 gap-1 border-b border-[--border-color] bg-[--bg-tertiary] px-2">
-      {STRATEGIES.map(({ id, label }) => (
+      {strategies.map(({ id, label }) => (
         <button
           key={id}
           className={`px-4 py-1.5 text-xs font-medium transition-colors border-b-2 ${

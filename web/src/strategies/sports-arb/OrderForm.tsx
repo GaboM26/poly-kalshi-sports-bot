@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { MatchedMarketData } from '../types';
-import { createKalshiOrder, createPolymarketOrder } from '../shared/api';
-import { executeArbitrage } from '../strategies/sports-arb/api';
+import { MatchedMarketData } from '../../types';
+import { createKalshiOrder, createPolymarketOrder } from '../../shared/api';
+import { executeArbitrage } from './api';
 
 interface OrderFormProps {
   market: MatchedMarketData;

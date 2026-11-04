@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { sportsArbUrl } from '../strategies/sports-arb/api';
-import { MatchedMarketData, ArbitrageExecuteRequest } from '../types';
-import { executeArbitrage } from '../strategies/sports-arb/api';
+import { sportsArbUrl, executeArbitrage } from './api';
+import { MatchedMarketData, ArbitrageExecuteRequest } from '../../types';
 
 interface OpportunityListProps {
   matchedMarkets: MatchedMarketData[];

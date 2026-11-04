@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { PositionCard, PositionLeg } from '../types';
-import { getUnifiedPositions, createKalshiOrder } from '../shared/api';
+import { PositionCard, PositionLeg } from '../../types';
+import { getUnifiedPositions, createKalshiOrder } from '../api';
 
 interface OrderPanelProps {
 }

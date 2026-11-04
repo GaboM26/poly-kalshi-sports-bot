@@ -1,4 +1,4 @@
-import { LogEntry } from '../types';
+import { LogEntry } from '../../types';
 
 interface LogPanelProps {
   logs: LogEntry[];

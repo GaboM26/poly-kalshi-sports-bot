@@ -1,4 +1,4 @@
-import { MetricsReport } from '../types';
+import { MetricsReport } from '../../types';
 
 interface MetricsPanelProps {
   metrics: MetricsReport | null;
