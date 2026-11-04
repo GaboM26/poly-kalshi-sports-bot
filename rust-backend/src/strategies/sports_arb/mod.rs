@@ -2,6 +2,7 @@
 //! Polymarket US: market matching, detection, paired execution.
 
 pub mod execution;
+pub mod runner;
 pub mod service;
 pub mod websocket_manager;
 
