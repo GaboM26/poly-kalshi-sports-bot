@@ -24,6 +24,7 @@ use tracing::{debug, info, warn};
 
 use super::polymarket::{build_market_book, PolymarketMarketBook};
 use super::polymarket_auth;
+use crate::config::PolymarketWsConfig;
 
 const WS_URL: &str = "wss://api.polymarket.us/v1/ws/markets";
 const WS_PATH: &str = "/v1/ws/markets";
@@ -37,9 +38,6 @@ const MAX_SLUGS_PER_SUBSCRIPTION: usize = 100;
 /// quotes.
 const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 10;
 /// The server sends heartbeats; silence beyond this means a dead socket.
-const SILENCE_TIMEOUT: Duration = Duration::from_secs(30);
-const SLUG_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// A per-side quote update for one market slug.
 #[derive(Debug, Clone, PartialEq)]
@@ -152,6 +150,7 @@ fn subscription_error(text: &str) -> Option<String> {
 
 /// One connection attempt. Returns when the socket dies or goes silent.
 async fn run_once<S, Q>(
+    timing: &PolymarketWsConfig,
     key_id: &str,
     secret_key: &str,
     slugs: &S,
@@ -177,7 +176,7 @@ where
     let mut subscribed: HashSet<String> = HashSet::new();
     let mut next_id = 0u64;
     let mut subscriptions = 0usize;
-    let mut refresh = tokio::time::interval(SLUG_REFRESH_INTERVAL);
+    let mut refresh = tokio::time::interval(timing.slug_refresh());
 
     loop {
         tokio::select! {
@@ -226,7 +225,7 @@ where
                     subscribed.extend(new);
                 }
             }
-            frame = tokio::time::timeout(SILENCE_TIMEOUT, read.next()) => {
+            frame = tokio::time::timeout(timing.silence_timeout(), read.next()) => {
                 let frame = frame.context("Polymarket WS silent for 30s")?;
                 match frame {
                     Some(Ok(Message::Text(text))) => {
@@ -247,10 +246,17 @@ where
     }
 }
 
-/// Run forever, reconnecting with exponential backoff (1s..30s). `slugs`
+/// Run forever, reconnecting with exponential backoff (1s up to
+/// `max_backoff_secs`). `slugs`
 /// supplies the current desired subscription set; `on_quote` receives each
 /// decoded quote or book event.
-pub async fn run_markets_stream<S, Q>(key_id: String, secret_key: String, slugs: S, on_quote: Q)
+pub async fn run_markets_stream<S, Q>(
+    timing: PolymarketWsConfig,
+    key_id: String,
+    secret_key: String,
+    slugs: S,
+    on_quote: Q,
+)
 where
     S: Fn() -> Vec<String>,
     Q: Fn(PolyWsEvent),
@@ -258,7 +264,7 @@ where
     let mut backoff = Duration::from_secs(1);
     loop {
         let started = std::time::Instant::now();
-        match run_once(&key_id, &secret_key, &slugs, &on_quote).await {
+        match run_once(&timing, &key_id, &secret_key, &slugs, &on_quote).await {
             Ok(()) => debug!("Polymarket WS loop returned"),
             Err(e) => warn!("Polymarket WS disconnected: {:#}. Reconnecting in {:?}", e, backoff),
         }
@@ -268,7 +274,7 @@ where
             backoff = Duration::from_secs(1);
         }
         tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(MAX_BACKOFF);
+        backoff = (backoff * 2).min(timing.max_backoff());
     }
 }
 

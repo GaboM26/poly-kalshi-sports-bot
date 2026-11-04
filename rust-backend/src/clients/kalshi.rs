@@ -34,7 +34,6 @@ use crate::models::{KalshiEvent, KalshiMarket, Platform, PriceUpdate};
 
 const KALSHI_WS_URL: &str = "wss://external-api-ws.kalshi.com/trade-api/ws/v2";
 const KALSHI_MARKET_QUOTE_BATCH_SIZE: usize = 100;
-const KALSHI_GET_MAX_RETRIES: u32 = 3;
 
 // Kalshi's explicitly supported head-to-head match-winner series. Keep this
 // allowlist narrow: it intentionally excludes sets, games, totals, props,
@@ -332,7 +331,7 @@ impl KalshiClient {
         let signing_key = Arc::new(BlindedSigningKey::<Sha256>::new(private_key));
 
         let http = Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(config.http.timeout())
             .build()
             .context("Failed to build Kalshi HTTP client")?;
 
@@ -393,7 +392,7 @@ impl KalshiClient {
                 .await
             {
                 Ok(response) => break response,
-                Err(err) if attempt + 1 < KALSHI_GET_MAX_RETRIES => {
+                Err(err) if attempt + 1 < self.config.http.max_attempts => {
                     let delay = Duration::from_secs(2u64.pow(attempt));
                     warn!(
                         "Kalshi GET {} failed ({}), retrying in {:?} (attempt {}/{})",
@@ -401,7 +400,7 @@ impl KalshiClient {
                         err,
                         delay,
                         attempt + 1,
-                        KALSHI_GET_MAX_RETRIES
+                        self.config.http.max_attempts
                     );
                     tokio::time::sleep(delay).await;
                     attempt += 1;

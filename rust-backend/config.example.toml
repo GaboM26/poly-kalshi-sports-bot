@@ -15,6 +15,13 @@ YOUR_KALSHI_PRIVATE_KEY_HERE
 # Kalshi Trade API v2 base URL
 base_url = "https://external-api.kalshi.com/trade-api/v2"
 
+# Optional. Values shown are the defaults.
+[kalshi.http]
+timeout_secs = 10
+# Total attempts for a GET that fails in transport (1 = no retry).
+# Order placement is never retried.
+max_attempts = 3
+
 [polymarket]
 # Polymarket US API configuration. Generate keys at https://polymarket.us/developer.
 # This config file is ignored by Git once copied to config.toml.
@@ -29,6 +36,26 @@ base_url = "https://gateway.polymarket.us"
 # Polymarket US authenticated API base URL (orders, account, portfolio)
 # Requests are signed directly by the Rust backend (Ed25519) - no separate order service.
 api_base_url = "https://api.polymarket.us"
+
+# Optional. Values shown are the defaults.
+[polymarket.http]
+timeout_secs = 10
+# Total attempts when the API answers 429 (1 = no retry). Rejections are never retried.
+max_attempts = 3
+
+[polymarket.cache]
+balance_ttl_secs = 30
+positions_ttl_secs = 30
+# Tick size / minimum quantity per market; static, so cached long.
+market_constraints_ttl_secs = 3600
+
+[polymarket.ws]
+# Reconnect when no frame arrives for this long.
+silence_timeout_secs = 30
+# How often the subscribed market set is re-read for hot-adds.
+slug_refresh_secs = 5
+# Ceiling of the exponential reconnect backoff.
+max_backoff_secs = 30
 
 # The [settings] and [auto_trade] configuration has moved to the database.
 # It can be changed in real time through the frontend without restarting the service.
@@ -79,6 +106,8 @@ trades_webhook_url = ""
 
 # Minimum profit margin (%) for an opportunity alert (one per market per minute)
 opportunity_min_margin = 1.0
+# At most one opportunity alert per market per this many seconds
+opportunity_cooldown_secs = 60
 
 # Independent directional Kalshi mention strategy. Kept separate from the
 # paired arbitrage auto-trader and OFF by default.
@@ -105,3 +134,9 @@ max_open_positions = 5
 daily_loss_breaker_pct = 0.03
 live_gate_min_days = 60
 live_gate_max_age_days = 14
+# A Kalshi WebSocket book older than this is not used for a decision
+book_max_age_secs = 30
+# Repeat an unchanged rejection reason in the decision log at most this often
+rejection_log_interval_secs = 900
+# HTTP timeout for the local signal service
+signal_timeout_secs = 5

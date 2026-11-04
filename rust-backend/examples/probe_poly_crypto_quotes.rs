@@ -25,12 +25,12 @@ async fn main() -> anyhow::Result<()> {
     anyhow::ensure!(!slugs.is_empty(), "pass at least one slug");
     let config = Config::from_file("config.toml")?;
     let (key_id, secret) = resolve_credentials(&config.polymarket)?;
-    let client = PolymarketClient::new(config.polymarket)?;
+    let client = PolymarketClient::new(config.polymarket.clone())?;
     let seen: Arc<Mutex<HashMap<String, Seen>>> = Arc::default();
 
     let ws_seen = seen.clone();
     let ws_slugs = slugs.clone();
-    tokio::spawn(run_markets_stream(key_id, secret, move || ws_slugs.clone(), move |event| {
+    tokio::spawn(run_markets_stream(config.polymarket.ws, key_id, secret, move || ws_slugs.clone(), move |event| {
         let mut seen = ws_seen.lock().unwrap();
         match event {
             PolyWsEvent::Quote(q) => {

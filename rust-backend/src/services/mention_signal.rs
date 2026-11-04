@@ -111,7 +111,7 @@ impl MentionSignalClient {
             anyhow::bail!("Mention signal service must use a localhost HTTP URL");
         }
         let http = Client::builder()
-            .timeout(Duration::from_secs(5))
+            .timeout(config.signal_timeout())
             .build()
             .context("Failed to create mention signal HTTP client")?;
         Ok(Self {

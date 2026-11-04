@@ -318,12 +318,18 @@ impl ArbitrageService {
     /// reacts to a price change immediately instead of on the next REST
     /// poll. The REST poll keeps running as the fallback and for
     /// ended-market detection.
-    pub fn run_polymarket_ws(&self, key_id: String, secret_key: String) {
+    pub fn run_polymarket_ws(
+        &self,
+        timing: crate::config::PolymarketWsConfig,
+        key_id: String,
+        secret_key: String,
+    ) {
         let ws_manager = self.ws_manager.clone();
         let slug_manager = self.ws_manager.clone();
         tokio::spawn(async move {
             info!("📡 Polymarket US WebSocket quote stream starting");
             crate::clients::polymarket_ws::run_markets_stream(
+                timing,
                 key_id,
                 secret_key,
                 move || slug_manager.get_polymarket_slugs(),

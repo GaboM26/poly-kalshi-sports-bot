@@ -6,6 +6,40 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
+
+/// HTTP client behavior shared by the exchange REST clients.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct HttpClientConfig {
+    /// Per-request timeout.
+    pub timeout_secs: u64,
+    /// Total attempts for a retryable request (1 = no retry). Order
+    /// placement never retries regardless of this value.
+    pub max_attempts: u32,
+}
+
+impl Default for HttpClientConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs: 10,
+            max_attempts: 3,
+        }
+    }
+}
+
+impl HttpClientConfig {
+    pub fn timeout(&self) -> Duration {
+        Duration::from_secs(self.timeout_secs)
+    }
+
+    fn validate(&self, section: &str) -> Result<(), String> {
+        if self.timeout_secs == 0 || self.max_attempts == 0 {
+            return Err(format!("[{section}.http] timeout_secs and max_attempts must be positive"));
+        }
+        Ok(())
+    }
+}
 
 /// Kalshi API configuration
 #[derive(Debug, Clone, Deserialize)]
@@ -14,6 +48,8 @@ pub struct KalshiConfig {
     pub api_secret: String,
     #[serde(default = "default_kalshi_base_url")]
     pub base_url: String,
+    #[serde(default)]
+    pub http: HttpClientConfig,
 }
 
 fn default_kalshi_base_url() -> String {
@@ -45,6 +81,91 @@ pub struct PolymarketConfig {
     /// Base64-encoded Ed25519 secret key. Prefer the POLYMARKET_SECRET_KEY env var.
     #[serde(default)]
     pub secret_key: String,
+
+    #[serde(default)]
+    pub http: HttpClientConfig,
+
+    #[serde(default)]
+    pub cache: PolymarketCacheConfig,
+
+    #[serde(default)]
+    pub ws: PolymarketWsConfig,
+}
+
+/// How long account reads are served from memory before re-fetching.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PolymarketCacheConfig {
+    pub balance_ttl_secs: u64,
+    pub positions_ttl_secs: u64,
+    /// minimumTradeQty / orderPriceMinTickSize are static per-market validation
+    /// constraints, not live pricing data - cache them well past a single trading
+    /// session so we don't add a second live API call (and more rate-limit risk)
+    /// to every depth check and order attempt.
+    pub market_constraints_ttl_secs: u64,
+}
+
+impl Default for PolymarketCacheConfig {
+    fn default() -> Self {
+        Self {
+            balance_ttl_secs: 30,
+            positions_ttl_secs: 30,
+            market_constraints_ttl_secs: 3600,
+        }
+    }
+}
+
+impl PolymarketCacheConfig {
+    pub fn balance_ttl(&self) -> Duration {
+        Duration::from_secs(self.balance_ttl_secs)
+    }
+    pub fn positions_ttl(&self) -> Duration {
+        Duration::from_secs(self.positions_ttl_secs)
+    }
+    pub fn market_constraints_ttl(&self) -> Duration {
+        Duration::from_secs(self.market_constraints_ttl_secs)
+    }
+}
+
+/// Polymarket market-data WebSocket timing.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct PolymarketWsConfig {
+    /// Reconnect when no frame arrives for this long.
+    pub silence_timeout_secs: u64,
+    /// How often the subscribed slug set is re-read for hot-adds.
+    pub slug_refresh_secs: u64,
+    /// Ceiling of the exponential reconnect backoff.
+    pub max_backoff_secs: u64,
+}
+
+impl Default for PolymarketWsConfig {
+    fn default() -> Self {
+        Self {
+            silence_timeout_secs: 30,
+            slug_refresh_secs: 5,
+            max_backoff_secs: 30,
+        }
+    }
+}
+
+impl PolymarketWsConfig {
+    pub fn silence_timeout(&self) -> Duration {
+        Duration::from_secs(self.silence_timeout_secs)
+    }
+    pub fn slug_refresh(&self) -> Duration {
+        Duration::from_secs(self.slug_refresh_secs)
+    }
+    pub fn max_backoff(&self) -> Duration {
+        Duration::from_secs(self.max_backoff_secs)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.silence_timeout_secs == 0 || self.slug_refresh_secs == 0 || self.max_backoff_secs == 0 {
+            return Err("[polymarket.ws] values must be positive".into());
+        }
+        Ok(())
+    }
 }
 
 fn default_poly_base_url() -> String {
@@ -140,7 +261,7 @@ impl Default for AuthConfig {
 }
 
 /// Discord webhook notification configuration
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct DiscordConfig {
     /// Whether Discord notifications are enabled
     #[serde(default)]
@@ -155,6 +276,25 @@ pub struct DiscordConfig {
     /// Minimum profit margin (%) for an opportunity alert
     #[serde(default = "default_opportunity_min_margin")]
     pub opportunity_min_margin: f64,
+    /// At most one opportunity alert per market per this many seconds.
+    #[serde(default = "default_opportunity_cooldown_secs")]
+    pub opportunity_cooldown_secs: u64,
+}
+
+fn default_opportunity_cooldown_secs() -> u64 {
+    60
+}
+
+impl Default for DiscordConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            webhook_url: String::new(),
+            trades_webhook_url: String::new(),
+            opportunity_min_margin: default_opportunity_min_margin(),
+            opportunity_cooldown_secs: default_opportunity_cooldown_secs(),
+        }
+    }
 }
 
 fn default_opportunity_min_margin() -> f64 {
@@ -198,6 +338,12 @@ pub struct MentionConfig {
     pub daily_loss_breaker_pct: f64,
     pub live_gate_min_days: i64,
     pub live_gate_max_age_days: i64,
+    /// A Kalshi WebSocket book older than this is not used for a decision.
+    pub book_max_age_secs: u64,
+    /// Repeat an unchanged rejection reason in the decision log at most this often.
+    pub rejection_log_interval_secs: u64,
+    /// HTTP timeout for the local signal service.
+    pub signal_timeout_secs: u64,
 }
 
 impl Default for MentionConfig {
@@ -223,11 +369,24 @@ impl Default for MentionConfig {
             daily_loss_breaker_pct: 0.03,
             live_gate_min_days: 60,
             live_gate_max_age_days: 14,
+            book_max_age_secs: 30,
+            rejection_log_interval_secs: 15 * 60,
+            signal_timeout_secs: 5,
         }
     }
 }
 
 impl MentionConfig {
+    pub fn book_max_age(&self) -> Duration {
+        Duration::from_secs(self.book_max_age_secs)
+    }
+    pub fn rejection_log_interval(&self) -> Duration {
+        Duration::from_secs(self.rejection_log_interval_secs)
+    }
+    pub fn signal_timeout(&self) -> Duration {
+        Duration::from_secs(self.signal_timeout_secs)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let finite_positive = [self.bankroll_usd, self.min_net_edge]
             .into_iter()
@@ -261,6 +420,9 @@ impl MentionConfig {
             || self.max_open_positions <= 0
             || self.live_gate_min_days <= 0
             || self.live_gate_max_age_days <= 0
+            || self.book_max_age_secs == 0
+            || self.rejection_log_interval_secs == 0
+            || self.signal_timeout_secs == 0
         {
             return Err(
                 "mention ages, counts, depth, and gate requirements must be positive".into(),
@@ -322,7 +484,87 @@ impl Config {
 
         let config: Config =
             toml::from_str(&contents).with_context(|| "Failed to parse config file")?;
+        config.validate().map_err(|reason| anyhow::anyhow!("Invalid config: {reason}"))?;
 
         Ok(config)
+    }
+
+    /// Reject values that would break a client outright (a zero timeout or
+    /// attempt count). `[mention]` is validated separately at startup so an
+    /// invalid section disables only that strategy, never paired arbitrage.
+    pub fn validate(&self) -> Result<(), String> {
+        self.kalshi.http.validate("kalshi")?;
+        self.polymarket.http.validate("polymarket")?;
+        self.polymarket.ws.validate()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MINIMAL: &str = r#"
+        [kalshi]
+        api_key = "k"
+        api_secret = "s"
+        [polymarket]
+    "#;
+
+    /// The defaults must equal the constants they replaced, so a config.toml
+    /// without the new sections behaves exactly as before.
+    #[test]
+    fn defaults_match_the_replaced_constants() {
+        let config: Config = toml::from_str(MINIMAL).unwrap();
+        config.validate().unwrap();
+        for http in [&config.kalshi.http, &config.polymarket.http] {
+            assert_eq!(http.timeout(), Duration::from_secs(10));
+            assert_eq!(http.max_attempts, 3);
+        }
+        assert_eq!(config.polymarket.cache.balance_ttl(), Duration::from_secs(30));
+        assert_eq!(config.polymarket.cache.positions_ttl(), Duration::from_secs(30));
+        assert_eq!(config.polymarket.cache.market_constraints_ttl(), Duration::from_secs(3600));
+        assert_eq!(config.polymarket.ws.silence_timeout(), Duration::from_secs(30));
+        assert_eq!(config.polymarket.ws.slug_refresh(), Duration::from_secs(5));
+        assert_eq!(config.polymarket.ws.max_backoff(), Duration::from_secs(30));
+        assert_eq!(config.discord.opportunity_cooldown_secs, 60);
+        assert_eq!(config.mention.book_max_age(), Duration::from_secs(30));
+        assert_eq!(config.mention.rejection_log_interval(), Duration::from_secs(900));
+        assert_eq!(config.mention.signal_timeout(), Duration::from_secs(5));
+    }
+
+    /// The template must stay loadable and match the defaults it documents.
+    #[test]
+    fn the_example_config_parses_and_documents_the_defaults() {
+        let example: Config = toml::from_str(include_str!("../../config.example.toml")).unwrap();
+        example.validate().unwrap();
+        example.mention.validate().unwrap();
+        let minimal: Config = toml::from_str(MINIMAL).unwrap();
+        assert_eq!(format!("{:?}", example.kalshi.http), format!("{:?}", minimal.kalshi.http));
+        assert_eq!(format!("{:?}", example.polymarket.http), format!("{:?}", minimal.polymarket.http));
+        assert_eq!(format!("{:?}", example.polymarket.cache), format!("{:?}", minimal.polymarket.cache));
+        assert_eq!(format!("{:?}", example.polymarket.ws), format!("{:?}", minimal.polymarket.ws));
+        assert_eq!(format!("{:?}", example.mention), format!("{:?}", minimal.mention));
+        assert_eq!(example.discord.opportunity_cooldown_secs, minimal.discord.opportunity_cooldown_secs);
+    }
+
+    #[test]
+    fn a_zero_timeout_or_attempt_count_is_rejected() {
+        for bad in [
+            "[kalshi.http]\ntimeout_secs = 0",
+            "[polymarket.http]\nmax_attempts = 0",
+            "[polymarket.ws]\nsilence_timeout_secs = 0",
+        ] {
+            let config: Config = toml::from_str(&format!("{MINIMAL}\n{bad}")).unwrap();
+            assert!(config.validate().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_partial_section_keeps_the_other_defaults() {
+        let config: Config =
+            toml::from_str(&format!("{MINIMAL}\n[polymarket.cache]\nbalance_ttl_secs = 5")).unwrap();
+        assert_eq!(config.polymarket.cache.balance_ttl(), Duration::from_secs(5));
+        assert_eq!(config.polymarket.cache.positions_ttl(), Duration::from_secs(30));
     }
 }

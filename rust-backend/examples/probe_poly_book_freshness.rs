@@ -38,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
 
     let ws_slugs = slugs.clone();
     let ws = tokio::spawn(run_markets_stream(
+        config.polymarket.ws,
         key_id,
         secret,
         move || ws_slugs.clone(),

@@ -22,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
     anyhow::ensure!(!slugs.is_empty(), "pass at least one market slug");
     let config = Config::from_file("config.toml")?;
     let (key_id, secret) = resolve_credentials(&config.polymarket)?;
-    let client = PolymarketClient::new(config.polymarket)?;
+    let client = PolymarketClient::new(config.polymarket.clone())?;
     let manager = Arc::new(WebSocketManager::new(
         1.0,
         10.0,
@@ -35,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
     let ws_manager = manager.clone();
     let ws_slugs = slugs.clone();
     tokio::spawn(run_markets_stream(
+        config.polymarket.ws,
         key_id,
         secret,
         move || ws_slugs.clone(),

@@ -18,9 +18,6 @@ use crate::config::DiscordConfig;
 use crate::models::ArbitrageOpportunity;
 use crate::services::AutoTradeExecutionRecord;
 
-/// One alert per market per window, so a market hovering around the
-/// threshold cannot flood the channel or trip Discord's webhook rate limit.
-const OPPORTUNITY_COOLDOWN: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct DiscordClient {
@@ -72,7 +69,10 @@ impl DiscordClient {
         {
             let mut last = self.last_opportunity_alert.lock();
             let key = opp.market_key();
-            if last.get(&key).is_some_and(|t| t.elapsed() < OPPORTUNITY_COOLDOWN) {
+            // One alert per market per window, so a market hovering around the
+            // threshold cannot flood the channel or trip Discord's webhook rate limit.
+            let cooldown = Duration::from_secs(self.config.opportunity_cooldown_secs);
+            if last.get(&key).is_some_and(|t| t.elapsed() < cooldown) {
                 return;
             }
             last.insert(key, Instant::now());
@@ -198,6 +198,7 @@ mod tests {
             webhook_url: url.into(),
             trades_webhook_url: String::new(),
             opportunity_min_margin: 1.0,
+            ..DiscordConfig::default()
         })
     }
 
@@ -207,6 +208,7 @@ mod tests {
             webhook_url: url.into(),
             trades_webhook_url: trades_url.into(),
             opportunity_min_margin: 1.0,
+            ..DiscordConfig::default()
         })
     }
 

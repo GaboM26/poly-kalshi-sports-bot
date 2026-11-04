@@ -20,8 +20,6 @@ use crate::services::storage::{
 };
 use crate::services::DiscordClient;
 
-pub const DIRECTIONAL_BOOK_MAX_AGE: Duration = Duration::from_secs(30);
-const REJECTION_LOG_INTERVAL: Duration = Duration::from_secs(15 * 60);
 // The OpenAPI schema confirms the returned client_order_id and supports
 // min_ts+cursor scans; authenticated account-level recovery has not yet been
 // exercised in this environment, so live submission stays closed.
@@ -437,7 +435,7 @@ impl DirectionalExecutionService {
                 let mut no_ask = None;
                 if let Some(book) = self
                     .kalshi
-                    .get_fresh_orderbook(&signal.market_ticker, DIRECTIONAL_BOOK_MAX_AGE)
+                    .get_fresh_orderbook(&signal.market_ticker, self.config.book_max_age())
                 {
                     yes_bid = book.yes.last().map(|(price, _)| *price as f64 / 100.0);
                     no_bid = book.no.last().map(|(price, _)| *price as f64 / 100.0);
@@ -660,7 +658,7 @@ impl DirectionalExecutionService {
         }
         let Some(book) = self
             .kalshi
-            .get_fresh_orderbook(&signal.market_ticker, DIRECTIONAL_BOOK_MAX_AGE)
+            .get_fresh_orderbook(&signal.market_ticker, self.config.book_max_age())
         else {
             return self
                 .reject(signal, "none", "fresh Kalshi WebSocket book unavailable")
@@ -912,7 +910,7 @@ impl DirectionalExecutionService {
         fill: FillEstimate,
         client_order_id: &str,
     ) -> Result<i64> {
-        let limit_price = levels_for_side(&self.kalshi, &signal.market_ticker, side, true)
+        let limit_price = levels_for_side(&self.kalshi, self.config.book_max_age(), &signal.market_ticker, side, true)
             .and_then(|levels| walk_buy(&levels, fill.contracts))
             .map(|estimate| estimate.limit_price_cents)
             .context("Fresh book disappeared before live submission")?;
@@ -1113,7 +1111,7 @@ impl DirectionalExecutionService {
                 };
                 let book = self
                     .kalshi
-                    .get_fresh_orderbook(&position.market_ticker, DIRECTIONAL_BOOK_MAX_AGE)?;
+                    .get_fresh_orderbook(&position.market_ticker, self.config.book_max_age())?;
                 let bids = sell_levels(&book, &position.side);
                 let (bid_cents, _) = bids.first().copied()?;
                 let fee = kalshi_taker_fee(1.0, bid_cents as f64 / 100.0);
@@ -1125,7 +1123,7 @@ impl DirectionalExecutionService {
         }
         let Some(book) = self
             .kalshi
-            .get_fresh_orderbook(&position.market_ticker, DIRECTIONAL_BOOK_MAX_AGE)
+            .get_fresh_orderbook(&position.market_ticker, self.config.book_max_age())
         else {
             let _ = self.storage.record_directional_action(
                 position.id,
@@ -1561,13 +1559,13 @@ impl DirectionalExecutionService {
     }
 
     /// Rejections repeat identically on every poll; log a market again only when its
-    /// reason changes or `REJECTION_LOG_INTERVAL` has elapsed. Entries are never deduped.
+    /// reason changes or `rejection_log_interval_secs` has elapsed. Entries are never deduped.
     fn should_log_rejection(&self, ticker: &str, reason: &str) -> bool {
         let now = Instant::now();
         let mut seen = self.last_rejection.lock();
         match seen.get(ticker) {
             Some((previous, at))
-                if previous == reason && now.duration_since(*at) < REJECTION_LOG_INTERVAL =>
+                if previous == reason && now.duration_since(*at) < self.config.rejection_log_interval() =>
             {
                 false
             }
@@ -1590,7 +1588,7 @@ impl DirectionalExecutionService {
     ) -> Result<()> {
         let (yes_bid, yes_ask) = self
             .kalshi
-            .get_fresh_orderbook(&signal.market_ticker, DIRECTIONAL_BOOK_MAX_AGE)
+            .get_fresh_orderbook(&signal.market_ticker, self.config.book_max_age())
             .map(|book| {
                 (
                     book.yes.last().map(|(price, _)| f64::from(*price) / 100.0),
@@ -1662,7 +1660,7 @@ impl DirectionalExecutionService {
 /// builds and Rust releases and can be persisted and compared against the paper gate.
 pub fn compute_strategy_version(config: &MentionConfig, predictor_version: &str) -> String {
     let canonical = format!(
-        "v2|{:016x}|{:016x}|{:016x}|{:016x}|{}|{}|{}|{}|{:016x}|{:016x}|{:016x}|{:016x}|{}|{:016x}|{}|{}|{}",
+        "v3|{:016x}|{:016x}|{:016x}|{:016x}|{}|{}|{}|{}|{:016x}|{:016x}|{:016x}|{:016x}|{}|{:016x}|{}|{}|{}|{}",
         config.bankroll_usd.to_bits(),
         config.kelly_fraction.to_bits(),
         config.min_net_edge.to_bits(),
@@ -1680,6 +1678,7 @@ pub fn compute_strategy_version(config: &MentionConfig, predictor_version: &str)
         config.max_signal_age_secs,
         config.live_gate_min_days,
         config.live_gate_max_age_days,
+        config.book_max_age_secs,
     );
     let digest = Sha256::digest(canonical.as_bytes());
     format!("{}:{}", predictor_version, &hex::encode(digest)[..16])
@@ -1687,11 +1686,12 @@ pub fn compute_strategy_version(config: &MentionConfig, predictor_version: &str)
 
 fn levels_for_side(
     kalshi: &KalshiClient,
+    max_age: Duration,
     ticker: &str,
     side: &str,
     buy: bool,
 ) -> Option<Vec<(i32, i32)>> {
-    let book = kalshi.get_fresh_orderbook(ticker, DIRECTIONAL_BOOK_MAX_AGE)?;
+    let book = kalshi.get_fresh_orderbook(ticker, max_age)?;
     Some(if buy {
         buy_levels(&book, side)
     } else {

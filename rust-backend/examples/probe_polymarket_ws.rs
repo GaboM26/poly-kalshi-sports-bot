@@ -13,7 +13,7 @@ use polytaoli::models::PolymarketPositionSide;
 async fn main() -> anyhow::Result<()> {
     let config = Config::from_file("config.toml")?;
     let (key_id, secret) = resolve_credentials(&config.polymarket)?;
-    let client = PolymarketClient::new(config.polymarket)?;
+    let client = PolymarketClient::new(config.polymarket.clone())?;
     let (_, markets) = client.get_supported_events_and_markets().await?;
     let mut sample: HashMap<String, (f64, f64, PolymarketPositionSide, PolymarketPositionSide)> = HashMap::new();
     for m in markets.iter().take(400) {
@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
     let seen = std::sync::Mutex::new(std::collections::HashSet::new());
     let seen_books = std::sync::Mutex::new(std::collections::HashSet::new());
     let sample2 = sample.clone();
-    let stream = run_markets_stream(key_id, secret, move || slugs.clone(), move |event| {
+    let stream = run_markets_stream(config.polymarket.ws, key_id, secret, move || slugs.clone(), move |event| {
         let q = match event {
             PolyWsEvent::Book(b) => {
                 if seen_books.lock().unwrap().insert(b.market_slug.clone()) {

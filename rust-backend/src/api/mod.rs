@@ -106,7 +106,7 @@ pub async fn create_app(config: Config) -> Result<Router> {
         .await;
     service.run_ws_stats_reporter();
     match crate::clients::polymarket::resolve_credentials(&config.polymarket) {
-        Ok((key_id, secret_key)) => service.run_polymarket_ws(key_id, secret_key),
+        Ok((key_id, secret_key)) => service.run_polymarket_ws(config.polymarket.ws, key_id, secret_key),
         Err(e) => error!("Polymarket WebSocket disabled, REST polling only: {:#}", e),
     }
 

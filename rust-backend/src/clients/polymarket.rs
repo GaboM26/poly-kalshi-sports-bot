@@ -33,15 +33,6 @@ const TEAM_GAME_SPORTS: &[(&str, &str, &str)] = &[
     ("mlb", "MLB", "baseball_team_full_game_winner"),
 ];
 
-const RATE_LIMIT_MAX_RETRIES: u32 = 3;
-const BALANCE_CACHE_TTL: Duration = Duration::from_secs(30);
-const POSITIONS_CACHE_TTL: Duration = Duration::from_secs(30);
-// minimumTradeQty / orderPriceMinTickSize are static per-market validation
-// constraints, not live pricing data - cache them well past a single trading
-// session so we don't add a second live API call (and more rate-limit risk)
-// to every depth check and order attempt.
-const MARKET_CONSTRAINTS_CACHE_TTL: Duration = Duration::from_secs(3600);
-
 /// Fresh, normalized native Polymarket US LONG-price order book.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PolymarketMarketBook {
@@ -177,7 +168,7 @@ impl PolymarketClient {
     pub fn new(config: PolymarketConfig) -> Result<Self> {
         let (key_id, secret_key) = resolve_credentials(&config)?;
         let http = Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(config.http.timeout())
             .build()
             .context("Failed to build Polymarket HTTP client")?;
 
@@ -251,7 +242,7 @@ impl PolymarketClient {
             let status = response.status();
 
             if status.as_u16() == 429 {
-                if attempt + 1 >= RATE_LIMIT_MAX_RETRIES {
+                if attempt + 1 >= self.config.http.max_attempts {
                     anyhow::bail!(
                         "Polymarket US is rate limiting this IP. Retry after the temporary restriction expires."
                     );
@@ -263,7 +254,7 @@ impl PolymarketClient {
                     url,
                     delay,
                     attempt + 1,
-                    RATE_LIMIT_MAX_RETRIES
+                    self.config.http.max_attempts
                 );
                 tokio::time::sleep(delay).await;
                 attempt += 1;
@@ -289,7 +280,7 @@ impl PolymarketClient {
     pub async fn get_balance(&self) -> Result<f64> {
         let mut cache = self.balance_cache.lock().await;
         if let Some((cached_at, balance)) = cache.as_ref() {
-            if cached_at.elapsed() < BALANCE_CACHE_TTL {
+            if cached_at.elapsed() < self.config.cache.balance_ttl() {
                 return Ok(*balance);
             }
         }
@@ -780,7 +771,7 @@ impl PolymarketClient {
         if let Some((cached_at, min_qty, tick_size)) =
             self.market_constraints_cache.lock().await.get(market_slug)
         {
-            if cached_at.elapsed() < MARKET_CONSTRAINTS_CACHE_TTL {
+            if cached_at.elapsed() < self.config.cache.market_constraints_ttl() {
                 return Ok((*min_qty, *tick_size));
             }
         }
@@ -814,7 +805,7 @@ impl PolymarketClient {
     pub async fn get_positions(&self) -> Result<Value> {
         let mut cache = self.positions_cache.lock().await;
         if let Some((cached_at, positions)) = cache.as_ref() {
-            if cached_at.elapsed() < POSITIONS_CACHE_TTL {
+            if cached_at.elapsed() < self.config.cache.positions_ttl() {
                 return Ok(positions.clone());
             }
         }
