@@ -8,10 +8,12 @@
 
 pub mod discord;
 pub mod metrics;
+pub mod platform;
 pub mod pnl;
 pub mod positions;
 pub mod storage;
 
 pub use metrics::{Operation, PerformanceMetrics};
+pub use platform::Platform;
 pub use storage::{ArbitrageStorage, AutoTradeExecutionRecord};
 pub use discord::DiscordClient;

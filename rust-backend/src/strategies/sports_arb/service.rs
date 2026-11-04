@@ -11,13 +11,13 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use crate::clients::{KalshiClient, PolymarketClient};
-use crate::config::{Config, SportsArbConfig};
+use crate::config::SportsArbConfig;
 use crate::core::{EventMatcher, SubscriptionInfo};
 use crate::models::{
     ArbitrageOpportunity, KalshiEvent, KalshiMarket, MatchedEvent, MatchedMarket, PolymarketEvent,
     PolymarketMarket, PolymarketPositionSide, PriceUpdate, SystemStats,
 };
-use crate::services::{ArbitrageStorage, Operation, PerformanceMetrics};
+use crate::services::{ArbitrageStorage, Operation, PerformanceMetrics, Platform};
 use crate::strategies::sports_arb::WebSocketManager;
 
 const MIN_REST_QUOTE_REFRESH_SECS: u64 = 1;
@@ -54,19 +54,14 @@ pub struct ArbitrageService {
 }
 
 impl ArbitrageService {
-    /// Create a new arbitrage service
-    pub async fn new(config: &Config) -> Result<Self> {
-        // Initialize storage
-        let storage = Arc::new(ArbitrageStorage::new("arbitrage_history.db")?);
-
-        // Initialize performance metrics
-        let metrics = Arc::new(PerformanceMetrics::new());
-
-        // Initialize clients. Polymarket US credentials are validated here
-        // (PolymarketClient::new fails fast if they're missing) - there's no
-        // separate order service to health-check anymore.
-        let kalshi_client = KalshiClient::new(config.kalshi.clone())?;
-        let polymarket_client = PolymarketClient::new(config.polymarket.clone())?;
+    /// Create a new arbitrage service on the shared platform clients,
+    /// storage and metrics.
+    pub async fn new(platform: &Platform) -> Result<Self> {
+        let config = &platform.config;
+        let storage = platform.storage.clone();
+        let metrics = platform.metrics.clone();
+        let kalshi_client = platform.kalshi.clone();
+        let polymarket_client = platform.polymarket.clone();
 
         let settings = Arc::new(config.sports_arb.clone());
 

@@ -181,6 +181,10 @@ category = "CRYPTO15"
 label = "SOL 15m"
 auto_trade = true
 
+# SQLite database holding execution state and history. Optional; default shown.
+[storage]
+db_path = "arbitrage_history.db"
+
 [auth]
 # Web UI login authentication configuration
 username = "admin"

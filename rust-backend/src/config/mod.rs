@@ -666,6 +666,23 @@ impl SportsArbConfig {
     }
 }
 
+/// SQLite database (`[storage]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct StorageConfig {
+    /// Holds execution state and history; relative paths resolve against the
+    /// backend's working directory.
+    pub db_path: String,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            db_path: "arbitrage_history.db".to_string(),
+        }
+    }
+}
+
 /// Main configuration struct
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -681,6 +698,8 @@ pub struct Config {
     pub mention: MentionConfig,
     #[serde(default)]
     pub sports_arb: SportsArbConfig,
+    #[serde(default)]
+    pub storage: StorageConfig,
 }
 
 impl Config {
@@ -768,6 +787,7 @@ mod tests {
         assert_eq!(config.mention.book_max_age(), Duration::from_secs(30));
         assert_eq!(config.mention.rejection_log_interval(), Duration::from_secs(900));
         assert_eq!(config.mention.signal_timeout(), Duration::from_secs(5));
+        assert_eq!(config.storage.db_path, "arbitrage_history.db");
     }
 
     /// The template must stay loadable and match the defaults it documents.
@@ -784,6 +804,7 @@ mod tests {
         assert_eq!(format!("{:?}", example.mention), format!("{:?}", minimal.mention));
         assert_eq!(example.discord.opportunity_cooldown_secs, minimal.discord.opportunity_cooldown_secs);
         assert_eq!(format!("{:?}", example.sports_arb), format!("{:?}", minimal.sports_arb));
+        assert_eq!(example.storage.db_path, minimal.storage.db_path);
     }
 
     /// Same assertions the Kalshi client carried for the hardcoded lists.

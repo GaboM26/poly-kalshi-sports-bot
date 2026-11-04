@@ -21,7 +21,7 @@ use tracing::{error, info, warn, Level};
 
 use crate::config::{Config, MentionConfig, MentionMode};
 use crate::models::PriceUpdate;
-use crate::services::{DiscordClient, PerformanceMetrics};
+use crate::services::{DiscordClient, PerformanceMetrics, Platform};
 use crate::strategies::mention::{DirectionalExecutionService, MentionSignalClient};
 use crate::strategies::sports_arb::ArbitrageService;
 
@@ -36,7 +36,8 @@ pub struct AppState {
 /// Create the Axum application
 pub async fn create_app(config: Config) -> Result<Router> {
     // Initialize the arbitrage service
-    let mut service = ArbitrageService::new(&config).await?;
+    let platform = Arc::new(Platform::new(config.clone())?);
+    let mut service = ArbitrageService::new(&platform).await?;
     service.initialize().await?;
     if service
         .ws_manager
@@ -74,13 +75,9 @@ pub async fn create_app(config: Config) -> Result<Router> {
         Err(e) => error!("Polymarket WebSocket disabled, REST polling only: {:#}", e),
     }
 
-    // Initialize Discord client
-    let discord_client = Arc::new(DiscordClient::new(config.discord.clone()));
+    let discord_client = platform.discord.clone();
     if discord_client.is_enabled() {
-        info!("✅ Discord notifications enabled");
         service.ws_manager.set_discord_client(discord_client.clone());
-    } else {
-        info!("ℹ️ Discord notifications disabled");
     }
 
     // The directional strategy is isolated from the paired path: an invalid [mention]
