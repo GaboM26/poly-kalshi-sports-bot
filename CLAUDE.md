@@ -76,10 +76,14 @@ Two services, started together via `./start_rust_stack.sh`:
     `orders.rs`, `events.rs`, `ws.rs` authenticated market-data WebSocket).
     Both exchanges are called directly; there is no separate order-service
     process.
-  - `services/`: `arbitrage.rs` (detection/control), `paired_execution.rs`
-    (sizing, paired submission, neutralization), `positions.rs` (position
-    economics and hedge pairing), `websocket_manager/` (live delivery to the
-    frontend, quote caches, `auto_trade.rs`, `market_lifecycle.rs`),
+  - `strategies/`: one folder per trading strategy.
+    `sports_arb/` (`service.rs` detection/control, `execution.rs` sizing,
+    paired submission, neutralization, `websocket_manager/` quote caches,
+    live delivery to the frontend, `auto_trade.rs`, `market_lifecycle.rs`).
+    `mention/` (`execution.rs` single-leg directional executor, `signal.rs`
+    client for the local kalshi-mention signal service).
+  - `services/`: shared platform services. `positions.rs` (position
+    economics and hedge pairing), `pnl.rs`, `metrics.rs`,
     `storage/` (SQLite; `auto_trade_repo.rs` tracks the execution state
     machine, `hedge_pairs_repo.rs` persists verified hedges), `discord.rs` (webhook alerts; off until `[discord]` is configured).
   - `api/`: HTTP routes and the `mod.rs` request/response wiring.
@@ -105,7 +109,7 @@ may be more current than this summary. Read it too.
   `ORDER_STATE_REJECTED` carries a real reason. An accepted IOC that finds no
   liquidity goes `NEW` then `EXPIRED` and is reported as "expired unfilled".
 - **Polymarket depth** (changed 2026-10-01 with user sign-off): only via
-  `services/paired_execution.rs::executable_polymarket_book`: the live
+  `strategies/sports_arb/execution.rs::executable_polymarket_book`: the live
   WebSocket full book while its connection is provably current
   (`WebSocketManager::fresh_polymarket_book`), else one origin-fresh
   `/v1/markets/{market_slug}/book` (`get_market_book` cache-busts and refuses
