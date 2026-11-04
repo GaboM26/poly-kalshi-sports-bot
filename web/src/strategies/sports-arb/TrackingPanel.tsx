@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { POLL_MS } from '../../shared/polling';
 import { sportsArbUrl } from './api';
 import { TrackingStats, ActiveTracking } from '../../types';
 
@@ -23,7 +24,7 @@ export function TrackingPanel({}: TrackingPanelProps) {
     };
 
     fetchTracking();
-    const interval = setInterval(fetchTracking, 2000); // Refresh every two seconds.
+    const interval = setInterval(fetchTracking, POLL_MS.tracking);
     return () => clearInterval(interval);
   }, []);
 

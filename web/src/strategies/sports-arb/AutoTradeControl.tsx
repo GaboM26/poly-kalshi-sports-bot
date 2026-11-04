@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { POLL_MS } from '../../shared/polling';
 import { getAutoTradeStatus, enableAutoTrade, disableAutoTrade, resetAutoTradeCount, updateAutoTradeSettings, AutoTradeStatus } from './api';
 
 /** Header button and modal for the sports-arb auto-trader. */
@@ -41,7 +42,7 @@ export function AutoTradeControl() {
   // Refresh automated trading status periodically.
   useEffect(() => {
     fetchAutoTradeStatus();
-    const interval = setInterval(fetchAutoTradeStatus, 2000);
+    const interval = setInterval(fetchAutoTradeStatus, POLL_MS.autoTradeStatus);
     return () => clearInterval(interval);
   }, [fetchAutoTradeStatus]);
 

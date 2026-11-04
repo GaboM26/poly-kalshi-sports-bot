@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useState } from 'react';
+import { POLL_MS } from '../polling';
 import { apiUrl } from '../api';
 import { DataCoverage, AccountBalance, MetricsReport } from '../../types';
 
@@ -127,7 +128,7 @@ export function Header({ isConnected, stats, totalProfit, lastUpdateTime: _lastU
     // Fetch initially.
     fetchBalance();
     // Account endpoints are rate-limited; refresh at a sustainable cadence.
-    const interval = setInterval(fetchBalance, 60000);
+    const interval = setInterval(fetchBalance, POLL_MS.accountBalance);
     return () => clearInterval(interval);
   }, []);
 

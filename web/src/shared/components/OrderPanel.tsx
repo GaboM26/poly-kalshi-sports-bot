@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { POLL_MS } from '../polling';
 import { PositionCard, PositionLeg } from '../../types';
 import { getUnifiedPositions, createKalshiOrder } from '../api';
 
@@ -67,7 +68,7 @@ export function OrderPanel({}: OrderPanelProps) {
 
   useEffect(() => {
     loadData();
-    const interval = setInterval(loadData, 60000); // Account endpoints are rate-limited.
+    const interval = setInterval(loadData, POLL_MS.positions);
     return () => clearInterval(interval);
   }, [loadData]);
 

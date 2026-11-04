@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
+import { POLL_MS } from '../../shared/polling';
 import { sportsArbUrl } from './api';
 import { OpportunityList } from './OpportunityList';
 import { TrackingPanel } from './TrackingPanel';
@@ -51,8 +52,8 @@ export function SportsArbPage({ live }: StrategyPageProps) {
   useEffect(() => {
     if (selectedMarket) {
       fetchOrderbookDepth(selectedMarket);
-      // Refresh depth every three seconds.
-      const interval = setInterval(() => fetchOrderbookDepth(selectedMarket), 3000);
+      // Refresh depth periodically (POLL_MS.orderbookDepth).
+      const interval = setInterval(() => fetchOrderbookDepth(selectedMarket), POLL_MS.orderbookDepth);
       return () => clearInterval(interval);
     } else {
       setOrderbookDepth(null);

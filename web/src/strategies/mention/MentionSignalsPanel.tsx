@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { POLL_MS } from '../../shared/polling';
 import { mentionUrl } from './api';
 import { MentionDecision, MentionPosition, MentionSignalRow, MentionStatus } from '../../types';
 
@@ -74,7 +75,7 @@ export function MentionSignalsPanel({ signals, status }: MentionSignalsPanelProp
       }
     };
     void load();
-    const timer = setInterval(() => void load(), 10000);
+    const timer = setInterval(() => void load(), POLL_MS.mentionDetails);
     return () => { disposed = true; clearInterval(timer); };
   }, []);
 

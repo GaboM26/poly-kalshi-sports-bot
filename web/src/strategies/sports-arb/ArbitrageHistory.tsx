@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { POLL_MS } from '../../shared/polling';
 import { sportsArbUrl } from './api';
 
 interface ProfitHistoryEntry {
@@ -102,7 +103,7 @@ export function ArbitrageHistory({ onOpenExplorer }: ArbitrageHistoryProps) {
 
     fetchHistory();
     // Refresh every five seconds.
-    const interval = setInterval(fetchHistory, 5000);
+    const interval = setInterval(fetchHistory, POLL_MS.arbitrageHistory);
     return () => clearInterval(interval);
   }, []);
 

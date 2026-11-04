@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { POLL_MS } from './polling';
 import { sportsArbUrl } from '../strategies/sports-arb/api';
 import { WsMessage, LogEntry, DataCoverage, MatchedMarketData, MetricsReport, MentionSignalRow, MentionStatus } from '../types';
 
@@ -196,12 +197,12 @@ export function useWebSocket(url: string) {
         setIsConnected(false);
         addLog('warning', 'WebSocket disconnected; reconnecting in 5 seconds...');
         
-        // Reconnect after five seconds.
+        // Reconnect after a short wait.
         reconnectTimer = setTimeout(() => {
           if (!disposed) {
             connect();
           }
-        }, 5000);
+        }, POLL_MS.wsReconnect);
       };
     };
 
@@ -237,7 +238,7 @@ export function useWebSocket(url: string) {
     // Fetch initially.
     fetchCoverage();
     // Refresh every three seconds.
-    const interval = setInterval(fetchCoverage, 3000);
+    const interval = setInterval(fetchCoverage, POLL_MS.dataCoverage);
     return () => clearInterval(interval);
   }, [url]);
 
