@@ -116,7 +116,7 @@ impl PolymarketClient {
     /// reaching the matching engine, so retrying an order submission on a
     /// 429 cannot cause a duplicate order - unlike a transport-level
     /// failure (timeout/reset), which is never retried here for the same
-    /// reason `clients/kalshi.rs::post()` never retries those blindly. The
+    /// reason `clients/kalshi/mod.rs::post()` never retries those blindly. The
     /// timestamp and signature are regenerated on every attempt.
     async fn request_json(
         &self,

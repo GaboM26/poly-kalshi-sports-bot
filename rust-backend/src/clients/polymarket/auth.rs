@@ -3,7 +3,7 @@
 //! Mirrors `polymarket_us/auth.py::create_auth_headers` (the official SDK)
 //! exactly: the signature covers only `{timestamp}{METHOD}{path}` - never
 //! the request body or query string, same rule already documented for
-//! Kalshi's RSA-PSS signing in `clients/kalshi.rs`.
+//! Kalshi's RSA-PSS signing in `clients/kalshi/mod.rs`.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

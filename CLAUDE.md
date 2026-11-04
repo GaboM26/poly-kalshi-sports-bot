@@ -66,12 +66,16 @@ Two services, started together via `./start_rust_stack.sh`:
   - `core/`: `matcher.rs` (event/market matching between exchanges, incl.
     NBA logic in `nba_teams.rs`/`competitors.rs`), `calculator.rs` (profit
     margin math), `fees.rs` (the only place fee math lives).
-  - `clients/`: `kalshi.rs` (REST + WebSocket, RSA-PSS-signed requests
-    against `external-api.kalshi.com`), `polymarket.rs` (REST against
+  - `clients/`: one folder per exchange, split by concern.
+    `kalshi/` (`mod.rs` client + RSA-PSS signing against
+    `external-api.kalshi.com`, `book.rs`, `quotes.rs` REST market data,
+    `orders.rs` orders/portfolio, `ws.rs` WebSocket, `events.rs` series
+    catalog and parsing). `polymarket/` (`mod.rs` client against
     `gateway.polymarket.us` for market data and `api.polymarket.us` for
-    orders/account/portfolio, Ed25519-signed via `polymarket_auth.rs`),
-    `polymarket_ws.rs` (authenticated market-data WebSocket). Both exchanges
-    are called directly; there is no separate order-service process.
+    orders/account/portfolio, `auth.rs` Ed25519 signing, `book.rs`,
+    `orders.rs`, `events.rs`, `ws.rs` authenticated market-data WebSocket).
+    Both exchanges are called directly; there is no separate order-service
+    process.
   - `services/`: `arbitrage.rs` (detection/control), `paired_execution.rs`
     (sizing, paired submission, neutralization), `positions.rs` (position
     economics and hedge pairing), `websocket_manager/` (live delivery to the
@@ -223,7 +227,7 @@ may be more current than this summary. Read it too.
    them, 0 false gaps in the first 90s. Watch the log for
    `Kalshi seq discontinuity` over several hours. If still zero, make a gap
    untrust the book and force a reconnect again (code path is in
-   `clients/kalshi.rs`; it previously caused a reconnect every ~3s, so do not
+   `clients/kalshi/ws.rs`; it previously caused a reconnect every ~3s, so do not
    re-enable blind).
 2. **Fixed 2026-10-17:** Kalshi acks only the first subscribe as `subscribed`;
    every later one is `ok` on the shared `sid=1`, so the per-ticker sid map held

@@ -60,7 +60,7 @@ fn default_kalshi_base_url() -> String {
 ///
 /// `base_url` is the public gateway (unauthenticated: events, sports, market
 /// book/detail). `api_base_url` is the authenticated API (orders, account,
-/// portfolio), signed with Ed25519 per request in `clients/polymarket.rs`.
+/// portfolio), signed with Ed25519 per request in `clients/polymarket/mod.rs`.
 /// Credentials are preferably supplied via `POLYMARKET_KEY_ID` /
 /// `POLYMARKET_SECRET_KEY` env vars, falling back to `key_id`/`secret_key`
 /// below.
@@ -131,7 +131,8 @@ impl PolymarketCacheConfig {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(default)]
 pub struct PolymarketWsConfig {
-    /// Reconnect when no frame arrives for this long.
+    /// Reconnect when no frame arrives for this long. The server sends
+    /// heartbeats; silence beyond this means a dead socket.
     pub silence_timeout_secs: u64,
     /// How often the subscribed slug set is re-read for hot-adds.
     pub slug_refresh_secs: u64,

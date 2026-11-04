@@ -37,7 +37,6 @@ const MAX_SLUGS_PER_SUBSCRIPTION: usize = 100;
 /// window) silently got no WS data and detection ran on 30s-stale gateway
 /// quotes.
 const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 10;
-/// The server sends heartbeats; silence beyond this means a dead socket.
 
 /// A per-side quote update for one market slug.
 #[derive(Debug, Clone, PartialEq)]
@@ -226,7 +225,7 @@ where
                 }
             }
             frame = tokio::time::timeout(timing.silence_timeout(), read.next()) => {
-                let frame = frame.context("Polymarket WS silent for 30s")?;
+                let frame = frame.with_context(|| format!("Polymarket WS silent for {:?}", timing.silence_timeout()))?;
                 match frame {
                     Some(Ok(Message::Text(text))) => {
                         if let Some(error) = subscription_error(&text) {
