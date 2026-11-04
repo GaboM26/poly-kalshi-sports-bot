@@ -87,3 +87,9 @@ Thumbs.db
 
 # graphify
 graphify-out/
+
+# kalshi-mention data root (~700MB sqlite + transcript corpus); never commit
+/data/
+*.sqlite
+*.sqlite-*
+*.parquet
