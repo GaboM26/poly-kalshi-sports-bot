@@ -6,7 +6,7 @@
 
 use anyhow::Context;
 use polytaoli::clients::polymarket::resolve_credentials;
-use polytaoli::clients::polymarket_auth::sign_request;
+use polytaoli::clients::polymarket::auth::sign_request;
 use polytaoli::config::Config;
 use serde_json::Value;
 

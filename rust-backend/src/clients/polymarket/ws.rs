@@ -22,8 +22,8 @@ use tokio_tungstenite::{
 };
 use tracing::{debug, info, warn};
 
-use super::polymarket::{build_market_book, PolymarketMarketBook};
-use super::polymarket_auth;
+use super::{build_market_book, PolymarketMarketBook};
+use super::auth;
 use crate::config::PolymarketWsConfig;
 
 const WS_URL: &str = "wss://api.polymarket.us/v1/ws/markets";
@@ -160,7 +160,7 @@ where
     S: Fn() -> Vec<String>,
     Q: Fn(PolyWsEvent),
 {
-    let headers = polymarket_auth::sign_request(key_id, secret_key, "GET", WS_PATH)?;
+    let headers = auth::sign_request(key_id, secret_key, "GET", WS_PATH)?;
     let mut request = WS_URL.into_client_request()?;
     let h = request.headers_mut();
     h.insert("X-PM-Access-Key", headers.access_key.parse()?);

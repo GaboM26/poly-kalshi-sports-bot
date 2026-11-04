@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use polytaoli::clients::polymarket::resolve_credentials;
-use polytaoli::clients::polymarket_auth;
+use polytaoli::clients::polymarket::auth;
 use polytaoli::clients::PolymarketClient;
 use polytaoli::config::Config;
 use serde_json::{json, Value};
@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     sports.dedup();
     sports.retain(|s| !last.contains(s));
 
-    let headers = polymarket_auth::sign_request(&key_id, &secret, "GET", "/v1/ws/markets")?;
+    let headers = auth::sign_request(&key_id, &secret, "GET", "/v1/ws/markets")?;
     let mut request = "wss://api.polymarket.us/v1/ws/markets".into_client_request()?;
     let h = request.headers_mut();
     h.insert("X-PM-Access-Key", headers.access_key.parse()?);

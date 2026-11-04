@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use polytaoli::clients::polymarket::resolve_credentials;
-use polytaoli::clients::polymarket_ws::{run_markets_stream, PolyWsEvent};
+use polytaoli::clients::polymarket::ws::{run_markets_stream, PolyWsEvent};
 use polytaoli::clients::PolymarketClient;
 use polytaoli::config::Config;
 use polytaoli::services::websocket_manager::POLYMARKET_WS_MAX_SILENCE;

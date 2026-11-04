@@ -14,7 +14,7 @@
 use std::time::{Duration, Instant};
 
 use polytaoli::clients::polymarket::resolve_credentials;
-use polytaoli::clients::polymarket_ws::{run_markets_stream, PolyWsEvent};
+use polytaoli::clients::polymarket::ws::{run_markets_stream, PolyWsEvent};
 use polytaoli::config::Config;
 use serde_json::Value;
 

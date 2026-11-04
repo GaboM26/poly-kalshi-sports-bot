@@ -328,29 +328,29 @@ impl ArbitrageService {
         let slug_manager = self.ws_manager.clone();
         tokio::spawn(async move {
             info!("📡 Polymarket US WebSocket quote stream starting");
-            crate::clients::polymarket_ws::run_markets_stream(
+            crate::clients::polymarket::ws::run_markets_stream(
                 timing,
                 key_id,
                 secret_key,
                 move || slug_manager.get_polymarket_slugs(),
                 move |event| match event {
-                    crate::clients::polymarket_ws::PolyWsEvent::Quote(quote) => {
+                    crate::clients::polymarket::ws::PolyWsEvent::Quote(quote) => {
                         ws_manager.update_polymarket_ws_quote(
                             &quote.slug,
                             quote.long_quote,
                             quote.short_quote,
                         );
                     }
-                    crate::clients::polymarket_ws::PolyWsEvent::Book(book) => {
+                    crate::clients::polymarket::ws::PolyWsEvent::Book(book) => {
                         ws_manager.update_polymarket_ws_book(book);
                     }
-                    crate::clients::polymarket_ws::PolyWsEvent::Connected => {
+                    crate::clients::polymarket::ws::PolyWsEvent::Connected => {
                         ws_manager.on_polymarket_ws_connected();
                     }
-                    crate::clients::polymarket_ws::PolyWsEvent::Heartbeat => {
+                    crate::clients::polymarket::ws::PolyWsEvent::Heartbeat => {
                         ws_manager.note_polymarket_ws_frame();
                     }
-                    crate::clients::polymarket_ws::PolyWsEvent::Disconnected => {
+                    crate::clients::polymarket::ws::PolyWsEvent::Disconnected => {
                         ws_manager.on_polymarket_ws_disconnected();
                     }
                 },
