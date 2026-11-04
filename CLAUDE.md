@@ -151,7 +151,7 @@ may be more current than this summary. Read it too.
   with NO delay on either leg. Never make Kalshi wait, never wait for one
   fill before sending the other; a one-sided fill is an accepted risk handled
   by recovery. IOC limits are placed 1c beyond the worst sized
-  level (`LIMIT_CUSHION_CENTS`) and margin is sized at those limits. An EXPIRED
+  level (`[sports_arb] limit_cushion_cents`, default 1) and margin is sized at those limits. An EXPIRED
   Polymarket IOC whose order lookup 404s is confirmed from account activity
   before the fill is called unknown. Not yet exercised against live orders.
 - **Neutralization**: on unequal fills, attempt a bounded IOC/FAK offset only
@@ -298,7 +298,7 @@ the user of this when planning work. Notes for the design:
 NHL and MLB full-game moneylines are detected and displayed since
 2026-10-26 (`core/team_codes.rs`, `parse_team_game_event`,
 `parse_team_game_market`). They are DETECTION ONLY:
-`kalshi::auto_trade_enabled_for` keeps them out of
+`auto_trade = false` on their `[[sports_arb.series]]` entries keeps them out of
 `check_auto_trade_eligibility`. Kalshi NHL rules also settle at a fair price
 if a game does not start within 48h, so NHL has the same postponement
 mismatch as MLB. The matcher refuses any same-name same-date ambiguity
@@ -377,7 +377,7 @@ mismatch as MLB. The matcher refuses any same-name same-date ambiguity
   when one book lags; a maker-plus-hedge design was proposed to the user.
   Second run (2026-10-26 23:14-00:46 UTC): 9 crypto dry runs passed every
   check (5 contracts, 0.4-2.7% net). On 2026-10-27 the user enabled LIVE
-  auto-trade for KXBTC15M/KXETH15M/KXSOL15M (`AUTO_TRADE_KALSHI_SERIES`).
+  auto-trade for KXBTC15M/KXETH15M/KXSOL15M (`auto_trade = true` in `[[sports_arb.series]]`).
 - Kalshi crypto books tick in 0.1c: bids floor to the cent (`book_bid_cents`),
   REST asks round up. Never send sub-cent prices without reworking orders.
 
@@ -432,7 +432,7 @@ mismatch as MLB. The matcher refuses any same-name same-date ambiguity
   IOC expired because a point moved its book ~5c within ~1s; recovery bought
   the missing leg at NO 0.37, so the pair settles $1.00/contract and locked
   only the fees (~-$0.25). HINT (user, to revisit with more data): in-play
-  markets likely need a wider spread than the 1c `LIMIT_CUSHION_CENTS` and a
+  markets likely need a wider spread than the 1c `limit_cushion_cents` and a
   higher minimum margin. Auto-trade stays on to gather data.
 - `trade_count` (the max-6 cap) only increments on `executed`; a
   `neutralized` trade that cost fees does not count toward the cap.
