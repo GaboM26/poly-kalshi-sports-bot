@@ -10,6 +10,7 @@ import { OrderForm } from './components/OrderForm';
 import { MetricsPanel } from './components/MetricsPanel';
 import { PolyDebugOrder } from './components/PolyDebugOrder';
 import { MentionSignalsPanel } from './components/MentionSignalsPanel';
+import { StrategyNav, Strategy } from './components/StrategyNav';
 import { useWebSocket } from './hooks/useWebSocket';
 import { MatchedMarketData, OrderbookDepthResponse } from './types';
 
@@ -75,7 +76,22 @@ function App() {
         `${market.kalshi_market_id}_${market.polymarket_market_id}` === selectedMarketKey,
     ) ?? null;
   }, [matchedMarkets, selectedMarketKey]);
-  const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking' | 'mention'>('detail');
+  const [rightPanelTab, setRightPanelTab] = useState<'detail' | 'tracking'>('detail');
+  const [strategy, setStrategy] = useState<Strategy>(() => {
+    try {
+      return localStorage.getItem('strategy') === 'mention' ? 'mention' : 'arbitrage';
+    } catch {
+      return 'arbitrage';
+    }
+  });
+  const selectStrategy = (next: Strategy) => {
+    setStrategy(next);
+    try {
+      localStorage.setItem('strategy', next);
+    } catch {
+      // Remembering the page is a convenience only.
+    }
+  };
   const [leftBottomTab, setLeftBottomTab] = useState<'positions' | 'history'>('positions');
   const [showHistoryExplorer, setShowHistoryExplorer] = useState(false);
   const [showPolyDebug, setShowPolyDebug] = useState(false);
@@ -129,7 +145,15 @@ function App() {
         onLogout={handleLogout}
         username={currentUsername}
       />
-      
+      <StrategyNav active={strategy} onChange={selectStrategy} />
+
+      {strategy === 'mention' ? (
+      <main className="flex-1 overflow-hidden p-1 bg-[--bg-primary]">
+        <div className="h-full overflow-y-auto bg-[--bg-secondary] rounded border border-[--border-color] shadow-lg">
+          <MentionSignalsPanel apiBaseUrl={apiBaseUrl} signals={mentionSignals} status={mentionStatus} />
+        </div>
+      </main>
+      ) : (
       <main className="flex-1 flex overflow-hidden gap-1 p-1 bg-[--bg-primary]">
         {/* Left: market list and positions/history */}
         <div className="flex-1 flex flex-col overflow-hidden gap-1">
@@ -207,16 +231,6 @@ function App() {
                 onClick={() => setRightPanelTab('tracking')}
               >
                 🎯 Tracking
-              </button>
-              <button
-                className={`flex-1 px-2 py-1.5 text-[10px] font-medium transition-colors border-b-2 ${
-                  rightPanelTab === 'mention'
-                    ? 'text-amber-300 border-amber-300 bg-[--bg-secondary]'
-                    : 'text-[--text-muted] hover:text-[--text-secondary] border-transparent'
-                }`}
-                onClick={() => setRightPanelTab('mention')}
-              >
-                Mention
               </button>
             </div>
 
@@ -463,10 +477,8 @@ function App() {
                     <div className="text-[10px] text-[--text-muted] mt-1">View details and place trades</div>
                   </div>
                 )
-              ) : rightPanelTab === 'tracking' ? (
-                <TrackingPanel apiBaseUrl={apiBaseUrl} />
               ) : (
-                <MentionSignalsPanel apiBaseUrl={apiBaseUrl} signals={mentionSignals} status={mentionStatus} />
+                <TrackingPanel apiBaseUrl={apiBaseUrl} />
               )}
             </div>
           </div>
@@ -477,6 +489,7 @@ function App() {
           </div>
         </aside>
       </main>
+      )}
 
       {/* History explorer modal */}
       {showHistoryExplorer && (
