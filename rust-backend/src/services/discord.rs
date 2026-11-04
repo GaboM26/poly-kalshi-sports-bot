@@ -88,6 +88,16 @@ impl DiscordClient {
         }
     }
 
+    /// Operational alert that needs a human (e.g. a directional strategy
+    /// halt). Goes to the trades channel, like residual-exposure halts.
+    pub async fn send_alert(&self, text: &str) {
+        if let Some(url) = self.trades_webhook_url() {
+            if let Err(e) = self.send(url, text).await {
+                error!("Discord alert failed: {:#}", e);
+            }
+        }
+    }
+
     fn spawn_send(&self, url: String, text: String) {
         let this = self.clone();
         tokio::spawn(async move {

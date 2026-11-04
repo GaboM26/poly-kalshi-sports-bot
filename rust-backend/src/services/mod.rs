@@ -9,6 +9,8 @@
 
 pub mod arbitrage;
 pub mod discord;
+pub mod directional_execution;
+pub mod mention_signal;
 pub mod metrics;
 pub mod paired_execution;
 pub mod pnl;
@@ -17,6 +19,8 @@ pub mod storage;
 pub mod websocket_manager;
 
 pub use arbitrage::ArbitrageService;
+pub use directional_execution::DirectionalExecutionService;
+pub use mention_signal::MentionSignalClient;
 pub use metrics::{Operation, PerformanceMetrics};
 pub use paired_execution::PairedOrderParams;
 pub use storage::{ArbitrageStorage, AutoTradeExecutionRecord};

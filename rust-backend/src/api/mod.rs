@@ -20,7 +20,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{error, info, warn, Level};
 
-use crate::config::Config;
+use crate::config::{Config, MentionConfig, MentionMode};
 use crate::core::SubscriptionInfo;
 use crate::models::PriceUpdate;
 use crate::services::paired_execution::{
@@ -28,7 +28,10 @@ use crate::services::paired_execution::{
     find_profitable_contract_size, is_game_suspended, kalshi_buy_levels, polymarket_buy_levels, submit_paired_order,
     EXECUTABLE_BOOK_MAX_AGE,
 };
-use crate::services::{ArbitrageService, PairedOrderParams, PerformanceMetrics, DiscordClient};
+use crate::services::{
+    ArbitrageService, DirectionalExecutionService, MentionSignalClient, PairedOrderParams,
+    PerformanceMetrics, DiscordClient,
+};
 
 /// Market scan interval in seconds (5 minutes)
 const MARKET_SCAN_INTERVAL_SECS: u64 = 300;
@@ -63,6 +66,7 @@ pub struct AppState {
     pub service: RwLock<ArbitrageService>,
     pub config: Config,
     pub discord_client: Arc<DiscordClient>,
+    pub directional_execution: Arc<DirectionalExecutionService>,
 }
 
 /// Create the Axum application
@@ -115,11 +119,50 @@ pub async fn create_app(config: Config) -> Result<Router> {
         info!("ℹ️ Discord notifications disabled");
     }
 
+    // The directional strategy is isolated from the paired path: an invalid [mention]
+    // section must never stop arbitrage from starting. It fails closed instead, running
+    // with defaults, mode off, and the directional kill switch engaged.
+    let mention_config = match config.mention.validate() {
+        Ok(()) => config.mention.clone(),
+        Err(reason) => {
+            error!(
+                "Invalid [mention] config; directional trading is disabled: {}",
+                reason
+            );
+            let _ = service.storage.set_directional_mode(MentionMode::Off);
+            let _ = service.storage.set_directional_kill_switch(true);
+            MentionConfig::default()
+        }
+    };
+    service
+        .storage
+        .initialize_directional_mode(mention_config.mode)?;
+    let mention_signals = MentionSignalClient::new(&mention_config)?;
+    let directional_execution = Arc::new(DirectionalExecutionService::new(
+        mention_config.clone(),
+        service.storage.clone(),
+        service.kalshi_client.clone(),
+        mention_signals.clone(),
+        discord_client.clone(),
+    ));
+
     // Create shared state
     let state = Arc::new(AppState {
         service: RwLock::new(service),
         config: config.clone(),
         discord_client,
+        directional_execution,
+    });
+
+    let directional_executor = state.directional_execution.clone();
+    let directional_interval = mention_config.poll_interval_secs.max(1);
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(directional_interval));
+        loop {
+            interval.tick().await;
+            directional_executor.run_once().await;
+        }
     });
 
     // Spawn price update handler
@@ -438,6 +481,20 @@ pub async fn create_app(config: Config) -> Result<Router> {
         .route("/api/auto-trade/exclude", post(routes::exclude_market))
         .route("/api/auto-trade/unexclude", post(routes::unexclude_market))
         .route("/api/auto-trade/queue", get(routes::get_auto_trade_queue))
+        // Independent single-leg directional mention strategy
+        .route("/api/mention/status", get(routes::get_mention_status))
+        .route("/api/mention/signals", get(routes::get_mention_signals))
+        .route("/api/mention/history", get(routes::get_mention_history))
+        .route("/api/mention/decisions", get(routes::get_mention_decisions))
+        .route(
+            "/api/mention/mode",
+            axum::routing::put(routes::set_mention_mode),
+        )
+        .route("/api/mention/kill", post(routes::mention_kill_switch))
+        .route(
+            "/api/mention/reset-loss-breaker",
+            post(routes::reset_mention_loss_breaker),
+        )
         // App settings (hot-updatable)
         .route("/api/settings", get(routes::get_app_settings))
         .route("/api/settings", put(routes::update_app_settings))
