@@ -12,9 +12,9 @@ use crate::api::AppState;
 
 /// Get Kalshi balance
 pub async fn get_kalshi_balance(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let service = state.service.read().await;
+    let service = &state.platform;
 
-    match service.kalshi_client.get_balance().await {
+    match service.kalshi.get_balance().await {
         Ok(balance) => Json(serde_json::json!({
             "success": true,
             "balance": balance
@@ -36,9 +36,9 @@ pub async fn get_kalshi_balance(State(state): State<Arc<AppState>>) -> impl Into
 
 /// Get Polymarket balance
 pub async fn get_polymarket_balance(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let service = state.service.read().await;
+    let service = &state.platform;
 
-    match service.polymarket_client.get_balance().await {
+    match service.polymarket.get_balance().await {
         Ok(balance) => Json(serde_json::json!({
             "success": true,
             "balance": balance
@@ -60,9 +60,9 @@ pub async fn get_polymarket_balance(State(state): State<Arc<AppState>>) -> impl 
 
 /// Get unified account balance
 pub async fn get_account_balance(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let service = state.service.read().await;
+    let service = &state.platform;
 
-    let kalshi_data = match service.kalshi_client.get_balance().await {
+    let kalshi_data = match service.kalshi.get_balance().await {
         Ok(balance) => {
             serde_json::json!({
                 "available": true,
@@ -77,7 +77,7 @@ pub async fn get_account_balance(State(state): State<Arc<AppState>>) -> impl Int
         }),
     };
 
-    let poly_data = match service.polymarket_client.get_balance().await {
+    let poly_data = match service.polymarket.get_balance().await {
         Ok(balance) => {
             serde_json::json!({
                 "available": true,
@@ -101,9 +101,9 @@ pub async fn get_account_balance(State(state): State<Arc<AppState>>) -> impl Int
 
 /// Get Kalshi positions
 pub async fn get_kalshi_positions(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let service = state.service.read().await;
+    let service = &state.platform;
 
-    match service.kalshi_client.get_positions().await {
+    match service.kalshi.get_positions().await {
         Ok(positions) => Json(serde_json::json!({
             "positions": positions.get("market_positions").unwrap_or(&serde_json::json!([]))
         }))
@@ -124,9 +124,9 @@ pub async fn get_kalshi_positions(State(state): State<Arc<AppState>>) -> impl In
 
 /// Get Polymarket positions
 pub async fn get_polymarket_positions(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let service = state.service.read().await;
+    let service = &state.platform;
 
-    match service.polymarket_client.get_positions().await {
+    match service.polymarket.get_positions().await {
         Ok(positions) => Json(serde_json::json!({
             "positions": positions
         }))
@@ -236,15 +236,15 @@ pub async fn login(
 /// side returned.
 pub async fn get_unified_positions(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     use crate::services::positions::{
-        hedge_pairs_for_market, kalshi_leg, newly_verified_pairs, pair_positions, polymarket_leg,
+        kalshi_leg, newly_verified_pairs, pair_positions, polymarket_leg,
     };
     use serde_json::Value;
 
-    let service = state.service.read().await;
+    let service = &state.platform;
     let mut errors: Vec<String> = Vec::new();
 
     let mut kalshi_raw: Vec<Value> = Vec::new();
-    match service.kalshi_client.get_positions().await {
+    match service.kalshi.get_positions().await {
         Ok(v) => {
             kalshi_raw = v
                 .get("market_positions")
@@ -268,7 +268,7 @@ pub async fn get_unified_positions(State(state): State<Arc<AppState>>) -> impl I
         Vec::new()
     } else {
         service
-            .kalshi_client
+            .kalshi
             .get_market_quotes(&tickers)
             .await
             .unwrap_or_else(|e| {
@@ -289,7 +289,7 @@ pub async fn get_unified_positions(State(state): State<Arc<AppState>>) -> impl I
         })
         .collect();
 
-    let poly_legs: Vec<_> = match service.polymarket_client.get_positions().await {
+    let poly_legs: Vec<_> = match service.polymarket.get_positions().await {
         Ok(Value::Array(items)) => items.iter().filter_map(polymarket_leg).collect(),
         Ok(_) => Vec::new(),
         Err(e) => {
@@ -299,7 +299,7 @@ pub async fn get_unified_positions(State(state): State<Arc<AppState>>) -> impl I
         }
     };
 
-    let history = match service.ws_manager.get_storage().get_auto_trade_history(500) {
+    let history = match service.storage.clone().get_auto_trade_history(500) {
         Ok(h) => h,
         Err(e) => {
             error!("Failed to load trade history for position pairing: {:#}", e);
@@ -312,16 +312,15 @@ pub async fn get_unified_positions(State(state): State<Arc<AppState>>) -> impl I
     // remembered from earlier: a game leaves the matched set when it closes,
     // usually before it settles, and its hedge must not flip to "unhedged"
     // in between (or across a restart).
-    let storage = service.ws_manager.get_storage();
+    let storage = service.storage.clone();
     let remembered = storage.get_hedge_pairs().unwrap_or_else(|e| {
         error!("Failed to load remembered hedge pairs: {:#}", e);
         Vec::new()
     });
-    let mut known_pairs: Vec<_> = service
-        .get_matched_markets()
-        .iter()
-        .flat_map(hedge_pairs_for_market)
-        .collect();
+    let mut known_pairs = Vec::new();
+    for strategy in &state.strategies {
+        known_pairs.extend(strategy.hedge_pairs().await);
+    }
     known_pairs.extend(remembered.iter().cloned());
 
     let cards = pair_positions(kalshi_legs, poly_legs, &history, &known_pairs);

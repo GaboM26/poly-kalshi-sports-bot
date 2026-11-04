@@ -11,7 +11,7 @@ use axum::{
 use serde::Deserialize;
 use tracing::error;
 
-use crate::api::AppState;
+use crate::strategies::sports_arb::SportsArb;
 
 /// Query params for history
 #[derive(Deserialize)]
@@ -21,7 +21,7 @@ pub struct HistoryQuery {
 
 /// Get arbitrage history
 pub async fn get_arbitrage_history(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<SportsArb>>,
     Query(query): Query<HistoryQuery>,
 ) -> impl IntoResponse {
     let service = state.service.read().await;
@@ -65,7 +65,7 @@ pub struct SearchHistoryQuery {
 
 /// Search history records
 pub async fn search_history(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<SportsArb>>,
     Query(query): Query<SearchHistoryQuery>,
 ) -> impl IntoResponse {
     let service = state.service.read().await;
@@ -100,7 +100,7 @@ pub async fn search_history(
 }
 
 /// Get history statistics
-pub async fn get_history_statistics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn get_history_statistics(State(state): State<Arc<SportsArb>>) -> impl IntoResponse {
     let service = state.service.read().await;
 
     match service.get_history_statistics() {

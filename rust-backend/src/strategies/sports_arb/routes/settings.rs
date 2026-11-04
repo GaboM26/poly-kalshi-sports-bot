@@ -6,7 +6,7 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
-use crate::api::AppState;
+use crate::strategies::sports_arb::SportsArb;
 
 /// App settings response
 #[derive(Serialize)]
@@ -23,7 +23,7 @@ pub struct AppSettingsResponse {
 }
 
 /// Get application settings
-pub async fn get_app_settings(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn get_app_settings(State(state): State<Arc<SportsArb>>) -> impl IntoResponse {
     let service = state.service.read().await;
     let storage = service.ws_manager.get_storage();
 
@@ -64,7 +64,7 @@ pub struct AppSettingsRequest {
 
 /// Update application settings
 pub async fn update_app_settings(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<SportsArb>>,
     Json(req): Json<AppSettingsRequest>,
 ) -> impl IntoResponse {
     let service = state.service.read().await;

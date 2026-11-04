@@ -11,7 +11,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
-use crate::api::AppState;
+use crate::strategies::sports_arb::SportsArb;
 
 /// Auto-trade status response
 #[derive(Serialize)]
@@ -34,7 +34,7 @@ pub struct AutoTradeStatusResponse {
 }
 
 /// Get auto-trade status
-pub async fn get_auto_trade_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn get_auto_trade_status(State(state): State<Arc<SportsArb>>) -> impl IntoResponse {
     let service = state.service.read().await;
     let auto_state = service.ws_manager.get_auto_trade_state();
 
@@ -54,7 +54,7 @@ pub async fn get_auto_trade_status(State(state): State<Arc<AppState>>) -> impl I
 }
 
 /// Enable auto-trade
-pub async fn enable_auto_trade(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn enable_auto_trade(State(state): State<Arc<SportsArb>>) -> impl IntoResponse {
     let service = state.service.read().await;
 
     match service.ws_manager.enable_auto_trade() {
@@ -78,7 +78,7 @@ pub async fn enable_auto_trade(State(state): State<Arc<AppState>>) -> impl IntoR
 }
 
 /// Disable auto-trade
-pub async fn disable_auto_trade(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn disable_auto_trade(State(state): State<Arc<SportsArb>>) -> impl IntoResponse {
     let service = state.service.read().await;
 
     match service.ws_manager.disable_auto_trade() {
@@ -102,7 +102,7 @@ pub async fn disable_auto_trade(State(state): State<Arc<AppState>>) -> impl Into
 }
 
 /// Reset auto-trade count
-pub async fn reset_auto_trade(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn reset_auto_trade(State(state): State<Arc<SportsArb>>) -> impl IntoResponse {
     let service = state.service.read().await;
 
     match service.ws_manager.reset_trade_count() {
@@ -142,7 +142,7 @@ pub struct AutoTradeSettingsRequest {
 
 /// Update auto-trade settings
 pub async fn update_auto_trade_settings(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<SportsArb>>,
     Json(req): Json<AutoTradeSettingsRequest>,
 ) -> impl IntoResponse {
     if req
@@ -196,7 +196,7 @@ pub struct AutoTradeHistoryQuery {
 
 /// Get auto-trade execution history
 pub async fn get_auto_trade_history(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<SportsArb>>,
     Query(query): Query<AutoTradeHistoryQuery>,
 ) -> impl IntoResponse {
     let service = state.service.read().await;
@@ -225,7 +225,7 @@ pub async fn get_auto_trade_history(
 }
 
 /// Estimated P&L from auto-trade history (see `services::pnl` for limits)
-pub async fn get_auto_trade_pnl(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn get_auto_trade_pnl(State(state): State<Arc<SportsArb>>) -> impl IntoResponse {
     let storage = {
         let service = state.service.read().await;
         service.ws_manager.get_storage().clone()
@@ -267,7 +267,7 @@ fn parse_game_date(game_date: Option<&str>) -> Option<chrono::NaiveDate> {
 }
 
 /// Get list of excluded markets
-pub async fn get_excluded_markets(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn get_excluded_markets(State(state): State<Arc<SportsArb>>) -> impl IntoResponse {
     let service = state.service.read().await;
     let excluded = service.ws_manager.get_excluded_markets();
 
@@ -279,7 +279,7 @@ pub async fn get_excluded_markets(State(state): State<Arc<AppState>>) -> impl In
 
 /// Exclude a market from auto-trade
 pub async fn exclude_market(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<SportsArb>>,
     Json(req): Json<MarketExclusionRequest>,
 ) -> impl IntoResponse {
     let service = state.service.read().await;
@@ -299,7 +299,7 @@ pub async fn exclude_market(
 
 /// Remove a market from exclusion list
 pub async fn unexclude_market(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<SportsArb>>,
     Json(req): Json<MarketExclusionRequest>,
 ) -> impl IntoResponse {
     let service = state.service.read().await;

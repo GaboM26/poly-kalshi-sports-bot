@@ -9,17 +9,17 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::api::AppState;
+use crate::strategies::sports_arb::SportsArb;
 
 /// Get current arbitrage opportunities
-pub async fn get_opportunities(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn get_opportunities(State(state): State<Arc<SportsArb>>) -> impl IntoResponse {
     let service = state.service.read().await;
     let opportunities = service.get_opportunities();
     Json(opportunities)
 }
 
 /// Get matched markets
-pub async fn get_matched_markets(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn get_matched_markets(State(state): State<Arc<SportsArb>>) -> impl IntoResponse {
     let service = state.service.read().await;
     let markets = service.ws_manager.get_matched_markets_for_frontend();
     Json(markets)
@@ -72,7 +72,7 @@ fn best_buy_level(
 
 /// Get orderbook depth for specified markets
 pub async fn get_orderbook_depth(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<SportsArb>>,
     Query(query): Query<OrderbookDepthQuery>,
 ) -> impl IntoResponse {
     let service = state.service.read().await;

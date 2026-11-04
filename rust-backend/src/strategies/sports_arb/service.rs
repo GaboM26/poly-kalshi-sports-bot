@@ -15,7 +15,7 @@ use crate::config::SportsArbConfig;
 use crate::core::{EventMatcher, SubscriptionInfo};
 use crate::models::{
     ArbitrageOpportunity, KalshiEvent, KalshiMarket, MatchedEvent, MatchedMarket, PolymarketEvent,
-    PolymarketMarket, PolymarketPositionSide, PriceUpdate, SystemStats,
+    PolymarketMarket, PriceUpdate, SystemStats,
 };
 use crate::services::{ArbitrageStorage, Operation, PerformanceMetrics, Platform};
 use crate::strategies::sports_arb::WebSocketManager;
@@ -479,19 +479,6 @@ impl ArbitrageService {
     }
 
     /// Place a Polymarket US market order.
-    pub async fn place_polymarket_order(
-        &self,
-        market_slug: &str,
-        position_side: PolymarketPositionSide,
-        side: &str,
-        contracts: i32,
-        price: f64,
-    ) -> Result<serde_json::Value> {
-        self.polymarket_client
-            .place_limit_order(market_slug, position_side, side, contracts, price)
-            .await
-    }
-
     /// Get arbitrage history
     pub fn get_arbitrage_history(
         &self,
