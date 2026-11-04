@@ -24,7 +24,9 @@ executing real trades on detected opportunities with confidence. Priorities:
 
 ## Current state and how it is operated (2026-10-11)
 
-- **Auto-trade is ENABLED** in the database (`auto_trade_state`): max 6 trades,
+- **Auto-trade is PAUSED** since 2026-11-04 (user: "it isn't working
+  regardless"; paused for the strategy refactor). Do not re-enable without
+  being asked. Settings in `auto_trade_state` when it was on: max 6 trades,
   $10 per trade, 1-100 contracts, neutralization bound 5¢. The user chose this.
   `min_profit_margin` is **0%** (the user's choice "until we have a reason";
   sizing still requires a strictly positive net margin after both fees). Do not
