@@ -6,16 +6,10 @@ use anyhow::Result;
 use tracing::{error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
-mod api;
-mod clients;
-mod config;
-mod core;
-mod models;
-mod services;
-mod strategies;
-mod utils;
-
-use crate::config::Config;
+// The binary uses the library crate instead of declaring the modules again,
+// so the code (and its tests) is compiled once.
+use polytaoli::config::Config;
+use polytaoli::{api, utils};
 
 #[tokio::main]
 async fn main() -> Result<()> {
