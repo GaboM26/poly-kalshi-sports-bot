@@ -81,6 +81,106 @@ max_trade_count = 2
 # Arbitrage opportunity duration threshold (milliseconds)
 min_duration_ms = 500
 
+# Cross-exchange sports (and crypto window) arbitrage. Optional: values shown
+# are the defaults. Auto-trade limits (amount, count, contracts) live in the
+# database and are edited in the UI, not here.
+[sports_arb]
+# Scans run on wall-clock multiples of the interval plus each offset.
+market_scan_interval_secs = 300
+market_scan_offsets_secs = [40, 100]
+initial_scan_delay_secs = 30
+# Kalshi and Polymarket events match only within this many hours.
+match_window_hours = 24
+# A Kalshi WebSocket book older than this is never used for sizing/execution.
+executable_book_max_age_secs = 30
+# The Polymarket WS book is trusted only while a frame arrived this recently.
+polymarket_ws_max_silence_secs = 15
+# IOC limits sit this many cents beyond the worst sized level (0-10).
+limit_cushion_cents = 1
+poly_depth_snapshot_cooldown_secs = 600
+auto_trade_queue_check_ms = 200
+auto_trade_pause_ms = 1000
+
+[sports_arb.ended_markets]
+kalshi_extreme_high = 0.99
+kalshi_extreme_low = 0.02
+poly_extreme_high = 1.0
+poly_extreme_low = 0.0
+extreme_duration_mins = 20
+polymarket_missing_cycles = 2
+cleanup_interval_secs = 60
+
+# Scanned Kalshi series. Setting any entry replaces this whole list.
+# category is the parser: NBA, TENNIS, NHL, MLB or CRYPTO15.
+# auto_trade defaults to false: detection only. NHL and MLB stay detection-only
+# until settlement equivalence is decided (Kalshi settles a game not played
+# within 48h at a fair price; Polymarket US waits longer).
+[[sports_arb.series]]
+ticker = "KXNBAGAME"
+category = "NBA"
+label = "NBA"
+auto_trade = true
+
+[[sports_arb.series]]
+ticker = "KXATPMATCH"
+category = "TENNIS"
+label = "ATP"
+auto_trade = true
+
+[[sports_arb.series]]
+ticker = "KXWTAMATCH"
+category = "TENNIS"
+label = "WTA"
+auto_trade = true
+
+[[sports_arb.series]]
+ticker = "KXITFMATCH"
+category = "TENNIS"
+label = "ITF M"
+auto_trade = true
+
+[[sports_arb.series]]
+ticker = "KXITFWMATCH"
+category = "TENNIS"
+label = "ITF W"
+auto_trade = true
+
+[[sports_arb.series]]
+ticker = "KXATPCHALLENGERMATCH"
+category = "TENNIS"
+label = "ATP Challenger"
+auto_trade = true
+
+[[sports_arb.series]]
+ticker = "KXNHLGAME"
+category = "NHL"
+label = "NHL"
+auto_trade = false
+
+[[sports_arb.series]]
+ticker = "KXMLBGAME"
+category = "MLB"
+label = "MLB"
+auto_trade = false
+
+[[sports_arb.series]]
+ticker = "KXBTC15M"
+category = "CRYPTO15"
+label = "BTC 15m"
+auto_trade = true
+
+[[sports_arb.series]]
+ticker = "KXETH15M"
+category = "CRYPTO15"
+label = "ETH 15m"
+auto_trade = true
+
+[[sports_arb.series]]
+ticker = "KXSOL15M"
+category = "CRYPTO15"
+label = "SOL 15m"
+auto_trade = true
+
 [auth]
 # Web UI login authentication configuration
 username = "admin"

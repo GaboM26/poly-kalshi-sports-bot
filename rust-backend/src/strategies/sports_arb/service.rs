@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use crate::clients::{KalshiClient, PolymarketClient};
-use crate::config::Config;
+use crate::config::{Config, SportsArbConfig};
 use crate::core::{EventMatcher, SubscriptionInfo};
 use crate::models::{
     ArbitrageOpportunity, KalshiEvent, KalshiMarket, MatchedEvent, MatchedMarket, PolymarketEvent,
@@ -45,6 +45,8 @@ pub struct ArbitrageService {
     pub matcher: EventMatcher,
     pub ws_manager: Arc<WebSocketManager>,
     pub storage: Arc<ArbitrageStorage>,
+    /// Strategy settings (`[sports_arb]`).
+    pub settings: Arc<SportsArbConfig>,
     pub matched_events: Vec<MatchedEvent>,
     pub matched_markets: Vec<MatchedMarket>,
     /// Performance metrics
@@ -66,8 +68,10 @@ impl ArbitrageService {
         let kalshi_client = KalshiClient::new(config.kalshi.clone())?;
         let polymarket_client = PolymarketClient::new(config.polymarket.clone())?;
 
+        let settings = Arc::new(config.sports_arb.clone());
+
         // Create matcher
-        let matcher = EventMatcher::new(24);
+        let matcher = EventMatcher::new(settings.match_window_hours);
 
         // Settings edited in the UI are persisted in the database, so they win
         // over config.toml (which only seeds the very first run). Falling back
@@ -103,6 +107,7 @@ impl ArbitrageService {
                     .max(MIN_REST_QUOTE_REFRESH_SECS)
                     .saturating_mul(2),
             ),
+            settings.clone(),
         );
 
         // Kalshi's live order book remains the only executable-depth source.
@@ -122,6 +127,7 @@ impl ArbitrageService {
             matcher,
             ws_manager,
             storage,
+            settings,
             matched_events: Vec::new(),
             matched_markets: Vec::new(),
             metrics,
@@ -135,7 +141,7 @@ impl ArbitrageService {
         // Fetch data from both platforms
         let (kalshi_events, kalshi_markets) = self
             .kalshi_client
-            .get_supported_events_and_markets()
+            .get_supported_events_and_markets(&self.settings.kalshi_series())
             .await?;
 
         let (polymarket_events, polymarket_markets) = self
@@ -512,9 +518,11 @@ impl ArbitrageService {
     pub async fn fetch_market_snapshot(
         kalshi_client: &KalshiClient,
         polymarket_client: &PolymarketClient,
+        settings: &SportsArbConfig,
     ) -> Result<MarketSnapshot> {
+        let kalshi_series = settings.kalshi_series();
         let (kalshi, polymarket) = tokio::join!(
-            kalshi_client.get_supported_events_and_markets(),
+            kalshi_client.get_supported_events_and_markets(&kalshi_series),
             polymarket_client.get_supported_events_and_markets()
         );
         let (kalshi_events, kalshi_markets) = kalshi

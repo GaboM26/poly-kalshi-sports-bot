@@ -2,21 +2,14 @@
 //!
 //! Handles tracking of high-profit arbitrage opportunities.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use chrono::Utc;
 use tracing::{debug, info};
 
-use super::{WebSocketManager, POLYMARKET_WS_MAX_SILENCE};
+use super::WebSocketManager;
 use crate::models::{ArbitrageOpportunity, ArbitrageTrackingRecord, PolymarketUsExecution};
 
-/// A market flapping in and out of tracking (profit margin oscillating near
-/// the threshold) must not re-hit Polymarket's real book endpoint on every
-/// restart — that is what triggered a Cloudflare IP rate limit (error 1015)
-/// that then starved out the endpoint the real execution path depends on.
-/// One live snapshot per market within this window is enough for the
-/// Advanced Search "depth at tracking start" display.
-const POLY_DEPTH_SNAPSHOT_COOLDOWN: Duration = Duration::from_secs(600);
 
 impl WebSocketManager {
     /// Track a high-profit opportunity
@@ -91,7 +84,7 @@ impl WebSocketManager {
                 .poly_depth_snapshot_cooldown
                 .read()
                 .get(&key)
-                .is_some_and(|last| last.elapsed() < POLY_DEPTH_SNAPSHOT_COOLDOWN);
+                .is_some_and(|last| last.elapsed() < self.settings.poly_depth_snapshot_cooldown());
 
             if !recently_snapshotted {
                 if let Some(exec) = poly_execution {
@@ -99,7 +92,7 @@ impl WebSocketManager {
                     // without a current one fall back to a REST fetch (which
                     // now always reaches Polymarket's origin, not the CDN).
                     if let Some(book) =
-                        self.fresh_polymarket_book(&exec.market_slug, POLYMARKET_WS_MAX_SILENCE)
+                        self.fresh_polymarket_book(&exec.market_slug, self.settings.polymarket_ws_max_silence())
                     {
                         self.poly_depth_snapshot_cooldown
                             .write()

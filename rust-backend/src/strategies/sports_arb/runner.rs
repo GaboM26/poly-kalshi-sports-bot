@@ -7,30 +7,28 @@ use chrono::Utc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
+use crate::config::SportsArbConfig;
 use crate::core::SubscriptionInfo;
 use crate::models::PriceUpdate;
 use crate::services::{DiscordClient, PerformanceMetrics};
 use crate::strategies::sports_arb::execution::{
     calculate_contracts_to_trade, executable_depth, executable_polymarket_book,
     find_profitable_contract_size, is_game_suspended, kalshi_buy_levels, polymarket_buy_levels, submit_paired_order,
-    EXECUTABLE_BOOK_MAX_AGE,
 };
 use crate::strategies::sports_arb::{ArbitrageService, PairedOrderParams};
 
-/// Market scan interval in seconds (5 minutes)
-const MARKET_SCAN_INTERVAL_SECS: u64 = 300;
-// Measured 2026-10-26: both exchanges list a new 15-minute crypto window
-// 15-30s after it opens (Kalshi flaps between old and new until ~30s, and
-// at 17:45:41 still returned no ETH window), so a second scan retries.
-const MARKET_SCAN_OFFSETS_SECS: &[u64] = &[40, 100];
+/// How often the executor re-checks an empty or busy queue. Internal loop
+/// mechanics, not a trading knob.
+const EXECUTOR_IDLE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Time from `now` to the next scan: a `MARKET_SCAN_INTERVAL_SECS`
-/// wall-clock boundary plus one of `MARKET_SCAN_OFFSETS_SECS`.
-fn until_next_scan(now: chrono::DateTime<chrono::Utc>) -> std::time::Duration {
-    let interval_ms = MARKET_SCAN_INTERVAL_SECS * 1000;
+/// Time from `now` to the next scan: a `market_scan_interval_secs`
+/// wall-clock boundary plus one of `market_scan_offsets_secs`.
+fn until_next_scan(now: chrono::DateTime<chrono::Utc>, settings: &SportsArbConfig) -> std::time::Duration {
+    let interval_ms = settings.market_scan_interval_secs * 1000;
     let now_ms = now.timestamp_millis().max(0) as u64;
     let into_interval = now_ms % interval_ms;
-    let wait_ms = MARKET_SCAN_OFFSETS_SECS
+    let wait_ms = settings
+        .market_scan_offsets_secs
         .iter()
         .map(|offset| offset * 1000)
         .map(|offset_ms| {
@@ -61,25 +59,26 @@ pub fn spawn(
         }
     });
 
-    // Spawn periodic market scanner (every 5 minutes)
+    // Spawn periodic market scanner (every market_scan_interval_secs)
     let service_for_scanner = service.clone();
     tokio::spawn(async move {
+        let settings = service_for_scanner.read().await.settings.clone();
         info!(
             "🔍 Market scan task started, interval {} seconds ({} minutes)",
-            MARKET_SCAN_INTERVAL_SECS,
-            MARKET_SCAN_INTERVAL_SECS / 60
+            settings.market_scan_interval_secs,
+            settings.market_scan_interval_secs / 60
         );
 
         let mut scan_count = 0u64;
 
         // Wait for initial WebSocket connections to establish
-        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(settings.initial_scan_delay_secs)).await;
 
         loop {
             // Scans run on wall-clock boundaries (plus a few seconds for the
             // exchanges to list it), so a new 15-minute crypto window is
             // picked up as it opens instead of up to 5 minutes later.
-            tokio::time::sleep(until_next_scan(chrono::Utc::now())).await;
+            tokio::time::sleep(until_next_scan(chrono::Utc::now(), &settings)).await;
             scan_count += 1;
 
             info!("🔄 Starting periodic market scan #{}...", scan_count);
@@ -97,6 +96,7 @@ pub fn spawn(
             let scan_result = match ArbitrageService::fetch_market_snapshot(
                 &kalshi_client,
                 &polymarket_client,
+                &settings,
             )
             .await
             {
@@ -180,13 +180,14 @@ pub fn spawn(
         }
     });
 
-    // Spawn auto-trade queue checker (every 200ms for faster response)
+    // Spawn auto-trade queue checker (every auto_trade_queue_check_ms)
     let service_for_queue = service.clone();
     let metrics_for_queue = metrics.clone();
     tokio::spawn(async move {
-        info!("📋 Auto-trade queue check task started, interval 200ms");
+        let check_ms = service_for_queue.read().await.settings.auto_trade_queue_check_ms;
+        info!("📋 Auto-trade queue check task started, interval {}ms", check_ms);
 
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(200));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(check_ms));
 
         loop {
             interval.tick().await;
@@ -196,12 +197,13 @@ pub fn spawn(
         }
     });
 
-    // Spawn auto-trade executor (processes queue with 1s interval)
+    // Spawn auto-trade executor (pauses auto_trade_pause_ms between trades)
     let service_for_executor = service.clone();
     let discord_for_executor = discord.clone();
     let metrics_for_executor = metrics.clone();
     tokio::spawn(async move {
-        info!("🚀 Auto-trade executor started, opportunity interval 1 second");
+        let pause_ms = service_for_executor.read().await.settings.auto_trade_pause_ms;
+        info!("🚀 Auto-trade executor started, opportunity interval {}ms", pause_ms);
 
         loop {
             let service = service_for_executor.read().await;
@@ -213,7 +215,7 @@ pub fn spawn(
                 .load(std::sync::atomic::Ordering::Relaxed)
             {
                 drop(service);
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                tokio::time::sleep(EXECUTOR_IDLE_POLL).await;
                 continue;
             }
 
@@ -249,25 +251,27 @@ pub fn spawn(
 
                 drop(service);
 
-                info!("⏱️  [Auto-trade executor] Waiting 1 second before processing the next opportunity");
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                info!("⏱️  [Auto-trade executor] Waiting {}ms before processing the next opportunity", pause_ms);
+                tokio::time::sleep(tokio::time::Duration::from_millis(pause_ms)).await;
             } else {
                 // Queue empty, wait a bit
                 drop(service);
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                tokio::time::sleep(EXECUTOR_IDLE_POLL).await;
             }
         }
     });
 
-    // Spawn ended market cleanup task (every 60 seconds)
+    // Spawn ended market cleanup task (every ended_markets.cleanup_interval_secs)
     let service_for_cleanup = service.clone();
     tokio::spawn(async move {
-        info!("🧹 Ended-game cleanup task started, interval 60 seconds");
+        let cleanup_secs = service_for_cleanup.read().await.settings.ended_markets.cleanup_interval_secs;
+        info!("🧹 Ended-game cleanup task started, interval {} seconds", cleanup_secs);
 
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        let cleanup_every = tokio::time::Duration::from_secs(cleanup_secs);
+        let mut interval = tokio::time::interval(cleanup_every);
 
         // Wait for initial data to be populated
-        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+        tokio::time::sleep(cleanup_every).await;
 
         loop {
             interval.tick().await;
@@ -471,7 +475,7 @@ async fn execute_single_auto_trade(
 
     let Some(kalshi_book) = service
         .kalshi_client
-        .get_fresh_orderbook(&record.kalshi_market_id, EXECUTABLE_BOOK_MAX_AGE)
+        .get_fresh_orderbook(&record.kalshi_market_id, service.settings.executable_book_max_age())
     else {
         save_auto_trade_skip(
             service,
@@ -580,6 +584,7 @@ async fn execute_single_auto_trade(
             poly_book.minimum_trade_qty,
             &kalshi_levels,
             &poly_levels,
+            service.settings.limit_cushion_cents,
         )
     else {
         let reason = if poly_book.minimum_trade_qty.is_none() {
@@ -607,7 +612,7 @@ async fn execute_single_auto_trade(
     // Detection-only sport: everything above only read fresh books, so this
     // is a dry run of the real decision. Record what would have traded and
     // never send an order.
-    if !crate::clients::kalshi::auto_trade_enabled_for(&record.kalshi_market_id) {
+    if !service.settings.auto_trade_enabled_for(&record.kalshi_market_id) {
         let reason = format!(
             "DRY RUN (detection-only sport): would trade {} contracts, Kalshi {} @ {}c, Polymarket {} @ {:.3}, net margin {:.2}% after fees",
             sized.contracts,
@@ -736,13 +741,17 @@ mod tests {
             .with_timezone(&chrono::Utc)
     }
 
+    fn until_next_scan_default(now: chrono::DateTime<chrono::Utc>) -> std::time::Duration {
+        until_next_scan(now, &SportsArbConfig::default())
+    }
+
     #[test]
     fn scans_wait_for_the_next_boundary_plus_offset() {
-        assert_eq!(until_next_scan(at("2026-10-26T16:44:00Z")).as_secs(), 100);
-        assert_eq!(until_next_scan(at("2026-10-26T16:45:39Z")).as_secs(), 1);
+        assert_eq!(until_next_scan_default(at("2026-10-26T16:44:00Z")).as_secs(), 100);
+        assert_eq!(until_next_scan_default(at("2026-10-26T16:45:39Z")).as_secs(), 1);
         // Exactly on a scan time: wait for the next one, never zero.
-        assert_eq!(until_next_scan(at("2026-10-26T16:45:40Z")).as_secs(), 60);
-        assert_eq!(until_next_scan(at("2026-10-26T16:46:30Z")).as_secs(), 10);
-        assert_eq!(until_next_scan(at("2026-10-26T16:46:40Z")).as_secs(), 240);
+        assert_eq!(until_next_scan_default(at("2026-10-26T16:45:40Z")).as_secs(), 60);
+        assert_eq!(until_next_scan_default(at("2026-10-26T16:46:30Z")).as_secs(), 10);
+        assert_eq!(until_next_scan_default(at("2026-10-26T16:46:40Z")).as_secs(), 240);
     }
 }

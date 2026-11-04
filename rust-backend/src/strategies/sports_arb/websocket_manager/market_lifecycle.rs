@@ -5,11 +5,7 @@
 use chrono::Utc;
 use tracing::{debug, info};
 
-use super::{
-    WebSocketManager, ENDED_DETECTION_DURATION_MINS, EXTREME_PRICE_THRESHOLD_KALSHI_HIGH,
-    EXTREME_PRICE_THRESHOLD_KALSHI_LOW, EXTREME_PRICE_THRESHOLD_POLY_HIGH,
-    EXTREME_PRICE_THRESHOLD_POLY_LOW,
-};
+use super::WebSocketManager;
 use crate::core::EventMatcher;
 
 impl WebSocketManager {
@@ -48,7 +44,7 @@ impl WebSocketManager {
 
             if let Some(first_detected) = detection.get(&market_key) {
                 let duration = now.signed_duration_since(*first_detected);
-                if duration.num_minutes() >= ENDED_DETECTION_DURATION_MINS {
+                if duration.num_minutes() >= self.settings.ended_markets.extreme_duration_mins {
                     drop(detection);
                     self.confirmed_ended_markets
                         .write()
@@ -83,20 +79,24 @@ impl WebSocketManager {
 
     /// Check if Kalshi prices are extreme (99/2 or 2/99)
     pub(crate) fn is_kalshi_price_extreme(&self, yes_ask: f64, no_ask: f64) -> bool {
-        let pattern1 = yes_ask >= EXTREME_PRICE_THRESHOLD_KALSHI_HIGH
-            && no_ask <= EXTREME_PRICE_THRESHOLD_KALSHI_LOW;
-        let pattern2 = yes_ask <= EXTREME_PRICE_THRESHOLD_KALSHI_LOW
-            && no_ask >= EXTREME_PRICE_THRESHOLD_KALSHI_HIGH;
+        let (high, low) = (
+            self.settings.ended_markets.kalshi_extreme_high,
+            self.settings.ended_markets.kalshi_extreme_low,
+        );
+        let pattern1 = yes_ask >= high && no_ask <= low;
+        let pattern2 = yes_ask <= low && no_ask >= high;
 
         pattern1 || pattern2
     }
 
     /// Check if Polymarket prices are extreme (100/0 or 0/100)
     pub(crate) fn is_poly_price_extreme(&self, yes_price: f64, no_price: f64) -> bool {
-        let pattern1 = yes_price >= EXTREME_PRICE_THRESHOLD_POLY_HIGH
-            && no_price <= EXTREME_PRICE_THRESHOLD_POLY_LOW;
-        let pattern2 = yes_price <= EXTREME_PRICE_THRESHOLD_POLY_LOW
-            && no_price >= EXTREME_PRICE_THRESHOLD_POLY_HIGH;
+        let (high, low) = (
+            self.settings.ended_markets.poly_extreme_high,
+            self.settings.ended_markets.poly_extreme_low,
+        );
+        let pattern1 = yes_price >= high && no_price <= low;
+        let pattern2 = yes_price <= low && no_price >= high;
 
         pattern1 || pattern2
     }

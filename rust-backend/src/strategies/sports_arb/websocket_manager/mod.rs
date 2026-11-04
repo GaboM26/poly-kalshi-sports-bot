@@ -31,31 +31,9 @@ use crate::models::{
     PolymarketMarket, PriceUpdate, ScanStats, SystemStats,
 };
 use crate::services::metrics::{Operation, PerformanceMetrics};
-use crate::strategies::sports_arb::execution::EXECUTABLE_BOOK_MAX_AGE as KALSHI_WS_MAX_SILENCE;
 use crate::services::storage::ArbitrageStorage;
+use crate::config::SportsArbConfig;
 
-/// Extreme price threshold for Kalshi (99¢ = 0.99)
-pub(crate) const EXTREME_PRICE_THRESHOLD_KALSHI_HIGH: f64 = 0.99;
-/// Extreme price threshold for Kalshi low side (2¢ = 0.02)
-pub(crate) const EXTREME_PRICE_THRESHOLD_KALSHI_LOW: f64 = 0.02;
-/// Extreme price threshold for Polymarket high (100¢ = 1.00)
-pub(crate) const EXTREME_PRICE_THRESHOLD_POLY_HIGH: f64 = 1.00;
-/// Extreme price threshold for Polymarket low (0¢ = 0.00)
-pub(crate) const EXTREME_PRICE_THRESHOLD_POLY_LOW: f64 = 0.00;
-/// Duration in minutes for extreme price to be considered ended
-pub(crate) const ENDED_DETECTION_DURATION_MINS: i64 = 20;
-/// Consecutive Polymarket REST refresh cycles a matched market must be
-/// absent from the active=true&closed=false feed before treating that
-/// absence as confirmed closure, so a single transient gap in the feed
-/// doesn't remove a market that is still genuinely open.
-pub(crate) const POLY_MISSING_CONFIRM_STREAK: u32 = 2;
-/// The Polymarket WebSocket counts as alive only if some frame (a book,
-/// quote, or heartbeat on any market) arrived this recently. Books and
-/// quotes it delivered are trusted only while it is alive. The server sends
-/// a heartbeat every 10s on an otherwise quiet connection (measured with
-/// `examples/probe_poly_book_freshness.rs`), so 15s tolerates jitter
-/// without flapping while still dropping a hung connection quickly.
-pub const POLYMARKET_WS_MAX_SILENCE: Duration = Duration::from_secs(15);
 
 /// A full Polymarket book pushed over the WebSocket, tagged with the
 /// connection it arrived on.
@@ -90,6 +68,8 @@ pub(crate) struct KalshiRestQuote {
 pub struct WebSocketManager {
     /// Matched markets to monitor
     pub(crate) matched_markets: Arc<RwLock<Vec<MatchedMarket>>>,
+    /// Strategy settings (`[sports_arb]`), shared with `ArbitrageService`.
+    pub(crate) settings: Arc<SportsArbConfig>,
     /// Market lookup: subscription_id -> indices into matched_markets
     pub(crate) market_lookup: Arc<RwLock<HashMap<String, Vec<usize>>>>,
     /// Kalshi WebSocket price cache: market_id -> (yes_bid, yes_ask, no_bid, no_ask).
@@ -149,7 +129,7 @@ pub struct WebSocketManager {
     /// Consecutive Polymarket REST refresh cycles in which a still-matched
     /// market's polymarket_market_id was absent from the fresh
     /// active=true&closed=false feed. Debounced (see
-    /// `POLY_MISSING_CONFIRM_STREAK`) so one transient gap in that feed
+    /// `ended_markets.polymarket_missing_cycles`) so one transient gap in that feed
     /// doesn't remove a market that is still genuinely open.
     pub(crate) poly_missing_streak: Arc<RwLock<HashMap<String, u32>>>,
     /// market_id -> when the newest WebSocket quote for it arrived, so a
@@ -209,12 +189,14 @@ impl WebSocketManager {
         storage: Arc<ArbitrageStorage>,
         metrics: Arc<PerformanceMetrics>,
         rest_quote_freshness: Duration,
+        settings: Arc<SportsArbConfig>,
     ) -> Self {
         let (opportunity_tx, _) = broadcast::channel(100);
         let (scan_stats_tx, _) = broadcast::channel(100);
 
         Self {
             matched_markets: Arc::new(RwLock::new(Vec::new())),
+            settings,
             market_lookup: Arc::new(RwLock::new(HashMap::new())),
             kalshi_ws_prices: Arc::new(RwLock::new(HashMap::new())),
             kalshi_rest_quotes: Arc::new(RwLock::new(HashMap::new())),
@@ -401,7 +383,7 @@ impl WebSocketManager {
                         client
                             .get_fresh_orderbook(
                                 &matched.kalshi_market.market_id,
-                                KALSHI_WS_MAX_SILENCE,
+                                self.settings.executable_book_max_age(),
                             )
                             .is_some()
                     });
@@ -486,7 +468,7 @@ impl WebSocketManager {
     ) -> usize {
         let ws_quote_at = self.poly_ws_quote_at.read().clone();
         let ws_quote_epoch = self.poly_ws_quote_epoch.read().clone();
-        let live_ws_epoch = self.live_polymarket_ws_epoch(POLYMARKET_WS_MAX_SILENCE);
+        let live_ws_epoch = self.live_polymarket_ws_epoch(self.settings.polymarket_ws_max_silence());
         let quotes_by_market: HashMap<&str, &PolymarketMarket> = markets
             .iter()
             .map(|market| (market.market_id.as_str(), market))
@@ -516,7 +498,7 @@ impl WebSocketManager {
                     let mut streaks = self.poly_missing_streak.write();
                     let streak = streaks.entry(market_key.clone()).or_insert(0);
                     *streak += 1;
-                    if *streak >= POLY_MISSING_CONFIRM_STREAK {
+                    if *streak >= self.settings.ended_markets.polymarket_missing_cycles {
                         newly_ended_keys.push(market_key);
                     }
                     continue;
@@ -747,7 +729,7 @@ impl WebSocketManager {
     /// its WS subscription landed. Only a live WS price may start an
     /// auto-trade.
     pub fn polymarket_price_is_live(&self, market_id: &str) -> bool {
-        self.live_polymarket_ws_epoch(POLYMARKET_WS_MAX_SILENCE)
+        self.live_polymarket_ws_epoch(self.settings.polymarket_ws_max_silence())
             .is_some_and(|epoch| self.poly_ws_quote_epoch.read().get(market_id) == Some(&epoch))
     }
 
@@ -1253,7 +1235,7 @@ impl WebSocketManager {
             // The gateway poll runs every 30s (CDN max-age); the live
             // WebSocket is what keeps Polymarket prices current.
             polymarket_connected: self.is_polymarket_rest_available(now_instant)
-                || self.live_polymarket_ws_epoch(POLYMARKET_WS_MAX_SILENCE).is_some(),
+                || self.live_polymarket_ws_epoch(self.settings.polymarket_ws_max_silence()).is_some(),
             kalshi_source: "rest_polling",
             polymarket_source: "rest_polling",
             kalshi_latency_ms,
@@ -1394,7 +1376,7 @@ impl WebSocketManager {
 
                 Some(MatchedMarketFrontend {
                     event_name: mm.event_name.clone(),
-                    sport: crate::clients::kalshi::sport_label(&mm.kalshi_market.market_id).to_string(),
+                    sport: self.settings.sport_label(&mm.kalshi_market.market_id).to_string(),
                     team_name: mm.team_name.clone(),
                     game_date: mm.game_date.map(|d| d.format("%Y-%m-%d").to_string()),
                     kalshi_market_id: mm.kalshi_market.market_id.clone(),
@@ -1525,6 +1507,7 @@ mod tests {
             storage,
             Arc::new(PerformanceMetrics::new()),
             Duration::from_secs(10),
+            Arc::new(SportsArbConfig::default()),
         );
         manager.set_matched_markets(vec![matched_market()]);
         manager
@@ -1633,7 +1616,7 @@ mod tests {
     async fn a_ws_book_is_executable_only_from_the_live_connection() {
         let manager = test_manager();
         let slug = "lal-mem-2026-08-17";
-        let window = POLYMARKET_WS_MAX_SILENCE;
+        let window = manager.settings.polymarket_ws_max_silence();
 
         // Arrived before any connection was acknowledged.
         manager.update_polymarket_ws_book(ws_book(slug, 0.50));
@@ -1662,7 +1645,7 @@ mod tests {
     async fn a_silent_ws_connection_stops_vouching_for_its_books() {
         let manager = test_manager();
         let slug = "lal-mem-2026-08-17";
-        let window = POLYMARKET_WS_MAX_SILENCE;
+        let window = manager.settings.polymarket_ws_max_silence();
         manager.on_polymarket_ws_connected();
         manager.update_polymarket_ws_book(ws_book(slug, 0.50));
         assert!(manager.fresh_polymarket_book(slug, window).is_some());
@@ -1845,6 +1828,7 @@ mod tests {
             storage,
             Arc::new(PerformanceMetrics::new()),
             Duration::from_secs(10),
+            Arc::new(SportsArbConfig::default()),
         );
         manager.set_matched_markets(vec![matched_market()]);
         manager
@@ -1909,6 +1893,7 @@ mod tests {
             storage,
             Arc::new(PerformanceMetrics::new()),
             Duration::from_secs(10),
+            Arc::new(SportsArbConfig::default()),
         );
         manager.set_matched_markets(vec![matched_market()]);
 
@@ -1942,6 +1927,7 @@ mod tests {
             storage,
             Arc::new(PerformanceMetrics::new()),
             Duration::from_secs(10),
+            Arc::new(SportsArbConfig::default()),
         );
         manager.set_matched_markets(vec![matched_market()]);
 
@@ -1965,11 +1951,12 @@ mod tests {
             storage,
             Arc::new(PerformanceMetrics::new()),
             Duration::from_secs(10),
+            Arc::new(SportsArbConfig::default()),
         );
         manager.set_matched_markets(vec![matched_market()]);
         let key = matched_market().market_key();
 
-        // First absence: below POLY_MISSING_CONFIRM_STREAK, not yet ended.
+        // First absence: below polymarket_missing_cycles, not yet ended.
         manager.update_polymarket_rest_quotes(&[]);
         assert!(!manager.confirmed_ended_markets.read().contains(&key));
         assert_eq!(*manager.poly_missing_streak.read().get(&key).unwrap(), 1);
@@ -1991,6 +1978,7 @@ mod tests {
             storage,
             Arc::new(PerformanceMetrics::new()),
             Duration::from_secs(10),
+            Arc::new(SportsArbConfig::default()),
         );
         manager.set_matched_markets(vec![matched_market()]);
         let key = matched_market().market_key();

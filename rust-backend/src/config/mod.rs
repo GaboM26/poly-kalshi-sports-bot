@@ -433,6 +433,239 @@ impl MentionConfig {
     }
 }
 
+/// One Kalshi series the sports-arb strategy scans.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct SeriesConfig {
+    /// Kalshi series ticker, the part of a market ticker before the first `-`.
+    pub ticker: String,
+    /// Parser for the series' events; one of `clients::kalshi::PARSEABLE_CATEGORIES`.
+    pub category: String,
+    /// Sport shown in the UI.
+    pub label: String,
+    /// Whether auto-trade may execute on this series. Detection always runs.
+    #[serde(default)]
+    pub auto_trade: bool,
+}
+
+impl SeriesConfig {
+    fn new(ticker: &str, category: &str, label: &str, auto_trade: bool) -> Self {
+        Self {
+            ticker: ticker.into(),
+            category: category.into(),
+            label: label.into(),
+            auto_trade,
+        }
+    }
+}
+
+/// How a matched market is detected as ended (`[sports_arb.ended_markets]`).
+/// Exchange status (Kalshi `closed`/`settled`) ends a market immediately;
+/// these rules catch the rest.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct EndedMarketConfig {
+    /// A Kalshi ask at or above this, with the other side at or below
+    /// `kalshi_extreme_low`, counts as a decided market.
+    pub kalshi_extreme_high: f64,
+    pub kalshi_extreme_low: f64,
+    /// Same for Polymarket prices.
+    pub poly_extreme_high: f64,
+    pub poly_extreme_low: f64,
+    /// Both exchanges must stay extreme this long before the market ends.
+    pub extreme_duration_mins: i64,
+    /// Consecutive Polymarket REST refresh cycles a matched market must be
+    /// absent from the active=true&closed=false feed before treating that
+    /// absence as confirmed closure, so a single transient gap in the feed
+    /// doesn't remove a market that is still genuinely open.
+    pub polymarket_missing_cycles: u32,
+    /// How often ended markets are removed from the caches.
+    pub cleanup_interval_secs: u64,
+}
+
+impl Default for EndedMarketConfig {
+    fn default() -> Self {
+        Self {
+            kalshi_extreme_high: 0.99,
+            kalshi_extreme_low: 0.02,
+            poly_extreme_high: 1.00,
+            poly_extreme_low: 0.00,
+            extreme_duration_mins: 20,
+            polymarket_missing_cycles: 2,
+            cleanup_interval_secs: 60,
+        }
+    }
+}
+
+/// Cross-exchange sports arbitrage (`[sports_arb]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SportsArbConfig {
+    /// Kalshi's explicitly supported head-to-head match-winner series. Keep this
+    /// allowlist narrow: it intentionally excludes sets, games, totals, props,
+    /// futures, and every table-tennis series.
+    ///
+    /// NHL and MLB are detected and displayed only (Kalshi settles a game not
+    /// played within 48h at a fair price, Polymarket US waits longer), so
+    /// their opportunities never trade until settlement equivalence is
+    /// decided per sport.
+    pub series: Vec<SeriesConfig>,
+    /// Market scans run on wall-clock multiples of this interval...
+    pub market_scan_interval_secs: u64,
+    /// ...plus each of these offsets. Measured 2026-10-26: both exchanges list
+    /// a new 15-minute crypto window 15-30s after it opens (Kalshi flaps
+    /// between old and new until ~30s, and at 17:45:41 still returned no ETH
+    /// window), so a second scan retries.
+    pub market_scan_offsets_secs: Vec<u64>,
+    /// Kalshi and Polymarket events match only when their start times are
+    /// within this many hours.
+    pub match_window_hours: i64,
+    /// For Kalshi: a connection-liveness backstop, checked against the last
+    /// WebSocket message received on *any* subscribed ticker (see
+    /// `KalshiClient::get_fresh_orderbook`) - not "this ticker changed
+    /// recently," which Kalshi only signals on a real book change and would
+    /// wrongly reject an accurate but quiet market. This just needs to be loose
+    /// enough to never fire during normal operation and tight enough to catch a
+    /// genuinely hung connection promptly. The actual per-book correctness
+    /// check is the connection epoch, not this duration.
+    /// Polymarket books come from `executable_polymarket_book` instead.
+    pub executable_book_max_age_secs: u64,
+    /// The Polymarket WebSocket counts as alive only if some frame (a book,
+    /// quote, or heartbeat on any market) arrived this recently. Books and
+    /// quotes it delivered are trusted only while it is alive. The server sends
+    /// a heartbeat every 10s on an otherwise quiet connection (measured with
+    /// `examples/probe_poly_book_freshness.rs`), so 15s tolerates jitter
+    /// without flapping while still dropping a hung connection quickly.
+    pub polymarket_ws_max_silence_secs: u64,
+    /// IOC limits are placed this many cents beyond the worst sized level,
+    /// and margin is sized at those limits.
+    pub limit_cushion_cents: i32,
+    /// A market flapping in and out of tracking (profit margin oscillating near
+    /// the threshold) must not re-hit Polymarket's real book endpoint on every
+    /// restart — that is what triggered a Cloudflare IP rate limit (error 1015)
+    /// that then starved out the endpoint the real execution path depends on.
+    /// One live snapshot per market within this window is enough for the
+    /// Advanced Search "depth at tracking start" display.
+    pub poly_depth_snapshot_cooldown_secs: u64,
+    /// Delay before the first periodic scan, so the WebSockets connect first.
+    pub initial_scan_delay_secs: u64,
+    /// How often tracked opportunities are checked for the auto-trade queue.
+    pub auto_trade_queue_check_ms: u64,
+    /// Pause after each auto-trade execution before the next one starts.
+    pub auto_trade_pause_ms: u64,
+    pub ended_markets: EndedMarketConfig,
+}
+
+impl Default for SportsArbConfig {
+    fn default() -> Self {
+        Self {
+            series: vec![
+                SeriesConfig::new("KXNBAGAME", "NBA", "NBA", true),
+                SeriesConfig::new("KXATPMATCH", "TENNIS", "ATP", true),
+                SeriesConfig::new("KXWTAMATCH", "TENNIS", "WTA", true),
+                SeriesConfig::new("KXITFMATCH", "TENNIS", "ITF M", true),
+                SeriesConfig::new("KXITFWMATCH", "TENNIS", "ITF W", true),
+                SeriesConfig::new("KXATPCHALLENGERMATCH", "TENNIS", "ATP Challenger", true),
+                SeriesConfig::new("KXNHLGAME", "NHL", "NHL", false),
+                SeriesConfig::new("KXMLBGAME", "MLB", "MLB", false),
+                SeriesConfig::new("KXBTC15M", "CRYPTO15", "BTC 15m", true),
+                SeriesConfig::new("KXETH15M", "CRYPTO15", "ETH 15m", true),
+                SeriesConfig::new("KXSOL15M", "CRYPTO15", "SOL 15m", true),
+            ],
+            market_scan_interval_secs: 300,
+            market_scan_offsets_secs: vec![40, 100],
+            match_window_hours: 24,
+            executable_book_max_age_secs: 30,
+            polymarket_ws_max_silence_secs: 15,
+            limit_cushion_cents: 1,
+            poly_depth_snapshot_cooldown_secs: 600,
+            initial_scan_delay_secs: 30,
+            auto_trade_queue_check_ms: 200,
+            auto_trade_pause_ms: 1000,
+            ended_markets: EndedMarketConfig::default(),
+        }
+    }
+}
+
+impl SportsArbConfig {
+    /// `(ticker, category)` of every scanned series.
+    pub fn kalshi_series(&self) -> Vec<(&str, &str)> {
+        self.series
+            .iter()
+            .map(|s| (s.ticker.as_str(), s.category.as_str()))
+            .collect()
+    }
+
+    fn series_for(&self, kalshi_ticker: &str) -> Option<&SeriesConfig> {
+        let (series, _) = kalshi_ticker.split_once('-')?;
+        self.series.iter().find(|s| s.ticker == series)
+    }
+
+    /// Whether auto-trade may execute on this Kalshi market ticker.
+    pub fn auto_trade_enabled_for(&self, kalshi_ticker: &str) -> bool {
+        self.series_for(kalshi_ticker).is_some_and(|s| s.auto_trade)
+    }
+
+    /// Human-readable sport for a Kalshi market ticker (e.g.
+    /// `KXATPCHALLENGERMATCH-...` -> "ATP Challenger"). Unknown series return
+    /// an empty string so the UI shows a blank, not a guess.
+    pub fn sport_label(&self, kalshi_ticker: &str) -> &str {
+        self.series_for(kalshi_ticker).map_or("", |s| s.label.as_str())
+    }
+
+    pub fn executable_book_max_age(&self) -> Duration {
+        Duration::from_secs(self.executable_book_max_age_secs)
+    }
+
+    pub fn polymarket_ws_max_silence(&self) -> Duration {
+        Duration::from_secs(self.polymarket_ws_max_silence_secs)
+    }
+
+    pub fn poly_depth_snapshot_cooldown(&self) -> Duration {
+        Duration::from_secs(self.poly_depth_snapshot_cooldown_secs)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        let mut seen = std::collections::HashSet::new();
+        for s in &self.series {
+            if s.ticker.is_empty() || s.ticker.contains('-') || !seen.insert(s.ticker.as_str()) {
+                return Err(format!("[sports_arb] series ticker {:?} is empty, contains '-', or is repeated", s.ticker));
+            }
+            if !crate::clients::kalshi::PARSEABLE_CATEGORIES.contains(&s.category.as_str()) {
+                return Err(format!(
+                    "[sports_arb] series {} has unknown category {:?} (expected one of {:?})",
+                    s.ticker,
+                    s.category,
+                    crate::clients::kalshi::PARSEABLE_CATEGORIES
+                ));
+            }
+        }
+        if self.market_scan_interval_secs == 0
+            || self.market_scan_offsets_secs.is_empty()
+            || self.market_scan_offsets_secs.iter().any(|o| *o >= self.market_scan_interval_secs)
+        {
+            return Err("[sports_arb] market_scan_offsets_secs must be non-empty and each below market_scan_interval_secs".into());
+        }
+        if self.match_window_hours <= 0
+            || self.executable_book_max_age_secs == 0
+            || self.polymarket_ws_max_silence_secs == 0
+        {
+            return Err("[sports_arb] match window, book age and WS silence must be positive".into());
+        }
+        if self.auto_trade_queue_check_ms == 0
+            || self.ended_markets.cleanup_interval_secs == 0
+            || self.ended_markets.polymarket_missing_cycles == 0
+            || self.ended_markets.extreme_duration_mins <= 0
+        {
+            return Err("[sports_arb] queue check, cleanup interval, missing cycles and extreme duration must be positive".into());
+        }
+        // The cushion widens the worst price an IOC may fill at; keep it small.
+        if !(0..=10).contains(&self.limit_cushion_cents) {
+            return Err("[sports_arb] limit_cushion_cents must be within 0..=10".into());
+        }
+        Ok(())
+    }
+}
+
 /// Main configuration struct
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -446,6 +679,8 @@ pub struct Config {
     pub discord: DiscordConfig,
     #[serde(default)]
     pub mention: MentionConfig,
+    #[serde(default)]
+    pub sports_arb: SportsArbConfig,
 }
 
 impl Config {
@@ -497,6 +732,7 @@ impl Config {
         self.kalshi.http.validate("kalshi")?;
         self.polymarket.http.validate("polymarket")?;
         self.polymarket.ws.validate()?;
+        self.sports_arb.validate()?;
         Ok(())
     }
 }
@@ -547,6 +783,95 @@ mod tests {
         assert_eq!(format!("{:?}", example.polymarket.ws), format!("{:?}", minimal.polymarket.ws));
         assert_eq!(format!("{:?}", example.mention), format!("{:?}", minimal.mention));
         assert_eq!(example.discord.opportunity_cooldown_secs, minimal.discord.opportunity_cooldown_secs);
+        assert_eq!(format!("{:?}", example.sports_arb), format!("{:?}", minimal.sports_arb));
+    }
+
+    /// Same assertions the Kalshi client carried for the hardcoded lists.
+    #[test]
+    fn nhl_and_mlb_are_detection_only_crypto_trades() {
+        let arb = SportsArbConfig::default();
+        assert!(arb.auto_trade_enabled_for("KXNBAGAME-26OCT11LALMEM-LAL"));
+        assert!(arb.auto_trade_enabled_for("KXITFWMATCH-26OCT26GLOARL-GLO"));
+        assert!(!arb.auto_trade_enabled_for("KXNHLGAME-26OCT27NYINSH-NYI"));
+        assert!(!arb.auto_trade_enabled_for("KXMLBGAME-26OCT262000MILTB-TB"));
+        assert!(arb.auto_trade_enabled_for("KXBTC15M-26OCT261945-45"));
+        assert!(!arb.auto_trade_enabled_for("garbage"));
+    }
+
+    #[test]
+    fn sport_label_maps_each_supported_series() {
+        let arb = SportsArbConfig::default();
+        assert_eq!(arb.sport_label("KXNBAGAME-26OCT11LALMEM-LAL"), "NBA");
+        assert_eq!(arb.sport_label("KXATPMATCH-26OCT10MEDSVR-MED"), "ATP");
+        assert_eq!(arb.sport_label("KXATPCHALLENGERMATCH-26OCT11RIBZEI-RIB"), "ATP Challenger");
+        assert_eq!(arb.sport_label("KXWTAMATCH-26OCT11ANNZHE-ZHE"), "WTA");
+        assert_eq!(arb.sport_label("KXITFWMATCH-26OCT11SNETHI-THI"), "ITF W");
+        assert_eq!(arb.sport_label("KXITFMATCH-26OCT11AZKSIN-SIN"), "ITF M");
+        assert_eq!(arb.sport_label("KXSOMETHINGNEW-1"), "");
+    }
+
+    #[test]
+    fn sports_arb_defaults_match_the_replaced_constants() {
+        let arb = SportsArbConfig::default();
+        assert_eq!(
+            arb.kalshi_series(),
+            vec![
+                ("KXNBAGAME", "NBA"),
+                ("KXATPMATCH", "TENNIS"),
+                ("KXWTAMATCH", "TENNIS"),
+                ("KXITFMATCH", "TENNIS"),
+                ("KXITFWMATCH", "TENNIS"),
+                ("KXATPCHALLENGERMATCH", "TENNIS"),
+                ("KXNHLGAME", "NHL"),
+                ("KXMLBGAME", "MLB"),
+                ("KXBTC15M", "CRYPTO15"),
+                ("KXETH15M", "CRYPTO15"),
+                ("KXSOL15M", "CRYPTO15"),
+            ]
+        );
+        assert_eq!(arb.market_scan_interval_secs, 300);
+        assert_eq!(arb.market_scan_offsets_secs, vec![40, 100]);
+        assert_eq!(arb.match_window_hours, 24);
+        assert_eq!(arb.executable_book_max_age(), Duration::from_secs(30));
+        assert_eq!(arb.polymarket_ws_max_silence(), Duration::from_secs(15));
+        assert_eq!(arb.limit_cushion_cents, 1);
+        assert_eq!(arb.poly_depth_snapshot_cooldown(), Duration::from_secs(600));
+        assert_eq!(arb.initial_scan_delay_secs, 30);
+        assert_eq!(arb.auto_trade_queue_check_ms, 200);
+        assert_eq!(arb.auto_trade_pause_ms, 1000);
+        let ended = &arb.ended_markets;
+        assert_eq!((ended.kalshi_extreme_high, ended.kalshi_extreme_low), (0.99, 0.02));
+        assert_eq!((ended.poly_extreme_high, ended.poly_extreme_low), (1.00, 0.00));
+        assert_eq!(ended.extreme_duration_mins, 20);
+        assert_eq!(ended.polymarket_missing_cycles, 2);
+        assert_eq!(ended.cleanup_interval_secs, 60);
+        arb.validate().unwrap();
+    }
+
+    #[test]
+    fn invalid_sports_arb_settings_are_rejected() {
+        for bad in [
+            "[sports_arb]\nlimit_cushion_cents = 11",
+            "[sports_arb]\nlimit_cushion_cents = -1",
+            "[sports_arb]\nmarket_scan_offsets_secs = [300]",
+            "[sports_arb]\nexecutable_book_max_age_secs = 0",
+            "[[sports_arb.series]]\nticker = \"KXFOO\"\ncategory = \"SOCCER\"\nlabel = \"x\"",
+            "[[sports_arb.series]]\nticker = \"KXA\"\ncategory = \"NBA\"\nlabel = \"a\"\n[[sports_arb.series]]\nticker = \"KXA\"\ncategory = \"NBA\"\nlabel = \"b\"",
+        ] {
+            let config: Config = toml::from_str(&format!("{MINIMAL}\n{bad}")).unwrap();
+            assert!(config.validate().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_configured_series_list_replaces_the_default_and_defaults_auto_trade_off() {
+        let config: Config = toml::from_str(&format!(
+            "{MINIMAL}\n[[sports_arb.series]]\nticker = \"KXNBAGAME\"\ncategory = \"NBA\"\nlabel = \"NBA\""
+        ))
+        .unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.sports_arb.series.len(), 1);
+        assert!(!config.sports_arb.auto_trade_enabled_for("KXNBAGAME-26OCT11LALMEM-LAL"));
     }
 
     #[test]

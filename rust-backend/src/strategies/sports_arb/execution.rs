@@ -8,7 +8,7 @@
 //! same safety-critical code path instead of two copies drifting apart.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use chrono::Utc;
 use tracing::{error, info, warn};
@@ -19,20 +19,9 @@ use crate::clients::{
 };
 use crate::core::fees::{kalshi_taker_fee, polymarket_taker_fee};
 use crate::models::PolymarketPositionSide;
-use crate::strategies::sports_arb::websocket_manager::POLYMARKET_WS_MAX_SILENCE;
 use crate::services::{AutoTradeExecutionRecord, DiscordClient};
 use crate::strategies::sports_arb::ArbitrageService;
 
-/// For Kalshi: a connection-liveness backstop, checked against the last
-/// WebSocket message received on *any* subscribed ticker (see
-/// `KalshiClient::get_fresh_orderbook`) - not "this ticker changed
-/// recently," which Kalshi only signals on a real book change and would
-/// wrongly reject an accurate but quiet market. This just needs to be loose
-/// enough to never fire during normal operation and tight enough to catch a
-/// genuinely hung connection promptly. The actual per-book correctness
-/// check is the connection epoch, not this duration.
-/// Polymarket books come from `executable_polymarket_book` instead.
-pub const EXECUTABLE_BOOK_MAX_AGE: Duration = Duration::from_secs(30);
 
 /// Where an executable Polymarket book came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,7 +60,7 @@ pub async fn executable_polymarket_book(
     // book; the WS book is only compared, to find out why it was wrong.
     let ws_book = service
         .ws_manager
-        .fresh_polymarket_book(market_slug, POLYMARKET_WS_MAX_SILENCE);
+        .fresh_polymarket_book(market_slug, service.settings.polymarket_ws_max_silence());
     let mut book = service
         .polymarket_client
         .get_market_book(market_slug)
@@ -311,8 +300,6 @@ pub fn calculate_contracts_to_trade(
     Some(contracts.min(max_contracts))
 }
 
-/// How far beyond the worst sized level each leg's IOC limit is placed.
-pub const LIMIT_CUSHION_CENTS: i32 = 1;
 
 
 /// One sized trade: the contract count plus the worst-case prices and the
@@ -355,6 +342,7 @@ pub fn find_profitable_contract_size(
     poly_min_trade_qty: Option<f64>,
     kalshi_levels: &[(i32, i32)],
     poly_levels: &[(f64, i32)],
+    limit_cushion_cents: i32,
 ) -> Option<SizedTrade> {
     if !max_amount.is_finite() || max_amount <= 0.0 || !min_profit_margin.is_finite() {
         return None;
@@ -370,13 +358,13 @@ pub fn find_profitable_contract_size(
     for contracts in (min_contracts..=size_cap).rev() {
         let kalshi_worst_cents = worst_price(kalshi_levels, contracts)?;
         let poly_worst = worst_price(poly_levels, contracts)?;
-        // The IOC limits sit LIMIT_CUSHION_CENTS beyond the worst level the
+        // The IOC limits sit `limit_cushion_cents` beyond the worst level the
         // sizing book needs, so a small move while the orders are in flight
         // still fills (an IOC fills at the best available price, never at
         // its limit unless the book is that deep). Size and margin are
         // validated at the limits, i.e. the worst price the order can pay.
-        let kalshi_price_cents = (kalshi_worst_cents + LIMIT_CUSHION_CENTS).min(99);
-        let poly_price = (((poly_worst * 100.0).round() + LIMIT_CUSHION_CENTS as f64) / 100.0).min(0.99);
+        let kalshi_price_cents = (kalshi_worst_cents + limit_cushion_cents).min(99);
+        let poly_price = (((poly_worst * 100.0).round() + limit_cushion_cents as f64) / 100.0).min(0.99);
         let kalshi_price = kalshi_price_cents as f64 / 100.0;
         let kalshi_fee = kalshi_taker_fee(contracts as f64, kalshi_price);
         let poly_fee = polymarket_taker_fee(contracts as f64, poly_price);
@@ -541,7 +529,7 @@ pub async fn hedge_missing_leg(
             shortfall,
         )
         .ok_or_else(|| "Fresh Polymarket hedge book lacks the required depth".to_string())?;
-        let limit = (((worst * 100.0).round() + LIMIT_CUSHION_CENTS as f64) / 100.0).min(0.99);
+        let limit = (((worst * 100.0).round() + service.settings.limit_cushion_cents as f64) / 100.0).min(0.99);
         if !forward_hedge_within_loss_bound(
             entry,
             limit,
@@ -574,14 +562,14 @@ pub async fn hedge_missing_leg(
     } else {
         let book = service
             .kalshi_client
-            .get_fresh_orderbook(&params.kalshi_market_id, EXECUTABLE_BOOK_MAX_AGE)
+            .get_fresh_orderbook(&params.kalshi_market_id, service.settings.executable_book_max_age())
             .ok_or_else(|| "Fresh Kalshi websocket hedge depth is unavailable".to_string())?;
         let worst_cents = worst_price(
             &kalshi_buy_levels(&book, &params.kalshi_side),
             shortfall,
         )
         .ok_or_else(|| "Fresh Kalshi hedge book lacks the required depth".to_string())?;
-        let limit_cents = (worst_cents + LIMIT_CUSHION_CENTS).min(99);
+        let limit_cents = (worst_cents + service.settings.limit_cushion_cents).min(99);
         let limit = limit_cents as f64 / 100.0;
         if !forward_hedge_within_loss_bound(
             entry,
@@ -679,7 +667,7 @@ pub async fn neutralize_kalshi(
     })?;
     let book = service
         .kalshi_client
-        .get_fresh_orderbook(ticker, EXECUTABLE_BOOK_MAX_AGE)
+        .get_fresh_orderbook(ticker, service.settings.executable_book_max_age())
         .ok_or_else(|| "Fresh Kalshi websocket close depth is unavailable".to_string())?;
     let displayed_cents = worst_price(&kalshi_sell_levels(&book, side), contracts)
         .ok_or_else(|| "Fresh Kalshi close book lacks required executable depth".to_string())?;
@@ -809,11 +797,12 @@ async fn choose_recovery_order(
         .map(|(book, _)| book);
     let kalshi_book = service
         .kalshi_client
-        .get_fresh_orderbook(&params.kalshi_market_id, EXECUTABLE_BOOK_MAX_AGE);
+        .get_fresh_orderbook(&params.kalshi_market_id, service.settings.executable_book_max_age());
     let (Some(poly), Some(kalshi)) = (poly_book.as_ref(), kalshi_book.as_ref()) else {
         return (true, poly_book);
     };
-    let cushion = LIMIT_CUSHION_CENTS as f64 / 100.0;
+    let cushion_cents = service.settings.limit_cushion_cents;
+    let cushion = cushion_cents as f64 / 100.0;
     let n = excess as f64;
     // (forward buy price, its fee), (unwind sell price, its fee)
     let estimates = if filled_leg == "kalshi" {
@@ -826,7 +815,7 @@ async fn choose_recovery_order(
         })
     } else {
         let hedge = worst_price(&kalshi_buy_levels(kalshi, &params.kalshi_side), excess)
-            .map(|c| ((c + LIMIT_CUSHION_CENTS).min(99)) as f64 / 100.0);
+            .map(|c| ((c + cushion_cents).min(99)) as f64 / 100.0);
         let close = worst_price(&polymarket_sell_levels(poly, params.polymarket_position_side), excess);
         hedge.zip(close).map(|(h, c)| {
             ((h, kalshi_taker_fee(n, h)), (c, polymarket_taker_fee(n, c)))
@@ -1488,14 +1477,14 @@ mod tests {
     fn rejects_size_when_worst_case_fee_removes_profit() {
         let kalshi = vec![(50, 10)];
         let poly = vec![(0.50, 10)];
-        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly).is_none());
+        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly, 1).is_none());
     }
 
     #[test]
     fn uses_worst_level_and_respects_total_amount_limit() {
         let kalshi = vec![(40, 2), (42, 3)];
         let poly = vec![(0.45, 2), (0.47, 3)];
-        let result = find_profitable_contract_size(5, 1, 5.0, 0.0, Some(1.0), &kalshi, &poly).unwrap();
+        let result = find_profitable_contract_size(5, 1, 5.0, 0.0, Some(1.0), &kalshi, &poly, 1).unwrap();
         assert_eq!(result.contracts, 5);
         // Limits sit one cent beyond the worst sized level.
         assert_eq!(result.kalshi_price_cents, 43);
@@ -1511,7 +1500,7 @@ mod tests {
         //   total = 10 * 0.87 + 0.17 + 0.17 = 9.04
         let kalshi = vec![(40, 10)];
         let poly = vec![(0.45, 10)];
-        let trade = find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly).unwrap();
+        let trade = find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly, 1).unwrap();
         assert_eq!(trade.contracts, 10);
         assert!((trade.kalshi_fee - 0.17).abs() < 1e-9);
         assert!((trade.poly_fee - 0.17).abs() < 1e-9);
@@ -1526,10 +1515,10 @@ mod tests {
         // (46c + 51c) plus fees makes the worst case a loss.
         let kalshi = vec![(45, 10)];
         let poly = vec![(0.50, 10)];
-        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly).is_none());
+        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly, 1).is_none());
         // The same books with a wider gap (45c + 46c) still size.
         let poly = vec![(0.46, 10)];
-        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly).is_some());
+        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly, 1).is_some());
     }
 
     #[test]
@@ -1553,7 +1542,7 @@ mod tests {
         let poly = vec![(0.50, 10)];
         let kalshi_fee = kalshi_taker_fee(10.0, 0.48);
         assert!(10.0 * (0.48 + 0.50) + kalshi_fee < 10.0, "profitable on Kalshi's fee alone");
-        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly).is_none());
+        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly, 1).is_none());
     }
 
     #[test]
@@ -1562,7 +1551,7 @@ mod tests {
         let poly = vec![(0.45, 10)];
         // Total cost is 8.84 (see above): a cap between the notional (8.50) and
         // the all-in cost must reject this size and fall back to a smaller one.
-        let capped = find_profitable_contract_size(10, 1, 8.60, 0.0, Some(1.0), &kalshi, &poly).unwrap();
+        let capped = find_profitable_contract_size(10, 1, 8.60, 0.0, Some(1.0), &kalshi, &poly, 1).unwrap();
         assert!(capped.contracts < 10, "{capped:?}");
         let total = capped.contracts as f64 * (0.40 + 0.45) + capped.kalshi_fee + capped.poly_fee;
         assert!(total <= 8.60 + 1e-9, "{total}");
@@ -1589,7 +1578,7 @@ mod tests {
         // minimumTradeQty applies. 5 contracts at $0.04 is $0.20 notional.
         let kalshi = vec![(93, 300)];
         let poly = vec![(0.04, 300)];
-        let result = find_profitable_contract_size(5, 5, 5.0, 0.0, Some(0.01), &kalshi, &poly).unwrap();
+        let result = find_profitable_contract_size(5, 5, 5.0, 0.0, Some(0.01), &kalshi, &poly, 1).unwrap();
         assert_eq!(result.contracts, 5);
     }
 
@@ -1613,7 +1602,7 @@ mod tests {
         // look that minimum up, we must not guess it's zero.
         let kalshi = vec![(50, 10)];
         let poly = vec![(0.50, 10)];
-        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, None, &kalshi, &poly).is_none());
+        assert!(find_profitable_contract_size(10, 1, 100.0, 0.0, None, &kalshi, &poly, 1).is_none());
     }
 
     #[test]
@@ -1622,7 +1611,7 @@ mod tests {
         let poly = vec![(0.50, 5)];
         // Only 5 contracts of depth are available, but the market requires
         // at least 8 per order - no size can ever clear both constraints.
-        assert!(find_profitable_contract_size(5, 1, 100.0, 0.0, Some(8.0), &kalshi, &poly).is_none());
+        assert!(find_profitable_contract_size(5, 1, 100.0, 0.0, Some(8.0), &kalshi, &poly, 1).is_none());
     }
 
     #[test]
@@ -1630,7 +1619,7 @@ mod tests {
         let kalshi = vec![(40, 10)];
         let poly = vec![(0.45, 10)];
         let result =
-            find_profitable_contract_size(10, 1, 100.0, 0.0, Some(8.0), &kalshi, &poly).unwrap();
+            find_profitable_contract_size(10, 1, 100.0, 0.0, Some(8.0), &kalshi, &poly, 1).unwrap();
         assert_eq!(result.contracts, 10);
     }
 
@@ -1640,7 +1629,7 @@ mod tests {
         // but far under a 50% floor, so nothing may be sized.
         let kalshi = [(40, 100)];
         let poly = [(0.50, 100)];
-        let any = find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly)
+        let any = find_profitable_contract_size(10, 1, 100.0, 0.0, Some(1.0), &kalshi, &poly, 1)
             .expect("positive margin sizes with no floor");
         assert!(find_profitable_contract_size(
             10,
@@ -1649,11 +1638,12 @@ mod tests {
             any.profit_margin + 0.01,
             Some(1.0),
             &kalshi,
-            &poly
+            &poly,
+            1
         )
         .is_none());
         let at_floor =
-            find_profitable_contract_size(10, 1, 100.0, any.profit_margin, Some(1.0), &kalshi, &poly)
+            find_profitable_contract_size(10, 1, 100.0, any.profit_margin, Some(1.0), &kalshi, &poly, 1)
                 .expect("a margin equal to the floor passes");
         assert!(at_floor.profit_margin >= any.profit_margin);
     }
@@ -1663,7 +1653,7 @@ mod tests {
         let kalshi = [(40, 100)];
         let poly = [(0.50, 100)];
         assert!(
-            find_profitable_contract_size(10, 1, 100.0, f64::NAN, Some(1.0), &kalshi, &poly)
+            find_profitable_contract_size(10, 1, 100.0, f64::NAN, Some(1.0), &kalshi, &poly, 1)
                 .is_none()
         );
     }

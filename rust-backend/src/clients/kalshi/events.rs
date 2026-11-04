@@ -1,71 +1,10 @@
-//! Kalshi market catalog: supported series, auto-trade allowlist, and event/market parsing per sport.
+//! Kalshi market catalog: event/market fetching and parsing per sport category.
 
 use super::*;
 
-// Kalshi's explicitly supported head-to-head match-winner series. Keep this
-// allowlist narrow: it intentionally excludes sets, games, totals, props,
-// futures, and every table-tennis series.
-pub(super) const SUPPORTED_KALSHI_SERIES: &[(&str, &str)] = &[
-    ("KXNBAGAME", "NBA"),
-    ("KXATPMATCH", "TENNIS"),
-    ("KXWTAMATCH", "TENNIS"),
-    ("KXITFMATCH", "TENNIS"),
-    ("KXITFWMATCH", "TENNIS"),
-    ("KXATPCHALLENGERMATCH", "TENNIS"),
-    // NHL and MLB are detection-only: `auto_trade_enabled_for` excludes them
-    // until settlement equivalence is decided per sport.
-    ("KXNHLGAME", "NHL"),
-    ("KXMLBGAME", "MLB"),
-    // 15-minute crypto windows, detection-only like NHL/MLB.
-    ("KXBTC15M", "CRYPTO15"),
-    ("KXETH15M", "CRYPTO15"),
-    ("KXSOL15M", "CRYPTO15"),
-];
-
-/// Series auto-trade may execute. NHL and MLB are detected and displayed
-/// only (Kalshi settles a game not played within 48h at a fair price,
-/// Polymarket US waits longer), so their opportunities never trade.
-pub(super) const AUTO_TRADE_KALSHI_SERIES: &[&str] = &[
-    "KXNBAGAME",
-    "KXATPMATCH",
-    "KXWTAMATCH",
-    "KXITFMATCH",
-    "KXITFWMATCH",
-    "KXATPCHALLENGERMATCH",
-    "KXBTC15M",
-    "KXETH15M",
-    "KXSOL15M",
-];
-
-/// Whether auto-trade may execute on this Kalshi market ticker.
-pub fn auto_trade_enabled_for(kalshi_ticker: &str) -> bool {
-    kalshi_ticker
-        .split_once('-')
-        .is_some_and(|(series, _)| AUTO_TRADE_KALSHI_SERIES.contains(&series))
-}
-
-/// Human-readable sport for a Kalshi market ticker, from its series prefix
-/// (e.g. `KXATPCHALLENGERMATCH-...` -> "ATP Challenger"). Unknown series
-/// return an empty string so the UI shows a blank, not a guess.
-pub fn sport_label(kalshi_ticker: &str) -> &'static str {
-    const LABELS: &[(&str, &str)] = &[
-        ("KXATPCHALLENGERMATCH", "ATP Challenger"),
-        ("KXATPMATCH", "ATP"),
-        ("KXWTAMATCH", "WTA"),
-        ("KXITFWMATCH", "ITF W"),
-        ("KXITFMATCH", "ITF M"),
-        ("KXNBAGAME", "NBA"),
-        ("KXNHLGAME", "NHL"),
-        ("KXMLBGAME", "MLB"),
-        ("KXBTC15M", "BTC 15m"),
-        ("KXETH15M", "ETH 15m"),
-        ("KXSOL15M", "SOL 15m"),
-    ];
-    LABELS
-        .iter()
-        .find(|(prefix, _)| kalshi_ticker.starts_with(prefix))
-        .map_or("", |(_, label)| label)
-}
+/// Event categories this client knows how to parse. A series is scanned
+/// with one of these (see `[sports_arb] series` in the config).
+pub const PARSEABLE_CATEGORIES: &[&str] = &["NBA", "TENNIS", "NHL", "MLB", "CRYPTO15"];
 
 pub(super) fn parse_nba_event(event_data: &Value) -> Option<KalshiEvent> {
     let event_ticker = event_data["event_ticker"].as_str()?.to_string();
@@ -470,14 +409,15 @@ pub(super) fn extract_game_date_from_ticker(event_ticker: &str) -> Option<DateTi
 }
 
 impl KalshiClient {
-    /// Get all supported NBA and tennis match-winner events and markets.
+    /// Events and markets of every `(series ticker, category)` given.
     pub async fn get_supported_events_and_markets(
         &self,
+        series: &[(&str, &str)],
     ) -> Result<(Vec<KalshiEvent>, Vec<KalshiMarket>)> {
         let mut events = Vec::new();
         let mut markets = Vec::new();
 
-        for &(series_ticker, category) in SUPPORTED_KALSHI_SERIES {
+        for &(series_ticker, category) in series {
             let (mut series_events, mut series_markets) = self
                 .get_series_events_and_markets(series_ticker, category)
                 .await?;
@@ -633,16 +573,6 @@ mod tests {
     }
 
     #[test]
-    fn nhl_and_mlb_are_detection_only_crypto_trades() {
-        assert!(auto_trade_enabled_for("KXNBAGAME-26OCT11LALMEM-LAL"));
-        assert!(auto_trade_enabled_for("KXITFWMATCH-26OCT26GLOARL-GLO"));
-        assert!(!auto_trade_enabled_for("KXNHLGAME-26OCT27NYINSH-NYI"));
-        assert!(!auto_trade_enabled_for("KXMLBGAME-26OCT262000MILTB-TB"));
-        assert!(auto_trade_enabled_for("KXBTC15M-26OCT261945-45"));
-        assert!(!auto_trade_enabled_for("garbage"));
-    }
-
-    #[test]
     fn extracts_full_tennis_identity_from_market_title() {
         assert_eq!(
             extract_tennis_competitor_from_market_title(
@@ -736,16 +666,5 @@ mod tests {
         });
 
         assert!(parse_tennis_event(&event).is_none());
-    }
-
-    #[test]
-    fn sport_label_maps_each_supported_series() {
-        assert_eq!(sport_label("KXNBAGAME-26OCT11LALMEM-LAL"), "NBA");
-        assert_eq!(sport_label("KXATPMATCH-26OCT10MEDSVR-MED"), "ATP");
-        assert_eq!(sport_label("KXATPCHALLENGERMATCH-26OCT11RIBZEI-RIB"), "ATP Challenger");
-        assert_eq!(sport_label("KXWTAMATCH-26OCT11ANNZHE-ZHE"), "WTA");
-        assert_eq!(sport_label("KXITFWMATCH-26OCT11SNETHI-THI"), "ITF W");
-        assert_eq!(sport_label("KXITFMATCH-26OCT11AZKSIN-SIN"), "ITF M");
-        assert_eq!(sport_label("KXSOMETHINGNEW-1"), "");
     }
 }

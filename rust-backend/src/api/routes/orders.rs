@@ -15,7 +15,7 @@ use crate::api::AppState;
 use crate::models::PolymarketPositionSide;
 use crate::strategies::sports_arb::execution::{
     executable_depth, executable_polymarket_book, find_profitable_contract_size,
-    kalshi_buy_levels, polymarket_buy_levels, submit_paired_order, EXECUTABLE_BOOK_MAX_AGE,
+    kalshi_buy_levels, polymarket_buy_levels, submit_paired_order,
 };
 use crate::strategies::sports_arb::PairedOrderParams;
 
@@ -351,7 +351,7 @@ pub async fn execute_arbitrage(
     // Real, fresh executable depth only — never cached display quotes.
     let Some(kalshi_book) = service
         .kalshi_client
-        .get_fresh_orderbook(&kalshi_market_id, EXECUTABLE_BOOK_MAX_AGE)
+        .get_fresh_orderbook(&kalshi_market_id, service.settings.executable_book_max_age())
     else {
         return reject_with_skip(
             &service,
@@ -401,6 +401,7 @@ pub async fn execute_arbitrage(
             poly_book.minimum_trade_qty,
             &kalshi_levels,
             &poly_levels,
+            service.settings.limit_cushion_cents,
         )
     else {
         let reason = if poly_book.minimum_trade_qty.is_none() {

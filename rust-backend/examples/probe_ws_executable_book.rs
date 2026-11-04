@@ -13,7 +13,6 @@ use polytaoli::clients::polymarket::resolve_credentials;
 use polytaoli::clients::polymarket::ws::{run_markets_stream, PolyWsEvent};
 use polytaoli::clients::PolymarketClient;
 use polytaoli::config::Config;
-use polytaoli::strategies::sports_arb::websocket_manager::POLYMARKET_WS_MAX_SILENCE;
 use polytaoli::services::{ArbitrageStorage, PerformanceMetrics};
 use polytaoli::strategies::sports_arb::WebSocketManager;
 
@@ -31,6 +30,7 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(ArbitrageStorage::new(":memory:")?),
         Arc::new(PerformanceMetrics::new()),
         Duration::from_secs(10),
+        Arc::new(config.sports_arb.clone()),
     ));
 
     let ws_manager = manager.clone();
@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
     for round in 0..8 {
         tokio::time::sleep(Duration::from_secs(if round == 0 { 3 } else { 4 })).await;
         for slug in &slugs {
-            let ws = manager.fresh_polymarket_book(slug, POLYMARKET_WS_MAX_SILENCE);
+            let ws = manager.fresh_polymarket_book(slug, config.sports_arb.polymarket_ws_max_silence());
             let rest = client.get_market_book(slug).await;
             match (&ws, &rest) {
                 (Some(ws), Ok(rest)) => {
