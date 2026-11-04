@@ -5,7 +5,7 @@ import { ArbitrageExecuteRequest, ArbitrageExecuteResponse } from '../../types';
 import { apiUrl, getAuthHeaders } from '../../shared/api';
 
 /** Route prefix of this strategy on the backend. */
-const SPORTS_ARB_API = '/api';
+const SPORTS_ARB_API = '/api/sports_arb';
 
 /** URL of a sports-arb route, e.g. `sportsArbUrl('/tracking')`. */
 export function sportsArbUrl(path: string): string {

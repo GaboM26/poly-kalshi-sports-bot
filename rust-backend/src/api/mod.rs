@@ -27,11 +27,6 @@ use crate::strategies::{self, Strategy};
 /// How often API latency is measured and metrics are reset.
 const METRICS_PERIOD: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Strategies whose routes are also served at their pre-strategy paths
-/// (`/api/<route>` without the id), until the frontend has switched to
-/// `/api/<id>/<route>`. Remove an entry once nothing calls the old paths.
-const LEGACY_UNPREFIXED_ROUTES: &[&str] = &["sports_arb"];
-
 /// Application state shared across the shared handlers
 pub struct AppState {
     pub config: Config,
@@ -116,9 +111,6 @@ pub async fn create_app(config: Config) -> Result<Router> {
     for strategy in &strategies {
         let id = strategy.id();
         for (path, handler) in strategy.clone().routes() {
-            if LEGACY_UNPREFIXED_ROUTES.contains(&id) {
-                app = app.route(&format!("/api{path}"), handler.clone());
-            }
             app = app.route(&format!("/api/{id}{path}"), handler);
         }
     }
