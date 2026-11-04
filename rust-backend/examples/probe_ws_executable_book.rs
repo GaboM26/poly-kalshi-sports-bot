@@ -13,8 +13,9 @@ use polytaoli::clients::polymarket::resolve_credentials;
 use polytaoli::clients::polymarket::ws::{run_markets_stream, PolyWsEvent};
 use polytaoli::clients::PolymarketClient;
 use polytaoli::config::Config;
-use polytaoli::services::websocket_manager::POLYMARKET_WS_MAX_SILENCE;
-use polytaoli::services::{ArbitrageStorage, PerformanceMetrics, WebSocketManager};
+use polytaoli::strategies::sports_arb::websocket_manager::POLYMARKET_WS_MAX_SILENCE;
+use polytaoli::services::{ArbitrageStorage, PerformanceMetrics};
+use polytaoli::strategies::sports_arb::WebSocketManager;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

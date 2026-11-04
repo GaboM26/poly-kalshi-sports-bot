@@ -31,7 +31,7 @@ use crate::models::{
     PolymarketMarket, PriceUpdate, ScanStats, SystemStats,
 };
 use crate::services::metrics::{Operation, PerformanceMetrics};
-use crate::services::paired_execution::EXECUTABLE_BOOK_MAX_AGE as KALSHI_WS_MAX_SILENCE;
+use crate::strategies::sports_arb::execution::EXECUTABLE_BOOK_MAX_AGE as KALSHI_WS_MAX_SILENCE;
 use crate::services::storage::ArbitrageStorage;
 
 /// Extreme price threshold for Kalshi (99¢ = 0.99)
@@ -288,7 +288,7 @@ impl WebSocketManager {
             return 0;
         };
         let limit_cents = (price * 100.0).round() as i32;
-        crate::services::paired_execution::kalshi_buy_levels(&book, &side.to_lowercase())
+        crate::strategies::sports_arb::execution::kalshi_buy_levels(&book, &side.to_lowercase())
             .iter()
             .filter(|(cents, _)| *cents <= limit_cents)
             .fold(0_i32, |total, (_, qty)| total.saturating_add(*qty))

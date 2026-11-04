@@ -17,7 +17,8 @@ use crate::models::{
     ArbitrageOpportunity, KalshiEvent, KalshiMarket, MatchedEvent, MatchedMarket, PolymarketEvent,
     PolymarketMarket, PolymarketPositionSide, PriceUpdate, SystemStats,
 };
-use crate::services::{ArbitrageStorage, Operation, PerformanceMetrics, WebSocketManager};
+use crate::services::{ArbitrageStorage, Operation, PerformanceMetrics};
+use crate::strategies::sports_arb::WebSocketManager;
 
 const MIN_REST_QUOTE_REFRESH_SECS: u64 = 1;
 /// The Polymarket US gateway is Cloudflare-cached with `max-age=30`, so a

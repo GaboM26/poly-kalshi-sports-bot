@@ -23,15 +23,14 @@ use tracing::{error, info, warn, Level};
 use crate::config::{Config, MentionConfig, MentionMode};
 use crate::core::SubscriptionInfo;
 use crate::models::PriceUpdate;
-use crate::services::paired_execution::{
+use crate::strategies::sports_arb::execution::{
     calculate_contracts_to_trade, executable_depth, executable_polymarket_book,
     find_profitable_contract_size, is_game_suspended, kalshi_buy_levels, polymarket_buy_levels, submit_paired_order,
     EXECUTABLE_BOOK_MAX_AGE,
 };
-use crate::services::{
-    ArbitrageService, DirectionalExecutionService, MentionSignalClient, PairedOrderParams,
-    PerformanceMetrics, DiscordClient,
-};
+use crate::services::{DiscordClient, PerformanceMetrics};
+use crate::strategies::mention::{DirectionalExecutionService, MentionSignalClient};
+use crate::strategies::sports_arb::{ArbitrageService, PairedOrderParams};
 
 /// Market scan interval in seconds (5 minutes)
 const MARKET_SCAN_INTERVAL_SECS: u64 = 300;

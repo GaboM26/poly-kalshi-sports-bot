@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::clients::{KalshiClient, OrderBook};
 use crate::config::{MentionConfig, MentionMode};
-use crate::services::mention_signal::{MentionSignal, MentionSignalClient};
+use crate::strategies::mention::signal::{MentionSignal, MentionSignalClient};
 use crate::core::fees::kalshi_taker_fee;
 use crate::services::storage::{
     ArbitrageStorage, DirectionalPosition, NewDirectionalDecision, NewDirectionalPosition,

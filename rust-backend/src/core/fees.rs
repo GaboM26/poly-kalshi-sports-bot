@@ -1,5 +1,5 @@
 //! Exchange taker fees, the single source of truth for every margin in the
-//! bot (detection in `core::calculator`, sizing in `services::paired_execution`,
+//! bot (detection in `core::calculator`, sizing in `strategies::sports_arb::execution`,
 //! stored estimates in `services::storage`). Both legs of an arbitrage are
 //! taker (IOC) orders, so every trade pays both fees; a margin that omits
 //! either one is overstated.

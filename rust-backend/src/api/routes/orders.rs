@@ -13,11 +13,11 @@ use tracing::{error, info, warn};
 
 use crate::api::AppState;
 use crate::models::PolymarketPositionSide;
-use crate::services::paired_execution::{
+use crate::strategies::sports_arb::execution::{
     executable_depth, executable_polymarket_book, find_profitable_contract_size,
     kalshi_buy_levels, polymarket_buy_levels, submit_paired_order, EXECUTABLE_BOOK_MAX_AGE,
 };
-use crate::services::PairedOrderParams;
+use crate::strategies::sports_arb::PairedOrderParams;
 
 /// Kalshi order request
 #[derive(Deserialize)]
@@ -220,7 +220,7 @@ fn default_dry_run() -> bool {
 /// Persist a skip record (visible in the history explorer) and respond with
 /// the specific reason a manual execution attempt was not submitted.
 fn reject_with_skip(
-    service: &crate::services::ArbitrageService,
+    service: &crate::strategies::sports_arb::ArbitrageService,
     market_key: &str,
     req: &ExecuteArbitrageRequest,
     kalshi_market_id: &str,

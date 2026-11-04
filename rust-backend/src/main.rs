@@ -12,6 +12,7 @@ mod config;
 mod core;
 mod models;
 mod services;
+mod strategies;
 mod utils;
 
 use crate::config::Config;

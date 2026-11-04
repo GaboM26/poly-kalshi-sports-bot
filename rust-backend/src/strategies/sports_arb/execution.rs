@@ -19,8 +19,9 @@ use crate::clients::{
 };
 use crate::core::fees::{kalshi_taker_fee, polymarket_taker_fee};
 use crate::models::PolymarketPositionSide;
-use crate::services::websocket_manager::POLYMARKET_WS_MAX_SILENCE;
-use crate::services::{ArbitrageService, AutoTradeExecutionRecord, DiscordClient};
+use crate::strategies::sports_arb::websocket_manager::POLYMARKET_WS_MAX_SILENCE;
+use crate::services::{AutoTradeExecutionRecord, DiscordClient};
+use crate::strategies::sports_arb::ArbitrageService;
 
 /// For Kalshi: a connection-liveness backstop, checked against the last
 /// WebSocket message received on *any* subscribed ticker (see
